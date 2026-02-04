@@ -1,0 +1,69 @@
+name: PR CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [ main, master, develop ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: self-hosted
+    if: ${{ github.event.pull_request.draft == false }} # no test on draft
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10']
+        os: [linux]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Run pre-commit on diff only
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash -l {0}
+        run: |
+          export PATH=/root/miniconda3/bin:$PATH
+          source /root/miniconda3/etc/profile.d/conda.sh
+          conda activate internutopia
+
+          git fetch origin ${{ github.base_ref }}
+          pre-commit run --from-ref origin/${{ github.base_ref }} --to-ref HEAD
+
+      - name: Run tests
+        shell: bash -l {0}
+        run: |
+          # conda
+          export PATH=/root/miniconda3/bin:$PATH
+          source /root/miniconda3/etc/profile.d/conda.sh
+          conda activate internutopia
+
+          # link data
+          mkdir data
+          ln -s /cpfs/user/wangyukai/mp3d_data/vln_pe data/vln_pe
+          ln -s /cpfs/user/wangyukai/mp3d_data/Embodiments data/Embodiments
+          ln -s /cpfs/user/wangyukai/mp3d_data/scene_data data/scene_data
+          ln -s /cpfs/user/wangyukai/checkpoints checkpoints
+
+          # run tests
+          /root/miniconda3/envs/internutopia/bin/python -c "import torch,sys;print(sys.executable);print('cuda:',torch.cuda.is_available())"
+          /root/miniconda3/envs/internutopia/bin/python -m pytest -q -W ignore --timeout=900 --timeout-method=signal

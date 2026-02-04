@@ -1,0 +1,186 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Translations
+*.mo
+*.pot
+
+# Django stuff:
+*.log
+local_settings.py
+db.sqlite3
+
+# Flask stuff:
+instance/
+.webassets-cache
+
+# Scrapy stuff:
+.scrapy
+
+# Sphinx documentation
+docs/en/_build/
+docs/zh_cn/_build/
+
+# PyBuilder
+target/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# celery beat schedule file
+celerybeat-schedule
+
+# SageMath parsed files
+*.sage.py
+
+# Environments
+.env
+.venv
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.vscode
+.idea
+.DS_Store
+
+# custom
+*.pkl
+*.pkl.json
+*.log.json
+docs/modelzoo_statistics.md
+work_dirs/
+
+# Pytorch
+*.pth
+*.py~
+*.sh~
+
+# grutopia assets
+/asset
+
+# sphinx build dir
+docs/en/_build
+
+# default value for marcos.py
+internutopia/default_config.py
+data
+kujiale_data
+interiornav_data
+images/
+
+*.pyc
+
+pre-commit*
+nohup.out
+*.mp4
+*.pid
+
+wandb/
+logs/
+
+.vis_debug
+*.png
+*.ckpt
+/results/
+result/
+.gradio/
+
+# ============================================
+# MemoryNav 特定排除项
+# MemoryNav specific exclusions
+# ============================================
+
+# 模型权重 / Model checkpoints
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# 测试数据 / Test data
+memory_test_data/
+memory_test_data2/
+test_data/
+
+# 日志目录 / Log directories
+deploy/logs/
+logs/
+
+# IDE 和编辑器配置 / IDE and editor configs
+.agents/
+.claude/
+.codex/
+.cursor/
+.opencode/
+
+# LongCLIP 模型 (从子模块管理)
+internnav/model/basemodel/LongCLIP/
+
+# 其他大文件 / Other large files
+*.bin
+*.tar
+*.tar.gz
+*.zip
+*.h5
+*.hdf5

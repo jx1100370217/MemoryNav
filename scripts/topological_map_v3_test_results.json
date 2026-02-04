@@ -1,0 +1,151 @@
+{
+  "results": [
+    {
+      "timestamp": "1769394774504",
+      "node_id": 0,
+      "is_new": true,
+      "is_keyframe": true,
+      "node_name": "走廊-玻璃门旁",
+      "scene_description": "场景：办公室走廊\n形状：直走廊\n前方：尽头有办公桌和电脑\n左侧：有一面带有六边形图案的墙\n右侧：有关闭的百叶窗隔间\n可见物体：黑色办公椅2把，办公桌1张，电脑1台\n独特标记：墙上有六边形图案",
+      "semantic_labels": [
+        "走廊中段",
+        "玻璃门旁",
+        "红灭火器",
+        "白墙",
+        "蓝图案",
+        "绿安全出口标志"
+      ]
+    },
+    {
+      "timestamp": "1769394781198",
+      "node_id": 0,
+      "is_new": false,
+      "is_keyframe": false,
+      "node_name": null,
+      "scene_description": null,
+      "semantic_labels": []
+    },
+    {
+      "timestamp": "1769394782397",
+      "node_id": 0,
+      "is_new": false,
+      "is_keyframe": false,
+      "node_name": null,
+      "scene_description": null,
+      "semantic_labels": []
+    },
+    {
+      "timestamp": "1769394783296",
+      "node_id": 1,
+      "is_new": true,
+      "is_keyframe": true,
+      "node_name": "走廊-21号门前",
+      "scene_description": "场景：办公室走廊\n形状：直走廊\n前方：尽头是墙\n左侧：紧邻玻璃门\n右侧：玻璃隔断墙\n可见物体：灰色办公椅1把，玻璃门1扇\n独特标记：墙上有蓝色六边形图案",
+      "semantic_labels": [
+        "走廊中段",
+        "21号门旁",
+        "黑椅子",
+        "绿植2盆",
+        "安全出口标志"
+      ]
+    },
+    {
+      "timestamp": "1769394784195",
+      "node_id": 0,
+      "is_new": false,
+      "is_keyframe": false,
+      "node_name": null,
+      "scene_description": null,
+      "semantic_labels": []
+    },
+    {
+      "timestamp": "1769396726577",
+      "node_id": 0,
+      "is_new": false,
+      "is_keyframe": false,
+      "node_name": null,
+      "scene_description": null,
+      "semantic_labels": []
+    },
+    {
+      "timestamp": "1769396727925",
+      "node_id": 2,
+      "is_new": true,
+      "is_keyframe": true,
+      "node_name": "沙发区-黑椅子旁",
+      "scene_description": "场景：办公室休息区\n形状：直走廊\n前方：尽头是墙\n左侧：灰色沙发区\n右侧：红色灭火器1个\n可见物体：灰色沙发2个，白色茶几1个，黑色桌子1个\n独特标记：墙上绿色箭头指示标志",
+      "semantic_labels": [
+        "走廊中段",
+        "沙发区入口",
+        "灰沙发",
+        "黑椅子",
+        "绿植1盆",
+        "安全出口标志"
+      ]
+    },
+    {
+      "timestamp": "1769396728675",
+      "node_id": 0,
+      "is_new": false,
+      "is_keyframe": false,
+      "node_name": null,
+      "scene_description": null,
+      "semantic_labels": []
+    },
+    {
+      "timestamp": "1769396729274",
+      "node_id": 0,
+      "is_new": false,
+      "is_keyframe": false,
+      "node_name": null,
+      "scene_description": null,
+      "semantic_labels": []
+    },
+    {
+      "timestamp": "1769396730023",
+      "node_id": 3,
+      "is_new": true,
+      "is_keyframe": true,
+      "node_name": "走廊-红灭火器前",
+      "scene_description": "场景：休息区\n形状：U形走廊\n前方：尽头是白色墙面\n左侧：左侧有灰色沙发区和白色桌子\n右侧：右侧有灰色沙发区和白色桌子\n可见物体：白色桌子1张，灰色沙发2个，白色椅子2把\n独特标记：没有特别标记",
+      "semantic_labels": [
+        "走廊中段",
+        "沙发区入口",
+        "灰沙发",
+        "红灭火器",
+        "绿植2盆",
+        "安全出口标志"
+      ]
+    }
+  ],
+  "stats": {
+    "total_nodes": 4,
+    "keyframe_nodes": 4,
+    "total_edges": 2,
+    "vpr_size": 4,
+    "current_node": 3
+  },
+  "unique_names": [
+    "走廊-玻璃门旁",
+    "沙发区-黑椅子旁",
+    "走廊-红灭火器前",
+    "走廊-21号门前"
+  ],
+  "unique_descriptions_count": 4,
+  "unique_labels_count": 13,
+  "label_frequency": {
+    "走廊中段": 4,
+    "安全出口标志": 3,
+    "红灭火器": 2,
+    "黑椅子": 2,
+    "绿植2盆": 2,
+    "沙发区入口": 2,
+    "灰沙发": 2,
+    "玻璃门旁": 1,
+    "白墙": 1,
+    "蓝图案": 1,
+    "绿安全出口标志": 1,
+    "21号门旁": 1,
+    "绿植1盆": 1
+  }
+}

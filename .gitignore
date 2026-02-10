@@ -184,3 +184,8 @@ internnav/model/basemodel/LongCLIP/
 *.zip
 *.h5
 *.hdf5
+
+# Data & cache
+merged_labeled_data/
+deploy/memory_nav/memory_cache*
+deploy/logs/

@@ -127,7 +127,7 @@ async def run_test():
     # 完整回放
     # ====================================================================
     print(f"\n{'='*70}")
-    print(f"▶️  开始回放: {TASK}")
+    print(f"▶️  开始任务: {TASK}")
     print(f"{'='*70}\n")
 
     sample_indices = list(range(0, total_frames, SAMPLE_STEP))

@@ -1201,32 +1201,32 @@ HTML_TEMPLATE = '''
                     <div id="start-vpr" class="tab-content active">
                         <div class="robot-diagram">
                             <div class="robot-icon">🤖</div>
-                            <div>cam1: 前右37.5° | cam2: 前左37.5° | cam3: 后左37.5° | cam4: 后右37.5°</div>
+                            <div>cam1: 左前37.5° | cam2: 右前37.5° | cam3: 右后37.5° | cam4: 左后37.5°</div>
                         </div>
                         <div class="camera-grid">
-                            <div class="camera-slot" id="slot-cam2" onclick="document.getElementById('file-cam2').click()">
-                                <input type="file" id="file-cam2" accept="image/*" onchange="onCamFileChange(2, this)">
-                                <div class="cam-label">📷 Camera 2</div>
-                                <div class="cam-icon">📷</div>
-                                <div class="cam-angle">前左 37.5°</div>
-                            </div>
                             <div class="camera-slot" id="slot-cam1" onclick="document.getElementById('file-cam1').click()">
                                 <input type="file" id="file-cam1" accept="image/*" onchange="onCamFileChange(1, this)">
                                 <div class="cam-label">📷 Camera 1</div>
                                 <div class="cam-icon">📷</div>
-                                <div class="cam-angle">前右 37.5°</div>
+                                <div class="cam-angle">左前 37.5°</div>
                             </div>
-                            <div class="camera-slot" id="slot-cam3" onclick="document.getElementById('file-cam3').click()">
-                                <input type="file" id="file-cam3" accept="image/*" onchange="onCamFileChange(3, this)">
-                                <div class="cam-label">📷 Camera 3</div>
+                            <div class="camera-slot" id="slot-cam2" onclick="document.getElementById('file-cam2').click()">
+                                <input type="file" id="file-cam2" accept="image/*" onchange="onCamFileChange(2, this)">
+                                <div class="cam-label">📷 Camera 2</div>
                                 <div class="cam-icon">📷</div>
-                                <div class="cam-angle">后左 37.5°</div>
+                                <div class="cam-angle">右前 37.5°</div>
                             </div>
                             <div class="camera-slot" id="slot-cam4" onclick="document.getElementById('file-cam4').click()">
                                 <input type="file" id="file-cam4" accept="image/*" onchange="onCamFileChange(4, this)">
                                 <div class="cam-label">📷 Camera 4</div>
                                 <div class="cam-icon">📷</div>
-                                <div class="cam-angle">后右 37.5°</div>
+                                <div class="cam-angle">左后 37.5°</div>
+                            </div>
+                            <div class="camera-slot" id="slot-cam3" onclick="document.getElementById('file-cam3').click()">
+                                <input type="file" id="file-cam3" accept="image/*" onchange="onCamFileChange(3, this)">
+                                <div class="cam-label">📷 Camera 3</div>
+                                <div class="cam-icon">📷</div>
+                                <div class="cam-angle">右后 37.5°</div>
                             </div>
                         </div>
                         <div style="display: flex; gap: 6px; margin-top: 8px">

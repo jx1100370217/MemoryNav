@@ -291,6 +291,12 @@ class MemoryBuilder:
         # 构建边
         edges = []
         for next_pos in next_positions:
+            # angle 为空字符串时跳过该边
+            angle_raw = next_pos.get('angle', '')
+            if angle_raw == '' or angle_raw is None:
+                logger.debug(f"[MemoryBuilder] 跳过无角度的边: {node_id} -> {next_pos.get('position_id', '?')}")
+                continue
+            
             pixel_pos = next_pos.get('pixel_position', '0.5,0.5')
             if isinstance(pixel_pos, str):
                 x, y = map(float, pixel_pos.split(','))
@@ -304,7 +310,7 @@ class MemoryBuilder:
                 target_node_id=str(next_pos.get('position_id', '')),
                 target_node_name=next_pos.get('position_name', ''),
                 target_node_name_eng=next_pos.get('position_name_eng', ''),
-                angle=float(next_pos.get('angle', 0)),
+                angle=float(angle_raw),
                 pixel_position=(x, y),
                 stitch_image_path=stitch_path
             )

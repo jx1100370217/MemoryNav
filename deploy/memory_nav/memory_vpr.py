@@ -9,10 +9,10 @@ MemoryNav v2.1 - 视觉位置识别 (VPR) - 循环移位匹配版
 - 每种shift对应特定的朝向偏移
 
 相机布局（鱼眼等角投影, HFOV=190°）：
-- camera_1: 前方偏右37.5° → +37.5°
-- camera_2: 前方偏左37.5° → -37.5°
-- camera_3: 后方偏左37.5° → -142.5° (217.5°)
-- camera_4: 后方偏右37.5° → +142.5°
+- camera_1: 左前37.5° → -37.5°
+- camera_2: 右前37.5° → +37.5°
+- camera_3: 右后37.5° → +142.5°
+- camera_4: 左后37.5° → -142.5° (217.5°)
 """
 
 import logging
@@ -41,10 +41,10 @@ class MemoryVPR:
     
     # 相机中心方位角（机器人坐标系，正前方0°，顺时针为正）
     CAMERA_ANGLES = {
-        'camera_1': 37.5,    # 前右
-        'camera_2': -37.5,   # 前左
-        'camera_3': -142.5,  # 后左 (= 217.5°)
-        'camera_4': 142.5,   # 后右
+        'camera_1': -37.5,   # 左前
+        'camera_2': 37.5,    # 右前
+        'camera_3': 142.5,   # 右后
+        'camera_4': -142.5,  # 左后 (= 217.5°)
     }
     
     # 循环移位对应的朝向偏移（度，顺时针为正）
@@ -52,12 +52,12 @@ class MemoryVPR:
     # 偏移 = CAMERA_ANGLES[ORDER[0]] - CAMERA_ANGLES[ORDER[k]]
     SHIFT_HEADING_OFFSETS = [
         0.0,     # shift=0: 同向
-        75.0,    # shift=1: 顺时针旋转75° (cam2→cam1方向)
-        180.0,   # shift=2: 掉头180°
-        -105.0,  # shift=3: 逆时针旋转105° (= 顺时针255°)
+        -75.0,   # shift=1: 逆时针旋转75° (cam1→cam2方向)
+        -180.0,  # shift=2: 掉头180°
+        105.0,   # shift=3: 顺时针旋转105°
     ]
     
-    def __init__(self, feature_dim: int = 768, similarity_threshold: float = 0.97):
+    def __init__(self, feature_dim: int = 768, similarity_threshold: float = 0.90):
         self.feature_dim = feature_dim
         self.similarity_threshold = similarity_threshold
         

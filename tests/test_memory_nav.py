@@ -175,19 +175,20 @@ def main():
     # ==============================================================
     # 0. 加载模型和记忆
     # ==============================================================
-    header("0. 加载 LongCLIP + 记忆图 + VPR")
+    header("0. 加载 SelaVPR++ + 记忆图 + VPR")
 
     t0 = time.time()
 
     from deploy.memory_nav import (
-        MemoryNavigator, MemoryBuilder, LongCLIPExtractor,
+        MemoryNavigator, MemoryBuilder,
         MemoryGraph, MemoryVPR,
         NavigationPlan, NavigationStep, VPRResult
     )
 
-    info("正在初始化 LongCLIPExtractor (feature_dim=512)...")
-    extractor = LongCLIPExtractor(feature_dim=512, device="cuda:0")
-    info(f"LongCLIPExtractor 加载完成: {time.time()-t0:.1f}s")
+    info("正在初始化 SelaVPR++ 特征提取器...")
+    from deploy.memory_nav.vpr_factory import create_vpr_extractor
+    extractor, _, _ = create_vpr_extractor("selavpr", device="cuda:0")
+    info(f"SelaVPR++ 加载完成: {time.time()-t0:.1f}s")
 
     info("正在初始化 MemoryNavigator...")
     navigator = MemoryNavigator(

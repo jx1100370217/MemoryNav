@@ -71,7 +71,7 @@ class SelaVPRExtractor:
     }
 
     def __init__(self,
-                 backbone: str = "dinov2-base",
+                 backbone: str = "dinov2-large",
                  aggregation: str = "gem",
                  use_hashing: bool = False,
                  use_rerank: bool = False,

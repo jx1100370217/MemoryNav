@@ -42,7 +42,7 @@ from internnav.agent.internvla_n1_agent_realworld import InternVLAN1AsyncAgent
 
 # 记忆导航模块
 from deploy.memory_nav import (
-    MemoryNavigator, MemoryBuilder, LongCLIPExtractor,
+    MemoryNavigator, MemoryBuilder,
     MemoryGraph, MemoryVPR,
     NavigationPlan, NavigationStep, VPRResult
 )
@@ -240,7 +240,7 @@ def init_agent(model_path=None, device=None):
     return agent
 
 
-def init_memory_navigator(device: str = "cuda:0", vpr_method: str = "anyloc") -> Optional[MemoryNavigator]:
+def init_memory_navigator(device: str = "cuda:0", vpr_method: str = "selavpr") -> Optional[MemoryNavigator]:
     """
     初始化记忆导航器
 
@@ -251,7 +251,7 @@ def init_memory_navigator(device: str = "cuda:0", vpr_method: str = "anyloc") ->
         logger.info("="*80)
         logger.info("[Memory] 开始初始化记忆导航模块...")
 
-        # 创建 VPR 导航器 (支持: anyloc, megaloc, effovpr, selavpr, longclip)
+        # 创建 VPR 导航器 (支持: anyloc, megaloc, effovpr, selavpr)
         navigator = MemoryNavigator(
             vpr_method=vpr_method,
             device=device
@@ -510,7 +510,7 @@ def decode_camera_images(message_data: dict) -> Optional[Dict[str, np.ndarray]]:
     Returns:
         {'camera_1': ndarray(BGR), ...} 或 None（如果缺少相机图）
     
-    注意: LongCLIPExtractor.extract() 假设输入为 BGR 格式（会内部做 BGR→RGB 转换），
+    注意: 特征提取器假设输入为 BGR 格式（会内部做 BGR→RGB 转换），
     因此这里需要将 PIL 解码的 RGB 图像转换为 BGR，以保持与 memory_visualization_server.py
     中 cv2.imdecode（输出 BGR）的行为一致。
     """
@@ -1593,8 +1593,8 @@ async def main():
     logger.info("🚀 启动 InternNav WebSocket服务器 (带记忆导航)...")
     logger.info(f"📂 工作目录: {os.getcwd()}")
 
-    # 初始化记忆导航模块 (通过 VPR_METHOD 环境变量选择: anyloc/megaloc/effovpr/selavpr)
-    vpr_method = os.environ.get('VPR_METHOD', 'anyloc')
+    # 初始化记忆导航模块 (通过 VPR_METHOD 环境变量选择: selavpr(默认)/megaloc/effovpr/anyloc)
+    vpr_method = os.environ.get('VPR_METHOD', 'selavpr')
     logger.info(f"📊 VPR 方法: {vpr_method}")
     memory_navigator = init_memory_navigator(device="cuda:0", vpr_method=vpr_method)
 

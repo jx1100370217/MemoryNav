@@ -23,7 +23,7 @@ from .memory_models import (
 )
 from .memory_graph import MemoryGraph
 from .memory_vpr import MemoryVPR
-from .memory_builder import MemoryBuilder, LongCLIPExtractor
+from .memory_builder import MemoryBuilder
 from .anyloc_extractor import AnyLocExtractor
 from .vpr_factory import create_vpr_extractor
 
@@ -47,7 +47,7 @@ class MemoryNavigator:
                  feature_extractor = None,
                  feature_dim: int = 768,
                  device: str = "cuda:0",
-                 vpr_method: str = "anyloc",
+                 vpr_method: str = "selavpr",
                  anyloc_config: dict = None):
         """
         初始化导航器
@@ -58,7 +58,7 @@ class MemoryNavigator:
             feature_extractor: 特征提取器
             feature_dim: 特征维度
             device: 计算设备
-            vpr_method: VPR方法 'anyloc', 'megaloc', 'effovpr', 'selavpr', 'longclip'
+            vpr_method: VPR方法 'anyloc', 'megaloc', 'effovpr', 'selavpr'
             anyloc_config: AnyLoc配置 (详见 MemoryBuilder)
         """
         self.graph = graph

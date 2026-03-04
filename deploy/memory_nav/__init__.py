@@ -27,7 +27,7 @@ from .memory_models import (
 )
 from .memory_graph import MemoryGraph
 from .memory_vpr import MemoryVPR
-from .memory_builder import MemoryBuilder, LongCLIPExtractor
+from .memory_builder import MemoryBuilder
 from .anyloc_extractor import AnyLocExtractor
 from .megaloc_extractor import MegaLocExtractor
 from .effovpr_extractor import EffoVPRExtractor
@@ -49,7 +49,6 @@ __all__ = [
     "MemoryBuilder",
     "MemoryNavigator",
     # 特征提取
-    "LongCLIPExtractor",
     "AnyLocExtractor",
     "MegaLocExtractor",
     "EffoVPRExtractor",

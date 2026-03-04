@@ -43,7 +43,7 @@ class FeatureExtractor:
     """
     特征提取器基类
     
-    可以被替换为 LongCLIP、CLIP、DinoV2 等不同的特征提取器
+    可以被替换为不同的特征提取器
     """
     
     def __init__(self, feature_dim: int = 768, device: str = "cuda:0"):
@@ -83,75 +83,6 @@ class FeatureExtractor:
         return np.array(features)
 
 
-class LongCLIPExtractor(FeatureExtractor):
-    """
-    LongCLIP 特征提取器
-    
-    使用 LongCLIP 模型提取视觉特征
-    """
-    
-    def __init__(self, model_path: str = None, feature_dim: int = 768, device: str = "cuda:0"):
-        self.model_path = model_path
-        super().__init__(feature_dim, device)
-    
-    def _load_model(self):
-        """加载 LongCLIP 模型"""
-        try:
-            import torch
-            import sys
-            
-            # 尝试导入 LongCLIP
-            longclip_path = "/home/ubuntu/Disk/codes/jianxiong/MemoryNav/internnav/model/basemodel/LongCLIP"
-            if os.path.exists(longclip_path):
-                sys.path.insert(0, longclip_path)
-            
-            import sys; sys.path.insert(0, "/home/ubuntu/Disk/codes/jianxiong/MemoryNav"); from internnav.model.basemodel.LongCLIP.model import longclip
-            
-            # 默认模型路径
-            if self.model_path is None:
-                self.model_path = "/home/ubuntu/Disk/codes/jianxiong/MemoryNav/checkpoints/longclip-B.pt"
-            
-            if os.path.exists(self.model_path):
-                self.model, self.preprocess = longclip.load(self.model_path, device=self.device)
-                self.model.eval()
-                logger.info(f"[LongCLIP] 模型加载成功: {self.model_path}")
-            else:
-                logger.warning(f"[LongCLIP] 模型文件不存在: {self.model_path}，使用随机特征")
-                self.model = None
-                
-        except Exception as e:
-            logger.warning(f"[LongCLIP] 模型加载失败: {e}，使用随机特征")
-            self.model = None
-    
-    def extract(self, image: np.ndarray) -> np.ndarray:
-        """提取 LongCLIP 特征"""
-        if self.model is None:
-            return super().extract(image)
-        
-        try:
-            import torch
-            from PIL import Image as PILImage
-            
-            # 转换为 PIL Image
-            if image.shape[2] == 3:
-                pil_image = PILImage.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-            else:
-                pil_image = PILImage.fromarray(image)
-            
-            # 预处理
-            image_input = self.preprocess(pil_image).unsqueeze(0).to(self.device)
-            
-            # 提取特征
-            with torch.no_grad():
-                features = self.model.encode_image(image_input)
-                features = features / features.norm(dim=-1, keepdim=True)
-            
-            return features.cpu().numpy().flatten().astype(np.float32)
-            
-        except Exception as e:
-            logger.warning(f"[LongCLIP] 特征提取失败: {e}")
-            return super().extract(image)
-
 
 class MemoryBuilder:
     """
@@ -164,7 +95,7 @@ class MemoryBuilder:
                  feature_extractor: FeatureExtractor = None,
                  feature_dim: int = 768,
                  device: str = "cuda:0",
-                 vpr_method: str = "anyloc",
+                 vpr_method: str = "selavpr",
                  anyloc_config: Dict = None):
         """
         初始化构建器
@@ -173,7 +104,7 @@ class MemoryBuilder:
             feature_extractor: 特征提取器，None则根据vpr_method自动选择
             feature_dim: 特征维度
             device: 计算设备
-            vpr_method: VPR方法 'anyloc', 'megaloc', 'effovpr', 'selavpr', 'longclip'
+            vpr_method: VPR方法 'anyloc', 'megaloc', 'effovpr', 'selavpr'
             anyloc_config: AnyLoc配置参数 (可选)
                 - dino_model: DINOv2模型名 (默认 'dinov2_vitb14')
                 - desc_facet: 特征facet (默认 'value')
@@ -189,7 +120,7 @@ class MemoryBuilder:
         if feature_extractor is not None:
             self.extractor = feature_extractor
             self.feature_dim = feature_dim
-            order_invariant = (vpr_method != 'longclip')
+            order_invariant = (True)
         else:
             self.extractor, self.feature_dim, order_invariant = create_vpr_extractor(
                 vpr_method=vpr_method, device=device, config=anyloc_config)

@@ -8,7 +8,6 @@ VPR 提取器工厂
 - megaloc: DINOv2 + Optimal Transport (MegaLoc, CVPR 2025)
 - effovpr: DINOv2 多层 GeM 池化 (EffoVPR, 2024)
 - selavpr: DINOv2 + MultiConv Adapter (SelaVPR++, T-PAMI 2025)
-- longclip: LongCLIP 视觉编码器
 """
 
 import logging
@@ -29,7 +28,6 @@ def create_vpr_extractor(vpr_method: str,
             - 'megaloc': MegaLoc (DINOv2 + OT聚合, 8448D)
             - 'effovpr': EffoVPR (DINOv2 多层GeM, 768D)
             - 'selavpr': SelaVPR++ (DINOv2 + MultiConv Adapter)
-            - 'longclip': LongCLIP
         device: 计算设备
         config: 方法特定配置参数
 
@@ -77,7 +75,7 @@ def create_vpr_extractor(vpr_method: str,
     elif vpr_method == 'selavpr':
         from .selavpr_extractor import SelaVPRExtractor
         extractor = SelaVPRExtractor(
-            backbone=cfg.get('backbone', 'dinov2-base'),
+            backbone=cfg.get('backbone', 'dinov2-large'),
             aggregation=cfg.get('aggregation', 'gem'),
             use_hashing=cfg.get('use_hashing', False),
             use_rerank=cfg.get('use_rerank', False),
@@ -86,12 +84,7 @@ def create_vpr_extractor(vpr_method: str,
         )
         return extractor, extractor.feature_dim, True
 
-    elif vpr_method == 'longclip':
-        from .memory_builder import LongCLIPExtractor
-        feature_dim = cfg.get('feature_dim', 768)
-        extractor = LongCLIPExtractor(feature_dim=feature_dim, device=device)
-        return extractor, feature_dim, False
 
     else:
         raise ValueError(f"不支持的 VPR 方法: {vpr_method}. "
-                         f"支持: anyloc, megaloc, effovpr, selavpr, longclip")
+                         f"支持: anyloc, megaloc, effovpr, selavpr")

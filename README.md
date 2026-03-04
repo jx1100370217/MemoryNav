@@ -23,7 +23,7 @@ MemoryNav 是一个面向移动机器人的视觉记忆导航系统。系统通�
 
 ### 核心能力
 
-- **🔍 多方案 VPR 定位**：支持 5 种 SOTA 视觉位置识别方案，通过参数一键切换
+- **🔍 多方案 VPR 定位**：支持 4 种 SOTA 视觉位置识别方案，通过参数一键切换
 - **🗺️ 拓扑记忆图**：自动从标注数据构建节点-边拓扑图，支持最短路径规划
 - **🔄 循环移位匹配**：4 相机循环移位算法，支持任意朝向下的定位与偏转角估计
 - **🤖 VLA 兜底推理**：VPR 丢失时自动切换 InternVLA 模型继续导航
@@ -66,15 +66,14 @@ MemoryNav/
 
 ## ✨ VPR 方案对比
 
-MemoryNav v1.2.0 支持 **5 种** VPR 方案，通过 `vpr_method` 参数或 `VPR_METHOD` 环境变量切换：
+MemoryNav v1.2.0 支持 **4 种** VPR 方案，通过 `vpr_method` 参数或 `VPR_METHOD` 环境变量切换：
 
 | 方案 | 参数值 | 发表 | 特征维度 | Backbone | 特点 |
 |------|--------|------|---------|----------|------|
 | **MegaLoc** | `megaloc` | CVPR 2025 | 8448D | DINOv2-B + OT聚合 | 综合性能最强，多数据集 SOTA |
-| **SelaVPR++** | `selavpr` | T-PAMI 2025 | 2048/4096D | DINOv2-B/L + MultiConv | 参数高效适配，支持哈希重排 |
+| **SelaVPR++** ⭐ | `selavpr` | T-PAMI 2025 | 2048/4096D | DINOv2-B/L + MultiConv | 参数高效适配，支持哈希重排 |
 | **EffoVPR** | `effovpr` | arXiv 2024 | 768D | DINOv2-B 多层GeM | 超紧凑特征，适合实时场景 |
 | **AnyLoc** | `anyloc` | RA-L 2023 | 6144D | DINOv2-B + VLAD | 经典稳定，默认方案 |
-| **LongCLIP** | `longclip` | - | 768D | LongCLIP | 兼容旧版本 |
 
 ---
 
@@ -96,7 +95,7 @@ pip install -e .
 python -c "
 from deploy.memory_nav import MemoryBuilder
 
-builder = MemoryBuilder(vpr_method='anyloc', device='cuda:0')
+builder = MemoryBuilder(vpr_method='selavpr', device='cuda:0')
 graph, vpr = builder.build_from_directory(
     'path/to/merged_labeled_data',
     save_path='memory_cache.pkl'
@@ -108,17 +107,17 @@ print(f'构建完成: {graph.get_stats()}')
 ### 启动导航服务
 
 ```bash
-# 默认使用 AnyLoc
+# 默认使用 SelaVPR++ (DINOv2-Large, 4096D)
 python deploy/ws_proxy_with_memory.py
 
-# 使用 MegaLoc（推荐）
+# 使用 MegaLoc
 VPR_METHOD=megaloc python deploy/ws_proxy_with_memory.py
 
 # 使用 EffoVPR（轻量快速）
 VPR_METHOD=effovpr python deploy/ws_proxy_with_memory.py
 
-# 使用 SelaVPR++
-VPR_METHOD=selavpr python deploy/ws_proxy_with_memory.py
+# 使用 AnyLoc
+VPR_METHOD=anyloc python deploy/ws_proxy_with_memory.py
 ```
 
 ### Python API

@@ -23,7 +23,7 @@ MemoryNav is a visual memory navigation system for mobile robots. It captures im
 
 ### Key Features
 
-- **🔍 Multi-Method VPR**: 5 state-of-the-art VPR backends, switchable via a single parameter
+- **🔍 Multi-Method VPR**: 4 state-of-the-art VPR backends, switchable via a single parameter
 - **🗺️ Topological Memory Graph**: Auto-built from labeled data with shortest-path planning
 - **🔄 Cyclic Shift Matching**: 4-camera cyclic shift algorithm for orientation-invariant localization
 - **🤖 VLA Fallback**: Automatic fallback to InternVLA when VPR loses track
@@ -64,15 +64,14 @@ MemoryNav/
 
 ## ✨ VPR Methods
 
-MemoryNav v1.2.0 supports **5 VPR methods**, switchable via `vpr_method` parameter or `VPR_METHOD` environment variable:
+MemoryNav v1.2.0 supports **4 VPR methods**, switchable via `vpr_method` parameter or `VPR_METHOD` environment variable:
 
 | Method | Parameter | Venue | Feature Dim | Backbone | Highlights |
 |--------|-----------|-------|-------------|----------|------------|
 | **MegaLoc** | `megaloc` | CVPR 2025 | 8448D | DINOv2-B + OT | Best overall, SOTA on most benchmarks |
-| **SelaVPR++** | `selavpr` | T-PAMI 2025 | 2048/4096D | DINOv2-B/L + MultiConv | Parameter-efficient, hashing support |
+| **SelaVPR++** ⭐ | `selavpr` | T-PAMI 2025 | 2048/4096D | DINOv2-B/L + MultiConv | Parameter-efficient, hashing support |
 | **EffoVPR** | `effovpr` | arXiv 2024 | 768D | DINOv2-B multi-layer GeM | Ultra-compact, real-time friendly |
 | **AnyLoc** | `anyloc` | RA-L 2023 | 6144D | DINOv2-B + VLAD | Classic and stable, default method |
-| **LongCLIP** | `longclip` | - | 768D | LongCLIP | Legacy compatibility |
 
 ---
 
@@ -92,7 +91,7 @@ pip install -e .
 ```python
 from deploy.memory_nav import MemoryBuilder
 
-builder = MemoryBuilder(vpr_method='anyloc', device='cuda:0')
+builder = MemoryBuilder(vpr_method='selavpr', device='cuda:0')
 graph, vpr = builder.build_from_directory(
     'path/to/merged_labeled_data',
     save_path='memory_cache.pkl'
@@ -103,17 +102,17 @@ print(f'Built: {graph.get_stats()}')
 ### Launch Navigation Service
 
 ```bash
-# Default: AnyLoc
+# Default: SelaVPR++ (DINOv2-Large, 4096D)
 python deploy/ws_proxy_with_memory.py
 
-# MegaLoc (recommended)
+# MegaLoc
 VPR_METHOD=megaloc python deploy/ws_proxy_with_memory.py
 
 # EffoVPR (lightweight)
 VPR_METHOD=effovpr python deploy/ws_proxy_with_memory.py
 
-# SelaVPR++
-VPR_METHOD=selavpr python deploy/ws_proxy_with_memory.py
+# AnyLoc
+VPR_METHOD=anyloc python deploy/ws_proxy_with_memory.py
 ```
 
 ### Python API

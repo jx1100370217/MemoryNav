@@ -4,7 +4,6 @@
 # 
 # 用法:
 #   bash deploy/build_memory.sh                        # 默认AnyLoc VLAD
-#   bash deploy/build_memory.sh --method longclip      # 使用LongCLIP
 #   bash deploy/build_memory.sh --method anyloc --agg gem  # AnyLoc GeM
 #   bash deploy/build_memory.sh --help
 # ============================================================
@@ -16,7 +15,7 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # 默认参数
 DATA_DIR="${PROJECT_DIR}/merged_labeled_data"
 SAVE_PATH="${SCRIPT_DIR}/memory_nav/memory_cache"
-VPR_METHOD="anyloc"
+VPR_METHOD="selavpr"
 DINO_MODEL="dinov2_vitb14"
 AGG_MODE="vlad"
 NUM_CLUSTERS=8
@@ -31,7 +30,7 @@ usage() {
     echo "选项:"
     echo "  --data-dir DIR       标注数据目录 (默认: ${DATA_DIR})"
     echo "  --save-path PATH     保存路径前缀 (默认: ${SAVE_PATH})"
-    echo "  --method METHOD      VPR方法: anyloc / longclip (默认: ${VPR_METHOD})"
+    echo "  --method METHOD      VPR方法: selavpr/megaloc/effovpr/anyloc (默认: ${VPR_METHOD})"
     echo "  --dino-model MODEL   DINOv2模型: dinov2_vits14/vitb14/vitl14/vitg14 (默认: ${DINO_MODEL})"
     echo "  --agg MODE           聚合模式: vlad / gem (默认: ${AGG_MODE})"
     echo "  --num-clusters N     VLAD聚类数 (默认: ${NUM_CLUSTERS})"

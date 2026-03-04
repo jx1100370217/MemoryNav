@@ -137,31 +137,19 @@ class SelaVPRExtractor:
             logger.error(f"[SelaVPR++] 模型加载失败: {e}")
             raise
 
-    def _preprocess_image(self, image: np.ndarray) -> 'torch.Tensor':
-        """预处理图像"""
+    def _preprocess_image(self, image: np.ndarray) -> "torch.Tensor":
+        """预处理图像 - SelaVPR++ 要求固定 518x518 正方形输入"""
         if CV2_AVAILABLE and len(image.shape) == 3 and image.shape[2] == 3:
             rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         else:
             rgb = image
         pil_img = PILImage.fromarray(rgb)
-
         img_pt = self.base_tf(pil_img).to(self.device)
-
-        c, h, w = img_pt.shape
-        if max(h, w) > self.max_img_size:
-            if h >= w:
-                w_new = int(w * self.max_img_size / h)
-                h_new = self.max_img_size
-            else:
-                h_new = int(h * self.max_img_size / w)
-                w_new = self.max_img_size
-            img_pt = tvf.functional.resize(img_pt, (h_new, w_new),
-                                            interpolation=tvf.InterpolationMode.BICUBIC)
-            c, h, w = img_pt.shape
-
-        h_new, w_new = (h // 14) * 14, (w // 14) * 14
-        img_pt = tvf.CenterCrop((h_new, w_new))(img_pt)[None, ...]
-        return img_pt
+        # SelaVPR++ adapter 要求 patch grid 为正方形
+        # 强制 resize 到 518x518 (37*14)
+        img_pt = tvf.functional.resize(img_pt, (518, 518),
+                                        interpolation=tvf.InterpolationMode.BICUBIC)
+        return img_pt[None, ...]
 
     def extract(self, image: np.ndarray) -> np.ndarray:
         """

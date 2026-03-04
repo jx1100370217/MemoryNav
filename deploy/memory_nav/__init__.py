@@ -28,6 +28,11 @@ from .memory_models import (
 from .memory_graph import MemoryGraph
 from .memory_vpr import MemoryVPR
 from .memory_builder import MemoryBuilder, LongCLIPExtractor
+from .anyloc_extractor import AnyLocExtractor
+from .megaloc_extractor import MegaLocExtractor
+from .effovpr_extractor import EffoVPRExtractor
+from .selavpr_extractor import SelaVPRExtractor
+from .vpr_factory import create_vpr_extractor
 from .memory_navigator import MemoryNavigator
 
 __version__ = "2.0.0"
@@ -45,4 +50,9 @@ __all__ = [
     "MemoryNavigator",
     # 特征提取
     "LongCLIPExtractor",
+    "AnyLocExtractor",
+    "MegaLocExtractor",
+    "EffoVPRExtractor",
+    "SelaVPRExtractor",
+    "create_vpr_extractor",
 ]

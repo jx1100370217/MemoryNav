@@ -24,6 +24,8 @@ from .memory_models import (
 from .memory_graph import MemoryGraph
 from .memory_vpr import MemoryVPR
 from .memory_builder import MemoryBuilder, LongCLIPExtractor
+from .anyloc_extractor import AnyLocExtractor
+from .vpr_factory import create_vpr_extractor
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +46,9 @@ class MemoryNavigator:
                  vpr: MemoryVPR = None,
                  feature_extractor = None,
                  feature_dim: int = 768,
-                 device: str = "cuda:0"):
+                 device: str = "cuda:0",
+                 vpr_method: str = "anyloc",
+                 anyloc_config: dict = None):
         """
         初始化导航器
         
@@ -54,17 +58,21 @@ class MemoryNavigator:
             feature_extractor: 特征提取器
             feature_dim: 特征维度
             device: 计算设备
+            vpr_method: VPR方法 'anyloc', 'megaloc', 'effovpr', 'selavpr', 'longclip'
+            anyloc_config: AnyLoc配置 (详见 MemoryBuilder)
         """
         self.graph = graph
         self.vpr = vpr
-        self.feature_dim = feature_dim
         self.device = device
+        self.vpr_method = vpr_method
         
         # 特征提取器
-        if feature_extractor is None:
-            self.extractor = LongCLIPExtractor(feature_dim=feature_dim, device=device)
-        else:
+        if feature_extractor is not None:
             self.extractor = feature_extractor
+            self.feature_dim = feature_dim
+        else:
+            self.extractor, self.feature_dim, _ = create_vpr_extractor(
+                vpr_method=vpr_method, device=device, config=anyloc_config)
         
         # 当前导航状态
         self.current_node_id: Optional[str] = None
@@ -90,7 +98,8 @@ class MemoryNavigator:
         builder = MemoryBuilder(
             feature_extractor=self.extractor,
             feature_dim=self.feature_dim,
-            device=self.device
+            device=self.device,
+            vpr_method=self.vpr_method
         )
         
         graph_path = path if path.endswith('.pkl') else path + "_graph.pkl"

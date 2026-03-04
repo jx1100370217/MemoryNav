@@ -33,6 +33,8 @@ except ImportError:
 from .memory_models import MemoryNode, MemoryEdge
 from .memory_graph import MemoryGraph
 from .memory_vpr import MemoryVPR
+from .anyloc_extractor import AnyLocExtractor
+from .vpr_factory import create_vpr_extractor
 
 logger = logging.getLogger(__name__)
 
@@ -161,29 +163,42 @@ class MemoryBuilder:
     def __init__(self, 
                  feature_extractor: FeatureExtractor = None,
                  feature_dim: int = 768,
-                 device: str = "cuda:0"):
+                 device: str = "cuda:0",
+                 vpr_method: str = "anyloc",
+                 anyloc_config: Dict = None):
         """
         初始化构建器
         
         Args:
-            feature_extractor: 特征提取器，None则使用默认的LongCLIP
+            feature_extractor: 特征提取器，None则根据vpr_method自动选择
             feature_dim: 特征维度
             device: 计算设备
+            vpr_method: VPR方法 'anyloc', 'megaloc', 'effovpr', 'selavpr', 'longclip'
+            anyloc_config: AnyLoc配置参数 (可选)
+                - dino_model: DINOv2模型名 (默认 'dinov2_vitb14')
+                - desc_facet: 特征facet (默认 'value')
+                - agg_mode: 聚合模式 'vlad'/'gem' (默认 'vlad')
+                - num_clusters: VLAD聚类数 (默认 32)
+                - domain: 预训练域 (默认 'indoor')
+                - max_img_size: 最大图像边长 (默认 630)
         """
-        self.feature_dim = feature_dim
+        self.vpr_method = vpr_method
         self.device = device
         
         # 特征提取器
-        if feature_extractor is None:
-            self.extractor = LongCLIPExtractor(feature_dim=feature_dim, device=device)
-        else:
+        if feature_extractor is not None:
             self.extractor = feature_extractor
+            self.feature_dim = feature_dim
+            order_invariant = (vpr_method != 'longclip')
+        else:
+            self.extractor, self.feature_dim, order_invariant = create_vpr_extractor(
+                vpr_method=vpr_method, device=device, config=anyloc_config)
         
         # 记忆图和VPR
         self.graph = MemoryGraph()
-        self.vpr = MemoryVPR(feature_dim=feature_dim)
+        self.vpr = MemoryVPR(feature_dim=self.feature_dim, order_invariant=order_invariant)
         
-        logger.info(f"[MemoryBuilder] 初始化完成: dim={feature_dim}, device={device}")
+        logger.info(f"[MemoryBuilder] 初始化完成: method={vpr_method}, dim={self.feature_dim}, device={device}")
     
     def build_from_directory(self, data_dir: str, 
                              extract_features: bool = True,
@@ -235,6 +250,40 @@ class MemoryBuilder:
                                f"节点 {node.node_id} ({node.node_name}) 构建完成")
             except Exception as e:
                 logger.error(f"[MemoryBuilder] 节点 {node_dir.name} 构建失败: {e}")
+        
+        # 如果使用AnyLoc VLAD模式，训练词汇表并重新提取特征
+        if self.vpr_method == 'anyloc' and hasattr(self.extractor, 'agg_mode'):
+            if self.extractor.agg_mode == 'vlad' and not self.extractor.is_vlad_ready():
+                logger.info("[MemoryBuilder] 训练 AnyLoc VLAD 词汇表...")
+                self.extractor.fit_vlad_vocabulary()
+                # 重新提取所有节点的 VLAD 特征
+                logger.info("[MemoryBuilder] 使用 VLAD 重新提取特征...")
+                self.vpr.clear()
+                for node_id, node in self.graph.nodes.items():
+                    camera_features = {}
+                    features_list = []
+                    for cam_id, img_path in node.camera_images.items():
+                        if os.path.exists(img_path):
+                            try:
+                                image = cv2.imread(img_path) if CV2_AVAILABLE else None
+                                if image is not None:
+                                    feat = self.extractor.extract(image)
+                                    camera_features[cam_id] = feat
+                                    features_list.append(feat)
+                            except Exception as e:
+                                logger.warning(f"[MemoryBuilder] VLAD特征重提取失败 {img_path}: {e}")
+                    if features_list:
+                        fused = np.mean(features_list, axis=0).astype(np.float32)
+                        fused = fused / (np.linalg.norm(fused) + 1e-8)
+                        node.camera_features = camera_features
+                        node.fused_feature = fused
+                    self.vpr.add_node_features(
+                        node_id=node.node_id,
+                        node_name=node.node_name,
+                        node_name_eng=getattr(node, 'node_name_eng', ''),
+                        camera_features=node.camera_features,
+                        fused_feature=node.fused_feature
+                    )
         
         # 保存
         if save_path:
@@ -333,6 +382,17 @@ class MemoryBuilder:
                             features_list.append(feat)
                     except Exception as e:
                         logger.warning(f"[MemoryBuilder] 特征提取失败 {img_path}: {e}")
+            
+            # 对AnyLoc VLAD模式：收集patch描述子用于训练词汇表
+            if self.vpr_method == 'anyloc' and hasattr(self.extractor, 'collect_descriptors'):
+                for cam_id, img_path in camera_images.items():
+                    if os.path.exists(img_path):
+                        try:
+                            image = cv2.imread(img_path) if CV2_AVAILABLE else None
+                            if image is not None:
+                                self.extractor.collect_descriptors(image)
+                        except Exception as e:
+                            pass
             
             # 融合特征（平均）
             if features_list:

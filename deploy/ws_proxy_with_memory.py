@@ -240,7 +240,7 @@ def init_agent(model_path=None, device=None):
     return agent
 
 
-def init_memory_navigator(device: str = "cuda:0") -> Optional[MemoryNavigator]:
+def init_memory_navigator(device: str = "cuda:0", vpr_method: str = "anyloc") -> Optional[MemoryNavigator]:
     """
     初始化记忆导航器
 
@@ -251,16 +251,12 @@ def init_memory_navigator(device: str = "cuda:0") -> Optional[MemoryNavigator]:
         logger.info("="*80)
         logger.info("[Memory] 开始初始化记忆导航模块...")
 
-        # LongCLIP 特征维度 = 512
-        feature_dim = 512
-        extractor = LongCLIPExtractor(feature_dim=feature_dim, device=device)
-        logger.info(f"[Memory] LongCLIP 特征提取器已创建 (dim={feature_dim}, device={device})")
-
+        # 创建 VPR 导航器 (支持: anyloc, megaloc, effovpr, selavpr, longclip)
         navigator = MemoryNavigator(
-            feature_extractor=extractor,
-            feature_dim=feature_dim,
+            vpr_method=vpr_method,
             device=device
         )
+        logger.info(f"[Memory] {vpr_method.upper()} VPR 导航器已创建 (dim={navigator.feature_dim}, device={device})")
 
         # 尝试加载记忆数据
         logger.info(f"[Memory] 记忆缓存路径: {MEMORY_CACHE_PATH}")
@@ -1597,8 +1593,10 @@ async def main():
     logger.info("🚀 启动 InternNav WebSocket服务器 (带记忆导航)...")
     logger.info(f"📂 工作目录: {os.getcwd()}")
 
-    # 初始化记忆导航模块
-    memory_navigator = init_memory_navigator(device="cuda:0")
+    # 初始化记忆导航模块 (通过 VPR_METHOD 环境变量选择: anyloc/megaloc/effovpr/selavpr)
+    vpr_method = os.environ.get('VPR_METHOD', 'anyloc')
+    logger.info(f"📊 VPR 方法: {vpr_method}")
+    memory_navigator = init_memory_navigator(device="cuda:0", vpr_method=vpr_method)
 
     # 启动时加载 InternVLA 模型
     logger.info("正在加载 InternVLA 模型...")

@@ -57,9 +57,11 @@ class MemoryVPR:
         105.0,   # shift=3: 顺时针旋转105°
     ]
     
-    def __init__(self, feature_dim: int = 768, similarity_threshold: float = 0.90):
+    def __init__(self, feature_dim: int = 768, similarity_threshold: float = 0.70,
+                 order_invariant: bool = False):
         self.feature_dim = feature_dim
         self.similarity_threshold = similarity_threshold
+        self.order_invariant = order_invariant
         
         # 多视角独立索引
         self.camera_indices: Dict[str, any] = {}
@@ -299,7 +301,10 @@ class MemoryVPR:
     
     def locate(self, query_features: Dict[str, np.ndarray]) -> Optional[VPRResult]:
         """定位当前位置（主接口）"""
-        result = self.search_multi_view(query_features)
+        if self.order_invariant:
+            result = self.search_order_invariant(query_features)
+        else:
+            result = self.search_multi_view(query_features)
         
         if result:
             logger.info(f"[MemoryVPR] 定位成功: node={result.matched_node_id} "
@@ -387,6 +392,125 @@ class MemoryVPR:
                     best_avg_sim = avg_sim
         
         return best_avg_sim
+
+    def search_order_invariant(self, query_features: Dict[str, np.ndarray],
+                                k: int = None) -> Optional[VPRResult]:
+        """
+        无序多视角匹配（AnyLoc模式）
+        
+        不依赖 camera_id 的对应关系，每张 query 图与 memory 中所有相机比较，
+        通过最优二分匹配找到最佳节点。
+        
+        算法：
+        1. 对每张 query 图，搜索所有 memory 相机索引，得到每个节点在每个 memory 相机上的相似度
+        2. 对每个节点，构建 query图×memory相机 的相似度矩阵
+        3. 用贪心最优匹配（匈牙利算法简化版）找最大总相似度
+        4. 选全局最优节点
+        
+        Args:
+            query_features: 查询特征 {'camera_X': feat, ...}（key不影响匹配）
+            k: 每个相机搜索的top-k数量
+            
+        Returns:
+            VPRResult
+        """
+        if not query_features:
+            return None
+        
+        # 提取所有 query 特征（忽略 key）
+        query_list = list(query_features.values())
+        query_keys = list(query_features.keys())
+        n_query = len(query_list)
+        
+        if k is None:
+            k = max(len(self.camera_node_ids.get(cam, []))
+                    for cam in self.CAMERA_IDS)
+            k = max(k, 1)
+        
+        # 对每个节点，构建 n_query × 4 的相似度矩阵
+        # node_sim_matrices[node_id][(q_idx, mem_cam_idx)] = similarity
+        node_sim_matrices: Dict[str, np.ndarray] = {}
+        
+        for q_idx, q_feat in enumerate(query_list):
+            q_norm = q_feat.astype(np.float32)
+            q_norm = q_norm / (np.linalg.norm(q_norm) + 1e-8)
+            
+            for mem_cam_idx, mem_cam in enumerate(self.CAMERA_IDS):
+                results = self.search_single_camera(q_norm, mem_cam, k=k)
+                for node_id, similarity in results:
+                    if node_id not in node_sim_matrices:
+                        node_sim_matrices[node_id] = np.zeros((n_query, 4))
+                    node_sim_matrices[node_id][q_idx, mem_cam_idx] = similarity
+        
+        if not node_sim_matrices:
+            return None
+        
+        # 对每个节点，找最优匹配（贪心：每次选最大值，排除已用行列）
+        best_node_id = None
+        best_avg_sim = -1.0
+        best_cam_scores = {}
+        best_matching = {}
+        
+        for node_id, sim_matrix in node_sim_matrices.items():
+            # 贪心匹配
+            used_q = set()
+            used_m = set()
+            match_pairs = []
+            n_matches = min(n_query, 4)
+            
+            temp_matrix = sim_matrix.copy()
+            for _ in range(n_matches):
+                # 找最大值
+                max_val = -1
+                max_q, max_m = -1, -1
+                for qi in range(n_query):
+                    if qi in used_q:
+                        continue
+                    for mi in range(4):
+                        if mi in used_m:
+                            continue
+                        if temp_matrix[qi, mi] > max_val:
+                            max_val = temp_matrix[qi, mi]
+                            max_q, max_m = qi, mi
+                if max_q < 0:
+                    break
+                used_q.add(max_q)
+                used_m.add(max_m)
+                match_pairs.append((max_q, max_m, max_val))
+            
+            if len(match_pairs) >= min(n_query, 4):
+                avg_sim = sum(s for _, _, s in match_pairs) / len(match_pairs)
+                if avg_sim > best_avg_sim:
+                    best_avg_sim = avg_sim
+                    best_node_id = node_id
+                    best_cam_scores = {
+                        self.CAMERA_IDS[mi]: float(s)
+                        for _, mi, s in match_pairs
+                    }
+                    best_matching = {
+                        query_keys[qi]: self.CAMERA_IDS[mi]
+                        for qi, mi, _ in match_pairs
+                    }
+        
+        if best_node_id is None or best_avg_sim < self.similarity_threshold:
+            return None
+        
+        result = VPRResult(
+            matched_node_id=best_node_id,
+            matched_node_name=self.node_names.get(best_node_id, ""),
+            matched_node_name_eng=self.node_names_eng.get(best_node_id, ""),
+            similarity=best_avg_sim,
+            confidence=best_avg_sim,
+            camera_scores=best_cam_scores,
+            heading_offset=0.0,
+            best_shift=0
+        )
+        logger.info(
+            f"[MemoryVPR] 无序匹配: node={best_node_id} "
+            f"({self.node_names.get(best_node_id, '')}), "
+            f"avg_sim={best_avg_sim:.4f}, "
+            f"matching={best_matching}")
+        return result
 
     def clear(self):
         """清空VPR索引"""

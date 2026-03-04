@@ -2351,7 +2351,7 @@ class MemoryNavServer:
             return
         
         try:
-            builder = MemoryBuilder(feature_dim=512, device="cuda:0")
+            builder = MemoryBuilder(vpr_method="anyloc", device="cuda:0")
             
             cache_graph = self.cache_path + "_graph.pkl"
             if os.path.exists(cache_graph):
@@ -2366,7 +2366,7 @@ class MemoryNavServer:
                 logger.error(f"数据目录不存在: {self.data_dir}")
                 return
             
-            self.memory_navigator = MemoryNavigator(feature_dim=512, device="cuda:0")
+            self.memory_navigator = MemoryNavigator(vpr_method="anyloc", device="cuda:0")
             self.memory_navigator.set_memory(self.memory_graph, self.memory_vpr)
             
             logger.info(f"memory_nav 初始化成功: {len(self.memory_graph.nodes)} 节点")
@@ -2808,7 +2808,7 @@ class MemoryNavServer:
                     self.memory_graph.nodes.clear()
                 
                 # 重新构建
-                builder = MemoryBuilder(feature_dim=512, device="cuda:0")
+                builder = MemoryBuilder(vpr_method="anyloc", device="cuda:0")
                 new_graph, new_vpr = builder.build_from_directory(
                     path, extract_features=True, save_path=self.cache_path
                 )

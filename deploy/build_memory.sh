@@ -8,6 +8,8 @@
 #   bash deploy/build_memory.sh --help
 # ============================================================
 set -e
+n# 网络代理
+export https_proxy=http://10.24.99.86:10808 http_proxy=http://10.24.99.86:10808 all_proxy=socks5://10.24.99.86:10808
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"

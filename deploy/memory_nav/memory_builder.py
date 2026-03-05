@@ -380,6 +380,20 @@ class MemoryBuilder:
         if os.path.exists(graph_path):
             self.graph.load(graph_path)
             
+            # 校验缓存特征维度与当前VPR方案是否匹配
+            for _nid, _node in self.graph.nodes.items():
+                if _node.camera_features:
+                    _sample_feat = list(_node.camera_features.values())[0]
+                    import numpy as np
+                    _cached_dim = np.array(_sample_feat).flatten().shape[0]
+                    if _cached_dim != self.feature_dim:
+                        raise ValueError(
+                            f"[MemoryBuilder] 缓存特征维度({_cached_dim})与当前VPR方案"
+                            f"({self.vpr_method}, dim={self.feature_dim})不匹配! "
+                            f"请用当前方案重新构建: bash deploy/build_memory.sh"
+                        )
+                break
+            
             # 重建VPR索引
             self.vpr.clear()
             for node_id, node in self.graph.nodes.items():
@@ -391,7 +405,7 @@ class MemoryBuilder:
                     fused_feature=node.fused_feature
                 )
             
-            logger.info(f"[MemoryBuilder] 记忆数据已从 {path} 加载")
+            logger.info(f"[MemoryBuilder] 记忆数据已从 {path} 加载 (dim={self.feature_dim}, method={self.vpr_method})")
         else:
             logger.warning(f"[MemoryBuilder] 文件不存在: {graph_path}")
         

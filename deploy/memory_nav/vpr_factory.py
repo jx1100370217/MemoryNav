@@ -74,12 +74,16 @@ def create_vpr_extractor(vpr_method: str,
 
     elif vpr_method == 'selavpr':
         from .selavpr_extractor import SelaVPRExtractor
+        from .vpr_config_loader import load_vpr_config, get_selavpr_config
+        # 从统一配置读取 selavpr 参数，config 参数可覆盖
+        _selavpr_cfg = get_selavpr_config()
+        _selavpr_cfg.update(cfg)
         extractor = SelaVPRExtractor(
-            backbone=cfg.get('backbone', 'dinov2-large'),
-            aggregation=cfg.get('aggregation', 'gem'),
-            use_hashing=cfg.get('use_hashing', False),
-            use_rerank=cfg.get('use_rerank', False),
-            max_img_size=cfg.get('max_img_size', 518),
+            backbone=_selavpr_cfg.get('backbone', 'dinov2-large'),
+            aggregation=_selavpr_cfg.get('aggregation', 'gem'),
+            use_hashing=_selavpr_cfg.get('use_hashing', True),
+            use_rerank=_selavpr_cfg.get('use_rerank', True),
+            max_img_size=_selavpr_cfg.get('max_img_size', 518),
             device=device
         )
         return extractor, extractor.feature_dim, True

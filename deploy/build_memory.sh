@@ -27,6 +27,7 @@ SAVE_PATH="${SCRIPT_DIR}/memory_nav/memory_cache"
 VPR_METHOD="${_VPR_FROM_CFG:-selavpr}"
 DINO_MODEL="dinov2_vitb14"
 AGG_MODE="vlad"
+_DEFAULT_NUM_CLUSTERS=8
 NUM_CLUSTERS=8
 DOMAIN="indoor"
 MAX_IMG_SIZE=630
@@ -83,9 +84,10 @@ echo "  数据目录:    ${DATA_DIR}"
 echo "  保存路径:    ${SAVE_PATH}"
 echo "  VPR方法:     ${VPR_METHOD}"
 if [ "${VPR_METHOD}" = "anyloc" ]; then
+    _CFG_CLUSTERS=$(python3 -c "import yaml; c=yaml.safe_load(open('${VPR_CONFIG}')); print(c.get('anyloc',{}).get('num_clusters',8))" 2>/dev/null)
     echo "  DINOv2模型:  ${DINO_MODEL}"
     echo "  聚合模式:    ${AGG_MODE}"
-    echo "  聚类数:      ${NUM_CLUSTERS}"
+    echo "  聚类数:      ${_CFG_CLUSTERS:-${NUM_CLUSTERS}} (配置文件) / ${NUM_CLUSTERS} (命令行默认)"
     echo "  场景类型:    ${DOMAIN}"
     echo "  最大图像尺寸: ${MAX_IMG_SIZE}"
 fi
@@ -108,13 +110,18 @@ data_dir   = '${DATA_DIR}'
 
 anyloc_config = None
 if vpr_method == 'anyloc':
-    anyloc_config = {
-        'dino_model':   '${DINO_MODEL}',
-        'agg_mode':     '${AGG_MODE}',
-        'num_clusters': ${NUM_CLUSTERS},
-        'domain':       '${DOMAIN}',
-        'max_img_size': ${MAX_IMG_SIZE},
-    }
+    # 从统一配置文件读取 AnyLoc 参数
+    anyloc_config = get_anyloc_config(cfg)
+    # 命令行参数覆盖 (仅当用户显式传入 --dino-model 等时才生效)
+    _cli_overrides = {}
+    if '${DINO_MODEL}' != 'dinov2_vitb14':  _cli_overrides['dino_model'] = '${DINO_MODEL}'
+    if '${AGG_MODE}' != 'vlad':             _cli_overrides['agg_mode'] = '${AGG_MODE}'
+    if '${NUM_CLUSTERS}' != '${_DEFAULT_NUM_CLUSTERS}': _cli_overrides['num_clusters'] = ${NUM_CLUSTERS}
+    if '${DOMAIN}' != 'indoor':             _cli_overrides['domain'] = '${DOMAIN}'
+    if '${MAX_IMG_SIZE}' != '630':          _cli_overrides['max_img_size'] = ${MAX_IMG_SIZE}
+    if _cli_overrides:
+        anyloc_config.update(_cli_overrides)
+        print(f'  命令行覆盖: {_cli_overrides}')
 
 print('正在构建记忆...')
 t0 = time.time()

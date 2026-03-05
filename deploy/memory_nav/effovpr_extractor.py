@@ -105,7 +105,9 @@ class EffoVPRExtractor:
         else:
             self.layers = layers
 
-        self.feature_dim = output_dim
+        # 使用多层 CLS token 拼接（区分度远优于 GeM 池化）
+        concat_dim = config['desc_dim'] * len(self.layers)
+        self.feature_dim = concat_dim
 
         # 图像预处理
         self.base_tf = tvf.Compose([
@@ -148,14 +150,6 @@ class EffoVPRExtractor:
                     self._make_hook(layer_idx))
                 self._hooks.append(hook)
 
-            # 创建线性投影层: concat(multi_layer_gem) → output_dim
-            concat_dim = self.desc_dim * len(self.layers)
-            if concat_dim != self.feature_dim:
-                self._projection = nn.Linear(concat_dim, self.feature_dim, bias=False).to(self.device)
-                # 使用正交初始化（模拟PCA效果）
-                nn.init.orthogonal_(self._projection.weight)
-                self._projection.eval()
-            
             logger.info(f"[EffoVPR] DINOv2 模型加载成功: {self.dino_model_name}")
         except Exception as e:
             logger.error(f"[EffoVPR] 模型加载失败: {e}")
@@ -216,22 +210,16 @@ class EffoVPRExtractor:
             with torch.no_grad():
                 _ = self.dino_model(img_pt)
 
-                # 从各层收集 patch token (去掉 CLS token)
-                layer_gems = []
+                # 从各层收集 CLS token (比 GeM 池化区分度更高)
+                layer_cls_tokens = []
                 for layer_idx in self.layers:
                     output = self._hook_outputs[layer_idx]
                     # output: [1, num_tokens, dim], token 0 = CLS
-                    patch_tokens = output[0, 1:, :]  # [num_patches, dim]
-                    patch_tokens = F.normalize(patch_tokens, dim=-1)
-                    gem = self._gem_pool(patch_tokens, self.gem_p)
-                    layer_gems.append(gem)
+                    cls_token = output[0, 0, :]  # [dim]
+                    layer_cls_tokens.append(cls_token)
 
-                # 拼接各层 GeM 特征
-                concat_feat = torch.cat(layer_gems, dim=0)  # [layers * dim]
-
-                # 投影到目标维度
-                if self._projection is not None:
-                    concat_feat = self._projection(concat_feat)
+                # 拼接各层 CLS token
+                concat_feat = torch.cat(layer_cls_tokens, dim=0)  # [layers * dim]
 
                 # L2 归一化
                 result = F.normalize(concat_feat, dim=0)

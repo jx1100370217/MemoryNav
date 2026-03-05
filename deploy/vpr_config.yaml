@@ -5,22 +5,29 @@
 # ============================================================
 
 # VPR 方法: selavpr | megaloc | effovpr | anyloc
-vpr_method: megaloc
+vpr_method: selavpr
 
 # GPU 设备
 device: "cuda:0"
 
 # VPR 相似度阈值 (各方案独立设置)
 similarity_threshold:
-  selavpr: 0.70
-  megaloc: 0.70
-  effovpr: 0.70
+  selavpr: 0.60
+  megaloc: 0.60
+  effovpr: 0.80
   anyloc: 0.70
+
+# SelaVPR++ 专用配置 (仅 vpr_method=selavpr 时生效)
+selavpr:
+  backbone: dinov2-large
+  aggregation: gem
+  use_hashing: true
+  use_rerank: true
 
 # AnyLoc 专用配置 (仅 vpr_method=anyloc 时生效)
 anyloc:
   dino_model: dinov2_vitb14
   agg_mode: vlad
-  num_clusters: 8
+  num_clusters: 32
   domain: indoor
   max_img_size: 630

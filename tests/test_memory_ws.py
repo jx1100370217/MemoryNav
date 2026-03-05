@@ -182,7 +182,7 @@ async def run_test():
 
     # 检查记忆导航状态
     status = await send_command(ws, 'memory_status')
-    stats = status.get('memory_navigator_graph_stats', {})
+    stats = status.get('memory_navigator_graph_stats') or {}
     mem_enabled = status.get('memory_enabled', False)
 
     print_separator('─')

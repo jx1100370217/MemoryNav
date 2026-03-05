@@ -48,6 +48,12 @@ def load_vpr_config(config_path: str = None, force_reload: bool = False) -> dict
             'effovpr': 0.70,
             'anyloc': 0.70,
         },
+        'selavpr': {
+            'backbone': 'dinov2-large',
+            'aggregation': 'gem',
+            'use_hashing': True,
+            'use_rerank': True,
+        },
         'anyloc': {
             'dino_model': 'dinov2_vitb14',
             'agg_mode': 'vlad',
@@ -82,6 +88,8 @@ def load_vpr_config(config_path: str = None, force_reload: bool = False) -> dict
                     # 兼容: 如果写成单个数值，应用到所有方法
                     for k in cfg['similarity_threshold']:
                         cfg['similarity_threshold'][k] = float(file_cfg['similarity_threshold'])
+            if 'selavpr' in file_cfg and isinstance(file_cfg['selavpr'], dict):
+                cfg['selavpr'].update(file_cfg['selavpr'])
             if 'anyloc' in file_cfg and isinstance(file_cfg['anyloc'], dict):
                 cfg['anyloc'].update(file_cfg['anyloc'])
             
@@ -108,6 +116,13 @@ def get_threshold(cfg: dict = None) -> float:
     method = cfg['vpr_method']
     thresholds = cfg.get('similarity_threshold', {})
     return float(thresholds.get(method, 0.70))
+
+
+def get_selavpr_config(cfg: dict = None) -> dict:
+    """获取 SelaVPR++ 专用配置"""
+    if cfg is None:
+        cfg = load_vpr_config()
+    return cfg.get('selavpr', {})
 
 
 def get_anyloc_config(cfg: dict = None) -> dict:

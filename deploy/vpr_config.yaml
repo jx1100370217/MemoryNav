@@ -5,7 +5,7 @@
 # ============================================================
 
 # VPR 方法: selavpr | megaloc | effovpr | anyloc
-vpr_method: selavpr
+vpr_method: megaloc
 
 # GPU 设备
 device: "cuda:0"

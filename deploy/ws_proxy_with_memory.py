@@ -18,6 +18,7 @@ import logging
 import logging.handlers
 import base64
 import io
+import yaml
 import os
 import sys
 import time
@@ -1593,10 +1594,13 @@ async def main():
     logger.info("🚀 启动 InternNav WebSocket服务器 (带记忆导航)...")
     logger.info(f"📂 工作目录: {os.getcwd()}")
 
-    # 初始化记忆导航模块 (通过 VPR_METHOD 环境变量选择: selavpr(默认)/megaloc/effovpr/anyloc)
-    vpr_method = os.environ.get('VPR_METHOD', 'selavpr')
-    logger.info(f"📊 VPR 方法: {vpr_method}")
-    memory_navigator = init_memory_navigator(device="cuda:0", vpr_method=vpr_method)
+    # 初始化记忆导航模块 (从 deploy/vpr_config.yaml 统一配置)
+    from deploy.memory_nav.vpr_config_loader import load_vpr_config
+    _vpr_cfg = load_vpr_config()
+    vpr_method = _vpr_cfg['vpr_method']
+    vpr_device = _vpr_cfg['device']
+    logger.info(f"📊 VPR 方法: {vpr_method}, 设备: {vpr_device}")
+    memory_navigator = init_memory_navigator(device=vpr_device, vpr_method=vpr_method)
 
     # 启动时加载 InternVLA 模型
     logger.info("正在加载 InternVLA 模型...")

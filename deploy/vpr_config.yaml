@@ -1,0 +1,26 @@
+# ============================================================
+# VPR 统一配置文件
+# 所有用到 VPR 的服务共享此配置
+# 修改后重启服务即可生效
+# ============================================================
+
+# VPR 方法: selavpr | megaloc | effovpr | anyloc
+vpr_method: selavpr
+
+# GPU 设备
+device: "cuda:0"
+
+# VPR 相似度阈值 (各方案独立设置)
+similarity_threshold:
+  selavpr: 0.70
+  megaloc: 0.70
+  effovpr: 0.70
+  anyloc: 0.70
+
+# AnyLoc 专用配置 (仅 vpr_method=anyloc 时生效)
+anyloc:
+  dino_model: dinov2_vitb14
+  agg_mode: vlad
+  num_clusters: 8
+  domain: indoor
+  max_img_size: 630

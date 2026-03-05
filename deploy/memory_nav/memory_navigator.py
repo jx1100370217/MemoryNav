@@ -25,6 +25,7 @@ from .memory_graph import MemoryGraph
 from .memory_vpr import MemoryVPR
 from .memory_builder import MemoryBuilder
 from .anyloc_extractor import AnyLocExtractor
+from .vpr_config_loader import load_vpr_config, get_threshold
 from .vpr_factory import create_vpr_extractor
 
 logger = logging.getLogger(__name__)

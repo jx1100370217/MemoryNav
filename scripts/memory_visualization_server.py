@@ -27,6 +27,14 @@ from typing import Dict, List, Optional
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
+# ===== 加载 VPR 统一配置 =====
+from deploy.memory_nav.vpr_config_loader import load_vpr_config, get_threshold
+_vpr_cfg = load_vpr_config()
+VPR_METHOD = _vpr_cfg['vpr_method']
+VPR_DEVICE = _vpr_cfg['device']
+VPR_THRESHOLD = get_threshold(_vpr_cfg)
+# ==============================
+
 import numpy as np
 
 try:
@@ -2351,7 +2359,7 @@ class MemoryNavServer:
             return
         
         try:
-            builder = MemoryBuilder(vpr_method="anyloc", device="cuda:0")
+            builder = MemoryBuilder(vpr_method=VPR_METHOD, device=VPR_DEVICE)
             
             cache_graph = self.cache_path + "_graph.pkl"
             if os.path.exists(cache_graph):
@@ -2366,7 +2374,7 @@ class MemoryNavServer:
                 logger.error(f"数据目录不存在: {self.data_dir}")
                 return
             
-            self.memory_navigator = MemoryNavigator(vpr_method="anyloc", device="cuda:0")
+            self.memory_navigator = MemoryNavigator(vpr_method=VPR_METHOD, device=VPR_DEVICE)
             self.memory_navigator.set_memory(self.memory_graph, self.memory_vpr)
             
             logger.info(f"memory_nav 初始化成功: {len(self.memory_graph.nodes)} 节点")
@@ -2808,7 +2816,7 @@ class MemoryNavServer:
                     self.memory_graph.nodes.clear()
                 
                 # 重新构建
-                builder = MemoryBuilder(vpr_method="anyloc", device="cuda:0")
+                builder = MemoryBuilder(vpr_method=VPR_METHOD, device=VPR_DEVICE)
                 new_graph, new_vpr = builder.build_from_directory(
                     path, extract_features=True, save_path=self.cache_path
                 )

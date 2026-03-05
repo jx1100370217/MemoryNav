@@ -14,16 +14,23 @@ export https_proxy=http://10.24.99.86:10808 http_proxy=http://10.24.99.86:10808 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# 默认参数
+# 从 vpr_config.yaml 读取默认配置
+VPR_CONFIG="${SCRIPT_DIR}/vpr_config.yaml"
+if [ -f "${VPR_CONFIG}" ]; then
+    _VPR_FROM_CFG=$(python3 -c "import yaml; c=yaml.safe_load(open('${VPR_CONFIG}')); print(c.get('vpr_method','selavpr'))" 2>/dev/null)
+    _GPU_FROM_CFG=$(python3 -c "import yaml; c=yaml.safe_load(open('${VPR_CONFIG}')); d=c.get('device','cuda:0'); print(d.replace('cuda:',''))" 2>/dev/null)
+fi
+
+# 默认参数 (配置文件优先，命令行参数可覆盖)
 DATA_DIR="${PROJECT_DIR}/merged_labeled_data"
 SAVE_PATH="${SCRIPT_DIR}/memory_nav/memory_cache"
-VPR_METHOD="selavpr"
+VPR_METHOD="${_VPR_FROM_CFG:-selavpr}"
 DINO_MODEL="dinov2_vitb14"
 AGG_MODE="vlad"
 NUM_CLUSTERS=8
 DOMAIN="indoor"
 MAX_IMG_SIZE=630
-GPU_ID=0
+GPU_ID="${_GPU_FROM_CFG:-0}"
 CONDA_ENV="internnav"
 
 usage() {
@@ -90,8 +97,12 @@ python3 -c "
 import sys, time, os
 sys.path.insert(0, '${PROJECT_DIR}')
 from deploy.memory_nav import MemoryBuilder
+from deploy.memory_nav.vpr_config_loader import load_vpr_config, get_anyloc_config
 
-vpr_method = '${VPR_METHOD}'
+# 命令行参数通过环境变量传入
+os.environ['VPR_METHOD'] = '${VPR_METHOD}'
+cfg = load_vpr_config()
+vpr_method = cfg['vpr_method']
 save_path  = '${SAVE_PATH}'
 data_dir   = '${DATA_DIR}'
 
@@ -110,7 +121,7 @@ t0 = time.time()
 builder = MemoryBuilder(
     vpr_method=vpr_method,
     anyloc_config=anyloc_config,
-    device='cuda:0',
+    device=cfg['device'],
 )
 graph, vpr = builder.build_from_directory(data_dir, save_path=save_path)
 elapsed = time.time() - t0

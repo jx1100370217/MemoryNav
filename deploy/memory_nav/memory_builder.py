@@ -34,6 +34,7 @@ from .memory_models import MemoryNode, MemoryEdge
 from .memory_graph import MemoryGraph
 from .memory_vpr import MemoryVPR
 from .anyloc_extractor import AnyLocExtractor
+from .vpr_config_loader import load_vpr_config, get_threshold
 from .vpr_factory import create_vpr_extractor
 
 logger = logging.getLogger(__name__)
@@ -127,7 +128,10 @@ class MemoryBuilder:
         
         # 记忆图和VPR
         self.graph = MemoryGraph()
-        self.vpr = MemoryVPR(feature_dim=self.feature_dim, order_invariant=order_invariant)
+        # 从统一配置获取相似度阈值
+        _cfg = load_vpr_config()
+        _threshold = get_threshold(_cfg)
+        self.vpr = MemoryVPR(feature_dim=self.feature_dim, similarity_threshold=_threshold, order_invariant=order_invariant)
         
         logger.info(f"[MemoryBuilder] 初始化完成: method={vpr_method}, dim={self.feature_dim}, device={device}")
     

@@ -488,21 +488,7 @@ class MemoryNavigator:
                        f"center=({match_result.center_x_pct:.1f}%, {match_result.center_y_pct:.1f}%)")
         else:
             logger.info(f"[MemoryNavigator] 子图匹配失败: camera={camera_name}, "
-                       f"confidence={match_result.confidence:.4f}, "
-                       f"将使用记忆中的 pixel_box 作为回退")
-            # 回退: 使用记忆中的 pixel_box 计算百分比位置
-            if any(v > 0 for v in step.pixel_box):
-                # 需要知道相机图尺寸来计算百分比
-                img_h, img_w = camera_image.shape[:2]
-                bx, by, bw, bh = step.pixel_box
-                result['fallback_region'] = {
-                    'x_min_pct': round(bx / img_w, 4),
-                    'y_min_pct': round(by / img_h, 4),
-                    'x_max_pct': round((bx + bw) / img_w, 4),
-                    'y_max_pct': round((by + bh) / img_h, 4),
-                    'center_x_pct': round((bx + bw / 2) / img_w, 4),
-                    'center_y_pct': round((by + bh / 2) / img_h, 4),
-                }
+                       f"confidence={match_result.confidence:.4f}")
         
         return result
 

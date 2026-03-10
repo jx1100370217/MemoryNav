@@ -6,8 +6,7 @@ MemoryNav - 子图匹配模块
 基于 SuperPoint + LightGlue 的子图定位，用于在导航过程中
 在当前相机图中定位记忆中的注意力子图（crop）。
 
-代码源自 SubImageLocator 项目，已内嵌到 MemoryNav 中，
-不再依赖外部代码库。
+包含 Homography 退化检测，避免输出垃圾 bbox。
 
 模型生命周期：启动时加载一次，后续复用。
 """
@@ -118,6 +117,58 @@ class SubImageMatchResult:
 
 
 # ============================================================================
+# Homography 质量检测
+# ============================================================================
+
+def _is_homography_degenerate(H, img_shape, tpl_shape, projected_corners):
+    """
+    检测 Homography 是否退化。
+
+    Args:
+        H: 3x3 Homography 矩阵
+        img_shape: 搜索图像 (H, W, ...)
+        tpl_shape: 模板图像 (H, W, ...)
+        projected_corners: 投影后的四角坐标 (4, 2)
+
+    Returns:
+        True 表示退化（不可信）
+    """
+    # 1. 行列式检查
+    det = np.linalg.det(H[:2, :2])
+    if det < 0.05 or det > 20:
+        return True
+
+    # 2. 投影区域面积 vs 图像面积
+    img_h, img_w = img_shape[:2]
+    img_area = img_h * img_w
+    proj_area = cv2.contourArea(projected_corners.astype(np.float32))
+    area_ratio = proj_area / img_area
+    if area_ratio > 0.8:  # 占图超过 80% → 退化
+        return True
+    if proj_area < 100:  # 太小
+        return True
+
+    # 3. 凸性检查：非凸说明 fold
+    if not cv2.isContourConvex(projected_corners.astype(np.int32)):
+        return True
+
+    # 4. 宽高比与模板偏差检查
+    tpl_h, tpl_w = tpl_shape[:2]
+    tpl_aspect = tpl_w / max(tpl_h, 1)
+    br = projected_corners.max(axis=0)
+    tl = projected_corners.min(axis=0)
+    proj_w = br[0] - tl[0]
+    proj_h = br[1] - tl[1]
+    proj_aspect = proj_w / max(proj_h, 1)
+    if tpl_aspect > 0:
+        aspect_ratio = proj_aspect / tpl_aspect
+        if aspect_ratio < 0.2 or aspect_ratio > 5.0:
+            return True
+
+    return False
+
+
+# ============================================================================
 # 底层特征匹配（源自 SubImageLocator/matchers/feature_matcher.py）
 # ============================================================================
 
@@ -138,7 +189,7 @@ def _match_features(
     image: np.ndarray,
     template: np.ndarray,
     min_matches: int = 8,
-    confidence_threshold: float = 0.3,
+    confidence_threshold: float = 0.5,
 ) -> SubImageMatchResult:
     """
     使用 SuperPoint + LightGlue 在 image 中定位 template。
@@ -193,13 +244,26 @@ def _match_features(
 
     projected = cv2.perspectiveTransform(corners, H).reshape(-1, 2)
 
+    inlier_ratio = mask.sum() / len(mask) if mask is not None else 0
+    confidence = float(inlier_ratio)
+
+    # Homography 退化检测
+    if _is_homography_degenerate(H, image.shape, template.shape, projected):
+        logger.debug(f"[SubImageMatcher] Homography 退化: "
+                     f"det={np.linalg.det(H[:2,:2]):.3f}, "
+                     f"inliers={int(inlier_ratio*100)}%")
+        return SubImageMatchResult(
+            found=False, confidence=round(confidence, 4),
+            elapsed_ms=round(elapsed_ms, 1),
+            method=f"SuperPoint+LightGlue ({n_matches} matches, "
+                   f"{int(inlier_ratio*100)}% inliers, H degenerate)",
+        )
+
     x_min = max(0, int(projected[:, 0].min()))
     y_min = max(0, int(projected[:, 1].min()))
     x_max = min(img_w, int(projected[:, 0].max()))
     y_max = min(img_h, int(projected[:, 1].max()))
 
-    inlier_ratio = mask.sum() / len(mask) if mask is not None else 0
-    confidence = float(inlier_ratio)
     found = confidence >= confidence_threshold
 
     return SubImageMatchResult(
@@ -230,11 +294,14 @@ class SubImageMatcher:
 
     模型在首次调用 match() 或 preload() 时加载到 GPU，
     后续所有匹配复用同一模型实例。
+
+    包含 Homography 退化检测，自动拦截退化的匹配结果
+    （投影面积过大、非凸、宽高比异常等）。
     """
 
     def __init__(self, device: str = "cuda:0",
                  min_matches: int = 8,
-                 confidence_threshold: float = 0.3):
+                 confidence_threshold: float = 0.5):
         """
         Args:
             device: 推理设备（模型缓存为全局单例）

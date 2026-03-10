@@ -644,6 +644,10 @@ def visualize_sub_image_match(camera_images, sub_match_result, pts=None):
     """
     在对应的 camera_x 图上标注子图匹配框和中心点，并保存到 deploy/logs/images/
 
+    支持两种模式：
+    1. match.found=True (confidence >= 0.5) → 绿色框 + 红色中心点 (高置信度)
+    2. match.found=False 但有 bbox 数据 → 黄色框 + 蓝色中心点 (低置信度)
+
     Args:
         camera_images: {'camera_1': ndarray(BGR), ...}
         sub_match_result: do_sub_image_match 返回的结果字典
@@ -652,7 +656,16 @@ def visualize_sub_image_match(camera_images, sub_match_result, pts=None):
     if sub_match_result is None:
         return
     match_info = sub_match_result.get('match')
-    if match_info is None or not match_info.get('found', False):
+    if match_info is None:
+        return
+
+    # 需要有 bbox 数据（至少有非零坐标）
+    bbox = match_info.get('bbox_pixel', {})
+    has_bbox = (bbox.get('x_max', 0) > bbox.get('x_min', 0) and
+                bbox.get('y_max', 0) > bbox.get('y_min', 0))
+    is_found = match_info.get('found', False)
+
+    if not is_found and not has_bbox:
         return
 
     camera_name = sub_match_result.get('camera_name')
@@ -663,6 +676,10 @@ def visualize_sub_image_match(camera_images, sub_match_result, pts=None):
         # 复制图像避免修改原图
         img = camera_images[camera_name].copy()
         img_h, img_w = img.shape[:2]
+
+        images_dir = os.path.join(LOG_DIR, 'images')
+        os.makedirs(images_dir, exist_ok=True)
+        ts = f"{pts}" if pts is not None else f"{int(time.time() * 1000)}"
 
         # 从匹配结果获取百分比坐标（0~1 范围）
         tl = match_info['top_left_pct']
@@ -677,26 +694,28 @@ def visualize_sub_image_match(camera_images, sub_match_result, pts=None):
         cx = int(ct['x'] * img_w)
         cy = int(ct['y'] * img_h)
 
-        # 绘制绿色矩形框（线宽2）
-        cv2.rectangle(img, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
-
-        # 绘制红色中心点（实心圆，半径5）
-        cv2.circle(img, (cx, cy), 5, (0, 0, 255), -1)
-
-        # 在框上方标注置信度
         conf = match_info.get('confidence', 0)
-        label = f"conf={conf:.3f}"
-        cv2.putText(img, label, (x_min, max(y_min - 8, 15)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
-        # 保存
-        images_dir = os.path.join(LOG_DIR, 'images')
-        os.makedirs(images_dir, exist_ok=True)
-        ts = f"{pts}" if pts is not None else f"{int(time.time() * 1000)}"
+        if is_found:
+            # ---- 高置信度: 绿色框 + 红色中心点 ----
+            cv2.rectangle(img, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
+            cv2.circle(img, (cx, cy), 5, (0, 0, 255), -1)
+            label = f"conf={conf:.3f}"
+            cv2.putText(img, label, (x_min, max(y_min - 8, 15)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        else:
+            # ---- 低置信度: 黄色框 + 蓝色中心点 ----
+            cv2.rectangle(img, (x_min, y_min), (x_max, y_max), (0, 255, 255), 2)
+            cv2.circle(img, (cx, cy), 5, (255, 0, 0), -1)
+            label = f"low conf={conf:.3f}"
+            cv2.putText(img, label, (x_min, max(y_min - 8, 15)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+
         save_path = os.path.join(images_dir, f"{ts}_{camera_name}_match.jpg")
         cv2.imwrite(save_path, img)
         logger.info(f"💾 [SubImageMatch] 已保存匹配可视化: {save_path} "
-                    f"(box=[{x_min},{y_min},{x_max},{y_max}], center=[{cx},{cy}])")
+                    f"(box=[{x_min},{y_min},{x_max},{y_max}], center=[{cx},{cy}], "
+                    f"conf={conf:.3f}, found={is_found})")
 
     except Exception as e:
         logger.warning(f"[SubImageMatch] 可视化保存失败: {e}", exc_info=True)

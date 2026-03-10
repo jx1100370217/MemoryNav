@@ -2682,33 +2682,27 @@ class MemoryNavServer:
         if not MEMORY_NAV_AVAILABLE:
             logger.error("memory_nav 模块不可用")
             return
-        
+
         try:
-            builder = MemoryBuilder(vpr_method=VPR_METHOD, device=VPR_DEVICE)
-            
-            cache_graph = self.cache_path + "_graph.pkl"
-            if os.path.exists(cache_graph):
-                logger.info(f"从缓存加载: {cache_graph}")
-                self.memory_graph, self.memory_vpr = builder.load(self.cache_path)
-            elif os.path.exists(self.data_dir):
-                logger.info(f"从数据构建: {self.data_dir}")
-                self.memory_graph, self.memory_vpr = builder.build_from_directory(
-                    self.data_dir, extract_features=True, save_path=self.cache_path
-                )
-            else:
-                logger.error(f"数据目录不存在: {self.data_dir}")
-                return
-            
+            # 先创建 Navigator（内部创建 VPR extractor + SubImageMatcher）
             self.memory_navigator = MemoryNavigator(vpr_method=VPR_METHOD, device=VPR_DEVICE)
-            self.memory_navigator.set_memory(self.memory_graph, self.memory_vpr)
-            
+
+            # 用 Navigator 的 load_memory 加载数据，内部复用同一个 extractor
+            self.memory_navigator.load_memory(
+                path=self.cache_path,
+                data_dir=self.data_dir
+            )
+
+            self.memory_graph = self.memory_navigator.graph
+            self.memory_vpr = self.memory_navigator.vpr
+
             logger.info(f"memory_nav 初始化成功: {len(self.memory_graph.nodes)} 节点")
-            
+
         except Exception as e:
             logger.error(f"初始化失败: {e}")
             import traceback
             traceback.print_exc()
-    
+
     def _save_graph(self):
         """保存图数据到缓存 (使用 MemoryGraph.save() 确保格式兼容)"""
         cache_path = str(project_root / "deploy/memory_nav/memory_cache_graph.pkl")
@@ -3231,7 +3225,11 @@ class MemoryNavServer:
                     self.memory_graph.nodes.clear()
                 
                 # 重新构建
-                builder = MemoryBuilder(vpr_method=VPR_METHOD, device=VPR_DEVICE)
+                builder = MemoryBuilder(
+                    feature_extractor=self.memory_navigator.extractor,
+                    feature_dim=self.memory_navigator.feature_dim,
+                    vpr_method=VPR_METHOD, device=VPR_DEVICE
+                )
                 new_graph, new_vpr = builder.build_from_directory(
                     path, extract_features=True, save_path=self.cache_path
                 )

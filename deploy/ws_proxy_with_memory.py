@@ -1625,6 +1625,7 @@ async def main():
         handle_client,
         "0.0.0.0",
         9528,  # 端口 9528 (区别于 ws_proxy.py 的 9527)
+        open_timeout=60,
         ping_interval=30,
         ping_timeout=10,
         max_size=50*1024*1024

@@ -32,7 +32,7 @@ import base64
 import time
 from collections import defaultdict
 
-WS_URL = "ws://localhost:9528"
+WS_URL = "ws://127.0.0.1:9528"
 PROJECT_ROOT = "/home/ubuntu/Disk/codes/jianxiong/MemoryNav"
 DATA_DIR = os.path.join(PROJECT_ROOT, "memory_test_data")
 TASK = "前往C8前台"
@@ -166,17 +166,28 @@ async def run_test():
         print(f"\n{C_RED}❌ 需要安装 websockets: pip install websockets{C_RESET}")
         sys.exit(1)
 
-    # 连接
     print(f"\n{C_CYAN}🔗 连接 {WS_URL}...{C_RESET}")
-    try:
-        ws = await asyncio.wait_for(
-            websockets.connect(WS_URL, max_size=50 * 1024 * 1024),
-            timeout=15
-        )
-    except Exception as e:
-        print(f"{C_RED}❌ 连接失败: {e}{C_RESET}")
-        print(f"   请先启动: cd {PROJECT_ROOT} && python3 deploy/ws_proxy_with_memory.py")
-        sys.exit(1)
+
+    # WebSocket 连接 (带重试)
+    ws = None
+    for _attempt in range(3):
+        try:
+            ws = await websockets.connect(
+                WS_URL,
+                max_size=50 * 1024 * 1024,
+                open_timeout=30,
+                ping_interval=30,
+                ping_timeout=10,
+            )
+            break
+        except Exception as e:
+            if _attempt < 2:
+                print(f"{C_YELLOW}⚠️  连接尝试 {_attempt+1}/3 失败: {e}, 3秒后重试...{C_RESET}")
+                await asyncio.sleep(3)
+            else:
+                print(f"{C_RED}❌ 连接失败 (已重试3次): {e}{C_RESET}")
+                print(f"   请先启动: cd {PROJECT_ROOT} && python deploy/ws_proxy_with_memory.py")
+                sys.exit(1)
 
     print(f"{C_GREEN}✅ 已连接{C_RESET}")
 
@@ -449,7 +460,8 @@ async def run_test():
         print(f"\n{C_RED}{C_BOLD}💥 测试失败 — 导航未完成{C_RESET}")
     print(f"{C_DIM}📋 服务端详细日志: deploy/logs/ws_proxy_with_memory.log{C_RESET}\n")
 
-    await ws.close()
+    if ws:
+        await ws.close()
 
     if not completed:
         sys.exit(1)

@@ -76,6 +76,15 @@ class SubImageMatchResult:
     x_max_pct: float = 0.0       # 右下角 x%
     y_max_pct: float = 0.0       # 右下角 y%
 
+    # 中心百分比（从 bounding box 自动计算）
+    @property
+    def center_x_pct(self) -> float:
+        return (self.x_min_pct + self.x_max_pct) / 2.0
+
+    @property
+    def center_y_pct(self) -> float:
+        return (self.y_min_pct + self.y_max_pct) / 2.0
+
     # 耗时 & 方法
     elapsed_ms: float = 0.0
     method: str = ""

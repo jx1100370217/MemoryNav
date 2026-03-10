@@ -272,34 +272,43 @@ class MemoryBuilder:
                 timestamp = base.split('_')[0]
                 break
         
-        # 构建边
+        # 构建边（新方案：camera_name + crop 子图）
         edges = []
         for next_pos in next_positions:
-            # angle 为空字符串时跳过该边
-            angle_raw = next_pos.get('angle', '')
-            if angle_raw == '' or angle_raw is None:
-                logger.debug(f"[MemoryBuilder] 跳过无角度的边: {node_id} -> {next_pos.get('position_id', '?')}")
+            camera_name = next_pos.get("camera_name", "")
+            crop_image_path_rel = next_pos.get("crop_image_path", "")
+
+            # 新方案要求 camera_name 必须存在
+            if not camera_name:
+                logger.debug(f"[MemoryBuilder] 跳过无 camera_name 的边: "
+                            f"{node_id} -> {next_pos.get('position_id', '?')}")
                 continue
-            
-            pixel_pos = next_pos.get('pixel_position', '0.5,0.5')
-            if isinstance(pixel_pos, str):
-                x, y = map(float, pixel_pos.split(','))
+
+            # 解析 pixel_box (格式: "x,y,w,h")
+            pixel_box_raw = next_pos.get("pixel_box", "0,0,0,0")
+            if isinstance(pixel_box_raw, str):
+                parts = list(map(int, pixel_box_raw.split(",")))
+                pixel_box = tuple(parts[:4])
+            elif isinstance(pixel_box_raw, (list, tuple)):
+                pixel_box = tuple(int(x) for x in pixel_box_raw[:4])
             else:
-                x, y = float(pixel_pos[0]), float(pixel_pos[1])
-            
-            stitch_image = next_pos.get('stitch_image', '')
-            stitch_path = str(node_dir / stitch_image) if stitch_image else ""
-            
+                pixel_box = (0, 0, 0, 0)
+
+            # crop 图路径（转为绝对路径）
+            crop_path = str(node_dir / crop_image_path_rel) if crop_image_path_rel else ""
+
             edge = MemoryEdge(
-                target_node_id=str(next_pos.get('position_id', '')),
-                target_node_name=next_pos.get('position_name', ''),
-                target_node_name_eng=next_pos.get('position_name_eng', ''),
-                angle=float(angle_raw),
-                pixel_position=(x, y),
-                stitch_image_path=stitch_path
+                target_node_id=str(next_pos.get("position_id", "")),
+                target_node_name=next_pos.get("position_name", ""),
+                target_node_name_eng=next_pos.get("position_name_eng", ""),
+                camera_name=camera_name,
+                landmark_name=next_pos.get("landmark_name", ""),
+                landmark_name_eng=next_pos.get("landmark_name_eng", ""),
+                pixel_box=pixel_box,
+                crop_image_path=crop_path,
             )
             edges.append(edge)
-        
+
         # 提取视觉特征
         camera_features = {}
         fused_feature = None

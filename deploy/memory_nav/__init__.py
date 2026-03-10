@@ -34,8 +34,9 @@ from .effovpr_extractor import EffoVPRExtractor
 from .selavpr_extractor import SelaVPRExtractor
 from .vpr_factory import create_vpr_extractor
 from .memory_navigator import MemoryNavigator
+from .sub_image_matcher import SubImageMatcher, SubImageMatchResult
 
-__version__ = "2.0.0"
+__version__ = "3.0.0"
 __all__ = [
     # 数据模型
     "MemoryNode",
@@ -54,4 +55,7 @@ __all__ = [
     "EffoVPRExtractor",
     "SelaVPRExtractor",
     "create_vpr_extractor",
+    # 子图匹配
+    "SubImageMatcher",
+    "SubImageMatchResult",
 ]

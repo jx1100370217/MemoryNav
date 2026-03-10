@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-1.3.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v1.3.0)
+[![Version](https://img.shields.io/badge/Version-1.4.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v1.4.0)
 
 A robot memory navigation system based on Visual Place Recognition (VPR) and topological mapping
 
@@ -26,9 +26,24 @@ MemoryNav is a visual memory navigation system for mobile robots. It captures im
 - **🔍 Multi-Method VPR**: 4 state-of-the-art VPR backends, switchable via a single config file
 - **🗺️ Topological Memory Graph**: Auto-built from labeled data with shortest-path planning
 - **🔄 Cyclic Shift Matching**: 4-camera cyclic shift algorithm for orientation-invariant localization
+- **🎯 Sub-Image Matching Navigation**: SuperPoint + LightGlue based attention crop localization for real-time target matching *(New in v1.4.0)*
 - **🤖 VLA Fallback**: Automatic fallback to InternVLA when VPR loses track
 - **🌐 WebSocket Service**: Real-time image streaming and navigation command output
 - **⚙️ Unified Configuration**: All VPR parameters in `deploy/vpr_config.yaml`, one change applies everywhere
+
+---
+
+## 🆕 v1.4.0 Highlights
+
+> **Architecture Upgrade: From Angle-Based to Sub-Image Matching Navigation**
+
+| Feature | v1.3.0 (Old) | v1.4.0 (New) |
+|---------|---------------|---------------|
+| **Edge Model** | `angle + pixel_position + stitch_image` | `camera_name + crop_image + pixel_box` |
+| **Navigation** | Server computes turn angle & pixel target | Sends attention crop; client matches & localizes |
+| **Target Localization** | Fixed angle + pixel coordinates | SuperPoint+LightGlue real-time sub-image matching |
+| **Flexibility** | Requires precise calibration | Adapts to viewpoint changes, more robust |
+| **Visualization** | Basic topology display | New sub-image matching verification page |
 
 ---
 
@@ -37,14 +52,15 @@ MemoryNav is a visual memory navigation system for mobile robots. It captures im
 ```
 MemoryNav/
 ├── deploy/                         # Deployment
-│   ├── vpr_config.yaml             # Unified VPR config ⭐ (NEW)
+│   ├── vpr_config.yaml             # Unified VPR config
 │   ├── memory_nav/                 # Core memory navigation package
-│   │   ├── vpr_config_loader.py    # Unified config loader ⭐ (NEW)
+│   │   ├── vpr_config_loader.py    # Unified config loader
 │   │   ├── memory_models.py        # Data models (Node, Edge, Plan, VPRResult)
 │   │   ├── memory_graph.py         # Topological graph (BFS/Dijkstra planning)
 │   │   ├── memory_vpr.py           # VPR matching engine (cyclic shift + order-invariant)
 │   │   ├── memory_builder.py       # Memory builder (build graph from labeled data)
 │   │   ├── memory_navigator.py     # Navigator main interface
+│   │   ├── sub_image_matcher.py    # Sub-image matcher (SuperPoint + LightGlue) ⭐ NEW
 │   │   ├── vpr_factory.py          # VPR extractor factory
 │   │   ├── anyloc_extractor.py     # AnyLoc (DINOv2 + VLAD)
 │   │   ├── megaloc_extractor.py    # MegaLoc (DINOv2 + OT aggregation)
@@ -54,7 +70,7 @@ MemoryNav/
 │   └── build_memory.sh             # Memory build script
 ├── internnav/                      # InternNav framework
 ├── scripts/                        # Utility scripts
-│   └── memory_visualization_server.py  # Memory graph visualization
+│   └── memory_visualization_server.py  # Memory graph visualization (with sub-image matching)
 ├── tests/                          # Tests
 │   ├── test_memory_nav.py          # Unit tests
 │   └── test_memory_ws.py           # WebSocket integration test (detailed logging)
@@ -63,9 +79,39 @@ MemoryNav/
 
 ---
 
+## 🎯 Sub-Image Matching Navigation (New in v1.4.0)
+
+v1.4.0 introduces **SuperPoint + LightGlue** based sub-image matching, replacing the previous angle + pixel coordinate approach:
+
+### How It Works
+
+1. **During memory building**: Each edge is annotated with `camera_name` (which camera sees the target) and `crop_image` (attention crop)
+2. **During navigation**: The crop image from memory is matched against the live camera feed
+3. **Target localization**: SuperPoint extracts keypoints → LightGlue matches → computes target region as percentage coordinates
+4. **Fallback**: When matching fails, uses the stored `pixel_box` from memory as an estimate
+
+### Edge Data Structure
+
+```yaml
+# Old (v1.3.0)
+edge:
+  angle: 37.5                    # Turn angle
+  pixel_position: [0.48, 0.52]  # Pixel target
+  stitch_image: "stitch.jpg"    # Stitched image
+
+# New (v1.4.0)
+edge:
+  camera_name: "camera_2"              # Target camera
+  landmark_name: "Elevator"            # Landmark name
+  pixel_box: [120, 80, 200, 160]       # (x, y, w, h) bounding box
+  crop_image_path: "crop_elevator.jpg"  # Attention crop image
+```
+
+---
+
 ## ✨ VPR Methods
 
-MemoryNav v1.3.0 supports **4 VPR methods**, configurable via `deploy/vpr_config.yaml`:
+MemoryNav supports **4 VPR methods**, configurable via `deploy/vpr_config.yaml`:
 
 | Method | Parameter | Venue | Feature Dim | Backbone | Highlights |
 |--------|-----------|-------|-------------|----------|------------|
@@ -168,9 +214,14 @@ result = navigator.vpr.locate(features)
 print(f"Located: {result.matched_node_name}, similarity: {result.similarity:.4f}")
 
 # Plan navigation
-plan = navigator.navigate_to("Reception", start_node_id=result.matched_node_id)
-for step in plan.steps:
-    print(f"  → {step.to_node_name}, angle={step.angle:.1f}°")
+plan = navigator.navigate_to("Reception", camera_images=images)
+for step in plan['plan']['steps']:
+    print(f"  → {step['to_node']['name']}, camera={step['camera_name']}, landmark={step['landmark_name']}")
+
+# Sub-image matching (during navigation execution)
+match = navigator.match_current_step(images)
+if match and match['match']['found']:
+    print(f"Target located: ({match['match']['center_x_pct']:.1f}%, {match['match']['center_y_pct']:.1f}%)")
 ```
 
 ---
@@ -202,8 +253,6 @@ for step in plan.steps:
     "id": "robot_01",
     "task_status": "executing",
     "action": [[0.5, 0.0, 0.1]],
-    "pixel_target": [0.48, 0.52],
-    "angle": 37.5,
     "memory_active": true,
     "memory_info": {
         "phase": "verifying",
@@ -211,11 +260,29 @@ for step in plan.steps:
         "total_steps": 3,
         "from_node": "Lobby",
         "to_node": "Reception",
+        "camera_name": "camera_2",
+        "landmark_name": "Elevator",
+        "crop_image_path": "merged_labeled_data/node_5/crop_elevator.jpg",
+        "pixel_box": [120, 80, 200, 160],
         "vpr_similarity": 0.85,
         "vpr_confidence": 0.85,
         "vpr_matched_node": "node_5",
         "heading_offset": -37.5,
         "consecutive_misses": 0
+    },
+    "sub_image_match": {
+        "camera_name": "camera_2",
+        "landmark_name": "Elevator",
+        "match": {
+            "found": true,
+            "confidence": 0.92,
+            "center_x_pct": 48.5,
+            "center_y_pct": 52.1,
+            "x_min_pct": 30.2,
+            "y_min_pct": 35.8,
+            "x_max_pct": 66.8,
+            "y_max_pct": 68.4
+        }
     }
 }
 ```

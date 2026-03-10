@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-1.3.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v1.3.0)
+[![Version](https://img.shields.io/badge/Version-1.4.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v1.4.0)
 
 基于视觉位置识别（VPR）和拓扑地图的机器人记忆导航系统
 
@@ -26,9 +26,24 @@ MemoryNav 是一个面向移动机器人的视觉记忆导航系统。系统通�
 - **🔍 多方案 VPR 定位**：支持 4 种 SOTA 视觉位置识别方案，统一配置文件一键切换
 - **🗺️ 拓扑记忆图**：自动从标注数据构建节点-边拓扑图，支持最短路径规划
 - **🔄 循环移位匹配**：4 相机循环移位算法，支持任意朝向下的定位与偏转角估计
+- **🎯 子图匹配导航**：基于 SuperPoint + LightGlue 的注意力子图定位，实时在相机图中匹配导航目标 *(v1.4.0 新增)*
 - **🤖 VLA 兜底推理**：VPR 丢失时自动切换 InternVLA 模型继续导航
 - **🌐 WebSocket 服务**：实时流式接收图像、返回导航指令
 - **⚙️ 统一配置管理**：所有 VPR 参数集中在 `deploy/vpr_config.yaml`，一处修改全局生效
+
+---
+
+## 🆕 v1.4.0 更新亮点
+
+> **架构升级：从角度导航到子图匹配导航**
+
+| 特性 | v1.3.0（旧方案） | v1.4.0（新方案） |
+|------|------------------|------------------|
+| **边模型** | `angle + pixel_position + stitch_image` | `camera_name + crop_image + pixel_box` |
+| **导航方式** | 服务端计算转向角度和像素目标 | 下发注意力子图，客户端自行匹配定位 |
+| **目标定位** | 固定角度 + 像素坐标 | SuperPoint+LightGlue 实时子图匹配 |
+| **灵活性** | 依赖精确标定 | 自适应视角变化，鲁棒性更强 |
+| **可视化** | 基础拓扑图展示 | 新增子图匹配验证页面 |
 
 ---
 
@@ -37,14 +52,15 @@ MemoryNav 是一个面向移动机器人的视觉记忆导航系统。系统通�
 ```
 MemoryNav/
 ├── deploy/                         # 部署模块
-│   ├── vpr_config.yaml             # VPR 统一配置文件 ⭐ (NEW)
+│   ├── vpr_config.yaml             # VPR 统一配置文件
 │   ├── memory_nav/                 # 核心记忆导航包
-│   │   ├── vpr_config_loader.py    # 统一配置加载器 ⭐ (NEW)
+│   │   ├── vpr_config_loader.py    # 统一配置加载器
 │   │   ├── memory_models.py        # 数据模型 (Node, Edge, Plan, VPRResult)
 │   │   ├── memory_graph.py         # 拓扑图 (BFS/Dijkstra 路径规划)
 │   │   ├── memory_vpr.py           # VPR 匹配引擎 (循环移位 + 无序匹配)
 │   │   ├── memory_builder.py       # 记忆构建器 (从标注数据构建拓扑图)
 │   │   ├── memory_navigator.py     # 导航器主接口
+│   │   ├── sub_image_matcher.py    # 子图匹配器 (SuperPoint + LightGlue) ⭐ NEW
 │   │   ├── vpr_factory.py          # VPR 提取器工厂
 │   │   ├── anyloc_extractor.py     # AnyLoc (DINOv2 + VLAD)
 │   │   ├── megaloc_extractor.py    # MegaLoc (DINOv2 + OT聚合)
@@ -54,7 +70,7 @@ MemoryNav/
 │   └── build_memory.sh             # 记忆构建脚本
 ├── internnav/                      # InternNav 导航框架
 ├── scripts/                        # 工具脚本
-│   └── memory_visualization_server.py  # 记忆图可视化服务
+│   └── memory_visualization_server.py  # 记忆图可视化服务 (含子图匹配验证)
 ├── tests/                          # 测试
 │   ├── test_memory_nav.py          # 记忆模块单元测试
 │   └── test_memory_ws.py           # WebSocket 集成测试 (详细日志版)
@@ -63,9 +79,39 @@ MemoryNav/
 
 ---
 
+## 🎯 子图匹配导航（v1.4.0 新方案）
+
+v1.4.0 引入基于 **SuperPoint + LightGlue** 的子图匹配，取代旧版的角度+像素坐标方案：
+
+### 工作原理
+
+1. **记忆构建时**：为每条边标注 `camera_name`（目标所在相机）和 `crop_image`（注意力子图）
+2. **导航执行时**：从记忆中取出 crop 子图，在当前对应相机的实时画面中进行特征匹配
+3. **目标定位**：SuperPoint 提取关键点 → LightGlue 匹配 → 计算目标区域百分比坐标
+4. **回退机制**：匹配失败时使用记忆中的 `pixel_box` 作为估计值
+
+### 边数据结构
+
+```yaml
+# 旧方案 (v1.3.0)
+edge:
+  angle: 37.5              # 转向角度
+  pixel_position: [0.48, 0.52]  # 像素目标
+  stitch_image: "stitch.jpg"    # 拼接图
+
+# 新方案 (v1.4.0)
+edge:
+  camera_name: "camera_2"       # 目标所在相机
+  landmark_name: "电梯"          # 地标名称
+  pixel_box: [120, 80, 200, 160]  # (x, y, w, h) 像素框
+  crop_image_path: "crop_elevator.jpg"  # 注意力子图
+```
+
+---
+
 ## ✨ VPR 方案对比
 
-MemoryNav v1.3.0 支持 **4 种** VPR 方案，通过 `deploy/vpr_config.yaml` 统一切换：
+MemoryNav 支持 **4 种** VPR 方案，通过 `deploy/vpr_config.yaml` 统一切换：
 
 | 方案 | 参数值 | 发表 | 特征维度 | Backbone | 特点 |
 |------|--------|------|---------|----------|------|
@@ -168,9 +214,14 @@ result = navigator.vpr.locate(features)
 print(f"定位: {result.matched_node_name}, 相似度: {result.similarity:.4f}")
 
 # 规划导航
-plan = navigator.navigate_to("前台", start_node_id=result.matched_node_id)
-for step in plan.steps:
-    print(f"  → {step.to_node_name}, angle={step.angle:.1f}°")
+plan = navigator.navigate_to("前台", camera_images=images)
+for step in plan['plan']['steps']:
+    print(f"  → {step['to_node']['name']}, camera={step['camera_name']}, landmark={step['landmark_name']}")
+
+# 子图匹配（导航执行中）
+match = navigator.match_current_step(images)
+if match and match['match']['found']:
+    print(f"目标定位: ({match['match']['center_x_pct']:.1f}%, {match['match']['center_y_pct']:.1f}%)")
 ```
 
 ---
@@ -202,8 +253,6 @@ for step in plan.steps:
     "id": "robot_01",
     "task_status": "executing",
     "action": [[0.5, 0.0, 0.1]],
-    "pixel_target": [0.48, 0.52],
-    "angle": 37.5,
     "memory_active": true,
     "memory_info": {
         "phase": "verifying",
@@ -211,11 +260,29 @@ for step in plan.steps:
         "total_steps": 3,
         "from_node": "大厅",
         "to_node": "前台",
+        "camera_name": "camera_2",
+        "landmark_name": "电梯",
+        "crop_image_path": "merged_labeled_data/node_5/crop_elevator.jpg",
+        "pixel_box": [120, 80, 200, 160],
         "vpr_similarity": 0.85,
         "vpr_confidence": 0.85,
         "vpr_matched_node": "node_5",
         "heading_offset": -37.5,
         "consecutive_misses": 0
+    },
+    "sub_image_match": {
+        "camera_name": "camera_2",
+        "landmark_name": "电梯",
+        "match": {
+            "found": true,
+            "confidence": 0.92,
+            "center_x_pct": 48.5,
+            "center_y_pct": 52.1,
+            "x_min_pct": 30.2,
+            "y_min_pct": 35.8,
+            "x_max_pct": 66.8,
+            "y_max_pct": 68.4
+        }
     }
 }
 ```

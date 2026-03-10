@@ -1121,7 +1121,134 @@ HTML_TEMPLATE = '''
             margin-bottom: 12px;
         }
         
-        /* 隐藏类 */
+        /* 子图匹配验证页面 */
+        #page-sim.active {
+            display: block;
+            padding: 16px;
+        }
+
+        .sim-container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .sim-layout {
+            display: grid;
+            grid-template-columns: 380px 1fr;
+            gap: 16px;
+            height: calc(100vh - 92px);
+        }
+
+        .sim-panel {
+            background: var(--bg-panel);
+            border-radius: 16px;
+            padding: 20px;
+            border: 1px solid var(--border);
+            overflow-y: auto;
+        }
+
+        .sim-panel-title {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .sim-upload-area {
+            border: 2px dashed var(--border);
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            background: var(--bg-card);
+            margin-bottom: 16px;
+            position: relative;
+        }
+
+        .sim-upload-area:hover {
+            border-color: var(--accent);
+            background: var(--bg-hover);
+        }
+
+        .sim-upload-area.has-image {
+            border-color: var(--success);
+            border-style: solid;
+            padding: 8px;
+        }
+
+        .sim-upload-area input { display: none; }
+
+        .sim-preview {
+            width: 100%;
+            max-height: 200px;
+            object-fit: contain;
+            border-radius: 8px;
+        }
+
+        .sim-upload-icon { font-size: 32px; margin-bottom: 8px; }
+        .sim-upload-text { font-size: 13px; color: var(--text-dim); }
+
+        .sim-result-images {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .sim-result-img {
+            width: 100%;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+        }
+
+        .sim-info-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-top: 12px;
+        }
+
+        .sim-info-item {
+            background: var(--bg-card);
+            padding: 10px;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .sim-info-value {
+            font-size: 20px;
+            font-weight: 700;
+            background: var(--gradient-2);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .sim-info-label {
+            font-size: 11px;
+            color: var(--text-dim);
+            margin-top: 2px;
+        }
+
+        .sim-settings {
+            background: var(--bg-card);
+            border-radius: 10px;
+            padding: 12px;
+            margin-bottom: 16px;
+        }
+
+        .sim-settings summary {
+            cursor: pointer;
+            font-size: 13px;
+            color: var(--text-dim);
+        }
+
+        .sim-settings .form-group { margin-top: 10px; margin-bottom: 6px; }
+
+                /* 隐藏类 */
         .hidden { display: none !important; }
         
         /* 响应式 */
@@ -1146,6 +1273,7 @@ HTML_TEMPLATE = '''
         <div class="nav-tabs">
             <button class="nav-tab active" onclick="switchPage('nav')">🗺️ 导航</button>
             <button class="nav-tab" onclick="switchPage('db')">💾 数据管理</button>
+            <button class="nav-tab" onclick="switchPage('sim')">🔍 子图匹配</button>
         </div>
         <div class="nav-status">
             <div class="status-badge">
@@ -1359,7 +1487,7 @@ HTML_TEMPLATE = '''
                                 <tr>
                                     <th>起点</th>
                                     <th>终点</th>
-                                    <th>角度</th>
+                                    <th>相机 / 地标</th>
                                     <th>操作</th>
                                 </tr>
                             </thead>
@@ -1370,9 +1498,67 @@ HTML_TEMPLATE = '''
                 </div>
             </div>
         </div>
+        
+        <!-- 子图匹配验证页面 -->
+        <div id="page-sim" class="page">
+            <div class="sim-container">
+                <div class="sim-layout">
+                    <!-- 左侧: 上传和控制 -->
+                    <div class="sim-panel">
+                        <div class="sim-panel-title">🔍 子图匹配验证</div>
+                        
+                        <div class="form-label">原图 (相机图像)</div>
+                        <div class="sim-upload-area" id="sim-orig-area" onclick="document.getElementById('sim-orig-file').click()">
+                            <input type="file" id="sim-orig-file" accept="image/*" onchange="onSimFileChange('orig', this)">
+                            <div class="sim-upload-icon">🖼️</div>
+                            <div class="sim-upload-text">点击上传原图</div>
+                        </div>
+                        
+                        <div class="form-label">子图 (Crop 图像)</div>
+                        <div class="sim-upload-area" id="sim-crop-area" onclick="document.getElementById('sim-crop-file').click()">
+                            <input type="file" id="sim-crop-file" accept="image/*" onchange="onSimFileChange('crop', this)">
+                            <div class="sim-upload-icon">✂️</div>
+                            <div class="sim-upload-text">点击上传子图</div>
+                        </div>
+                        
+                        <details class="sim-settings">
+                            <summary>⚙️ 高级设置</summary>
+                            <div class="form-group">
+                                <label class="form-label">置信度阈值</label>
+                                <input type="range" id="sim-conf-threshold" min="0" max="1" step="0.05" value="0.3"
+                                    oninput="document.getElementById('sim-conf-val').textContent = this.value">
+                                <span id="sim-conf-val" style="font-size:13px; color:var(--accent)">0.3</span>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">最小特征匹配数</label>
+                                <input type="number" id="sim-min-matches" value="8" min="4" max="50" style="width:80px">
+                            </div>
+                        </details>
+                        
+                        <div style="display:flex; gap:8px; margin-bottom:16px">
+                            <button class="btn btn-primary" style="flex:1" onclick="runSubImageMatch()">🔍 开始匹配</button>
+                            <button class="btn btn-secondary" style="flex:0 0 auto" onclick="clearSimInputs()">🗑️ 清除</button>
+                        </div>
+                        
+                        <!-- 匹配结果信息 -->
+                        <div id="sim-result-info"></div>
+                    </div>
+                    
+                    <!-- 右侧: 结果展示 -->
+                    <div class="sim-panel">
+                        <div class="sim-panel-title">📊 匹配结果</div>
+                        <div id="sim-result-display" style="text-align:center; color:var(--text-dim); padding:40px 0">
+                            <div style="font-size:48px; margin-bottom:12px">🔍</div>
+                            <div>上传原图和子图后点击"开始匹配"</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
     
-    <!-- 添加节点模态框 -->
+
+        <!-- 添加节点模态框 -->
     <div id="add-node-modal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
@@ -1437,8 +1623,10 @@ HTML_TEMPLATE = '''
                 <select id="new-edge-to"></select>
             </div>
             <div class="form-group">
-                <label class="form-label">角度 (度)</label>
-                <input type="number" id="new-edge-angle" value="0" min="0" max="360">
+                <label class="form-label">相机 (camera_1~4)</label>
+                <input type="text" id="new-edge-camera" value="camera_1" placeholder="camera_1~4">
+                <label class="form-label">地标名称</label>
+                <input type="text" id="new-edge-landmark" value="" placeholder="如: 电梯、玻璃门">
             </div>
             <div class="modal-footer">
                 <button class="btn btn-secondary" onclick="closeModal('add-edge-modal')">取消</button>
@@ -1785,7 +1973,7 @@ HTML_TEMPLATE = '''
                         n.neighbors.forEach(nb => {
                             html += `<div class="neighbor-item" onclick="showNodeDetail('${nb.id}')">
                                 <span class="neighbor-name">${nb.name}</span>
-                                <span class="neighbor-angle">${nb.angle}°</span>
+                                <span class="neighbor-angle">${nb.camera_name} → ${nb.landmark_name}</span>
                             </div>`;
                         });
                         html += '</div>';
@@ -1845,12 +2033,12 @@ HTML_TEMPLATE = '''
                                         <span class="step-arrow">→</span>
                                         <span class="step-to">${step.to_node.name}</span>
                                     </div>
-                                    <span class="step-angle">${step.angle}°</span>
+                                    <span class="step-angle">${step.camera_name} → ${step.landmark_name}</span>
                                 </div>
                                 <div style="display:flex; gap:8px; font-size:11px; color:var(--text-dim); margin:4px 0 4px 36px">
-                                    ${step.pixel_position ? `<span>🎯 像素目标: (${step.pixel_position[0]}, ${step.pixel_position[1]})</span>` : ''}
+                                    ${step.pixel_box ? `<span>📦 pixel_box: (${step.pixel_box.join(', ')})</span>` : ''}
                                 </div>
-                                ${step.stitch_image_path ? `<img class="step-image" src="/api/image?path=${encodeURIComponent(step.stitch_image_path)}">` : ''}
+                                ${step.crop_image_path ? `<img class="step-image" src="/api/image?path=${encodeURIComponent(step.crop_image_path)}">` : ''}
                             </div>
                         `;
                     });
@@ -2035,7 +2223,7 @@ HTML_TEMPLATE = '''
                 <tr>
                     <td>${e.from_name || e.from}</td>
                     <td>${e.to_name || e.to}</td>
-                    <td>${e.angle}°</td>
+                    <td>${e.camera_name} / ${e.landmark_name}</td>
                     <td class="actions">
                         <button class="icon-btn danger" onclick="deleteEdge('${e.from}', '${e.to}')" title="删除">🗑️</button>
                     </td>
@@ -2079,7 +2267,8 @@ HTML_TEMPLATE = '''
         }
         
         function showAddEdgeModal() {
-            document.getElementById('new-edge-angle').value = '0';
+            document.getElementById('new-edge-camera').value = 'camera_1';
+            document.getElementById('new-edge-landmark').value = '';
             document.getElementById('add-edge-modal').classList.add('active');
         }
         
@@ -2204,7 +2393,8 @@ HTML_TEMPLATE = '''
         async function addEdge() {
             const from_id = document.getElementById('new-edge-from').value;
             const to_id = document.getElementById('new-edge-to').value;
-            const angle = parseFloat(document.getElementById('new-edge-angle').value) || 0;
+            const camera_name = document.getElementById('new-edge-camera').value || 'camera_1';
+            const landmark_name = document.getElementById('new-edge-landmark').value || '';
             
             if (!from_id || !to_id) {
                 showToast('请选择起点和终点', 'error');
@@ -2220,7 +2410,7 @@ HTML_TEMPLATE = '''
                 const res = await fetch('/api/db/edge', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ from_id, to_id, angle })
+                    body: JSON.stringify({ from_id, to_id, camera_name, landmark_name })
                 });
                 const data = await res.json();
                 
@@ -2322,7 +2512,142 @@ HTML_TEMPLATE = '''
             }, 3000);
         }
         
-        // 初始化
+        // ============ 子图匹配验证 ============
+        function onSimFileChange(type, input) {
+            const area = document.getElementById('sim-' + type + '-area');
+            if (input.files && input.files[0]) {
+                const fileName = input.files[0].name;
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    area.classList.add('has-image');
+                    // 保留原始 input，只更新预览
+                    let preview = area.querySelector('.sim-preview');
+                    let nameDiv = area.querySelector('.sim-file-name');
+                    if (!preview) {
+                        // 隐藏上传提示
+                        area.querySelectorAll('.sim-upload-icon, .sim-upload-text').forEach(el => el.style.display = 'none');
+                        preview = document.createElement('img');
+                        preview.className = 'sim-preview';
+                        area.appendChild(preview);
+                        nameDiv = document.createElement('div');
+                        nameDiv.className = 'sim-file-name';
+                        nameDiv.style.cssText = 'font-size:11px; color:var(--text-dim); margin-top:4px';
+                        area.appendChild(nameDiv);
+                    }
+                    preview.src = e.target.result;
+                    nameDiv.textContent = fileName;
+                };
+                reader.readAsDataURL(input.files[0]);
+            }
+        }
+
+        function clearSimInputs() {
+            ['orig', 'crop'].forEach(type => {
+                const area = document.getElementById('sim-' + type + '-area');
+                area.classList.remove('has-image');
+                // 清除文件
+                const input = document.getElementById('sim-' + type + '-file');
+                input.value = '';
+                // 移除预览
+                const preview = area.querySelector('.sim-preview');
+                if (preview) preview.remove();
+                const nameDiv = area.querySelector('.sim-file-name');
+                if (nameDiv) nameDiv.remove();
+                // 恢复上传提示
+                area.querySelectorAll('.sim-upload-icon, .sim-upload-text').forEach(el => el.style.display = '');
+            });
+            document.getElementById('sim-result-info').innerHTML = '';
+            document.getElementById('sim-result-display').innerHTML = `
+                <div style="text-align:center; color:var(--text-dim); padding:40px 0">
+                    <div style="font-size:48px; margin-bottom:12px">🔍</div>
+                    <div>上传原图和子图后点击"开始匹配"</div>
+                </div>`;
+        }
+
+        async function runSubImageMatch() {
+            const origInput = document.getElementById('sim-orig-file');
+            const cropInput = document.getElementById('sim-crop-file');
+
+            if (!origInput.files || !origInput.files[0]) {
+                showToast('请上传原图', 'error'); return;
+            }
+            if (!cropInput.files || !cropInput.files[0]) {
+                showToast('请上传子图', 'error'); return;
+            }
+
+            const fd = new FormData();
+            fd.append('original', origInput.files[0]);
+            fd.append('crop', cropInput.files[0]);
+            fd.append('confidence_threshold', document.getElementById('sim-conf-threshold').value);
+            fd.append('min_matches', document.getElementById('sim-min-matches').value);
+
+            document.getElementById('sim-result-info').innerHTML = '<div class="loading"><div class="spinner"></div>匹配中...</div>';
+            document.getElementById('sim-result-display').innerHTML = '<div style="text-align:center; padding:40px"><div class="spinner"></div></div>';
+
+            try {
+                const res = await fetch('/api/sub_image_match', { method: 'POST', body: fd });
+                const data = await res.json();
+
+                if (data.success) {
+                    const r = data.result;
+                    const statusColor = r.found ? 'var(--success)' : 'var(--danger)';
+                    const statusText = r.found ? '✅ 匹配成功' : '❌ 匹配失败';
+
+                    document.getElementById('sim-result-info').innerHTML = `
+                        <div class="result-box" style="border-left: 3px solid ${statusColor}">
+                            <div class="result-title" style="color:${statusColor}">${statusText}</div>
+                            <div class="sim-info-grid">
+                                <div class="sim-info-item">
+                                    <div class="sim-info-value">${(r.confidence * 100).toFixed(1)}%</div>
+                                    <div class="sim-info-label">置信度</div>
+                                </div>
+                                <div class="sim-info-item">
+                                    <div class="sim-info-value">${r.elapsed_ms.toFixed(0)}ms</div>
+                                    <div class="sim-info-label">耗时</div>
+                                </div>
+                            </div>
+                            <div style="margin-top:10px; font-size:12px; color:var(--text-dim)">
+                                <div>方法: ${r.method}</div>
+                                ${r.found ? `<div>左上角: (${r.top_left_pct.x.toFixed(2)}, ${r.top_left_pct.y.toFixed(2)})</div>
+                                <div>右下角: (${r.bottom_right_pct.x.toFixed(2)}, ${r.bottom_right_pct.y.toFixed(2)})</div>
+                                <div>像素: (${r.bbox_pixel.x_min}, ${r.bbox_pixel.y_min}) → (${r.bbox_pixel.x_max}, ${r.bbox_pixel.y_max})</div>` : ''}
+                            </div>
+                        </div>`;
+
+                    // Display annotated and matches images
+                    let html = '<div class="sim-result-images">';
+                    if (data.annotated_image) {
+                        html += `<div>
+                            <div style="font-size:13px; font-weight:600; margin-bottom:8px">📍 定位结果</div>
+                            <img src="data:image/jpeg;base64,${data.annotated_image}" class="sim-result-img">
+                        </div>`;
+                    }
+                    if (data.matches_image) {
+                        html += `<div>
+                            <div style="font-size:13px; font-weight:600; margin-bottom:8px">🔗 特征匹配</div>
+                            <img src="data:image/jpeg;base64,${data.matches_image}" class="sim-result-img">
+                        </div>`;
+                    }
+                    html += '</div>';
+                    document.getElementById('sim-result-display').innerHTML = html;
+                } else {
+                    document.getElementById('sim-result-info').innerHTML = `
+                        <div class="result-box result-error">
+                            <div class="result-title">❌ 错误</div>
+                            <div>${data.error}</div>
+                        </div>`;
+                    document.getElementById('sim-result-display').innerHTML = '';
+                }
+            } catch(e) {
+                document.getElementById('sim-result-info').innerHTML = `
+                    <div class="result-box result-error">
+                        <div class="result-title">❌ 请求错误</div>
+                        <div>${e.message}</div>
+                    </div>`;
+            }
+        }
+
+                // 初始化
         window.onload = refreshGraph;
     </script>
 </body>
@@ -2438,9 +2763,11 @@ class MemoryNavServer:
                         edges.append({
                             'from': node_id,
                             'to': edge.target_node_id,
-                            'angle': edge.angle,
-                            'pixel_position': list(edge.pixel_position) if edge.pixel_position else None,
-                            'stitch_image_path': edge.stitch_image_path,
+                            'camera_name': edge.camera_name,
+                            'landmark_name': edge.landmark_name,
+                            'landmark_name_eng': getattr(edge, 'landmark_name_eng', ''),
+                            'pixel_box': list(edge.pixel_box),
+                            'crop_image_path': edge.crop_image_path,
                             'target_name': edge.target_node_name,
                             'target_name_eng': getattr(edge, 'target_node_name_eng', ''),
                             'bidirectional': reverse_exists
@@ -2465,9 +2792,11 @@ class MemoryNavServer:
                     'id': edge.target_node_id,
                     'name': edge.target_node_name,
                     'name_eng': getattr(edge, 'target_node_name_eng', ''),
-                    'angle': edge.angle,
-                    'pixel_position': list(edge.pixel_position) if edge.pixel_position else None,
-                    'stitch_image_path': edge.stitch_image_path
+                    'camera_name': edge.camera_name,
+                    'landmark_name': edge.landmark_name,
+                    'landmark_name_eng': getattr(edge, 'landmark_name_eng', ''),
+                    'pixel_box': list(edge.pixel_box),
+                    'crop_image_path': edge.crop_image_path
                 })
             
             return jsonify({
@@ -2507,9 +2836,11 @@ class MemoryNavServer:
                     'step_index': s.step_index,
                     'from_node': {'id': s.from_node_id, 'name': s.from_node_name, 'name_eng': getattr(s, 'from_node_name_eng', '')},
                     'to_node': {'id': s.to_node_id, 'name': s.to_node_name, 'name_eng': getattr(s, 'to_node_name_eng', '')},
-                    'angle': s.angle,
-                    'pixel_position': list(s.pixel_position) if s.pixel_position else None,
-                    'stitch_image_path': s.stitch_image_path
+                    'camera_name': s.camera_name,
+                    'landmark_name': s.landmark_name,
+                    'landmark_name_eng': getattr(s, 'landmark_name_eng', ''),
+                    'pixel_box': list(s.pixel_box),
+                    'crop_image_path': s.crop_image_path
                 } for s in plan.steps]
                 
                 return jsonify({
@@ -2593,6 +2924,84 @@ class MemoryNavServer:
             })
         
         # ========================================================================
+        # 子图匹配验证 API
+        # ========================================================================
+
+        @self.app.route('/api/sub_image_match', methods=['POST'])
+        def sub_image_match():
+            """子图匹配验证"""
+            if self.memory_navigator is None:
+                return jsonify({'success': False, 'error': 'memory_nav 未初始化'})
+
+            import cv2
+            import base64
+
+            if 'original' not in request.files or 'crop' not in request.files:
+                return jsonify({'success': False, 'error': '请上传原图和子图'})
+
+            # 读取原图
+            orig_file = request.files['original']
+            orig_nparr = np.frombuffer(orig_file.read(), np.uint8)
+            orig_img = cv2.imdecode(orig_nparr, cv2.IMREAD_COLOR)
+
+            # 读取子图
+            crop_file = request.files['crop']
+            crop_nparr = np.frombuffer(crop_file.read(), np.uint8)
+            crop_img = cv2.imdecode(crop_nparr, cv2.IMREAD_COLOR)
+
+            if orig_img is None or crop_img is None:
+                return jsonify({'success': False, 'error': '图片解码失败'})
+
+            # 读取参数
+            confidence_threshold = float(request.form.get('confidence_threshold', 0.3))
+            min_matches = int(request.form.get('min_matches', 8))
+
+            # 临时调整参数
+            old_conf = self.memory_navigator.sub_image_matcher.confidence_threshold
+            old_min = self.memory_navigator.sub_image_matcher.min_matches
+            self.memory_navigator.sub_image_matcher.confidence_threshold = confidence_threshold
+            self.memory_navigator.sub_image_matcher.min_matches = min_matches
+
+            try:
+                result = self.memory_navigator.sub_image_matcher.match(orig_img, crop_img)
+            finally:
+                self.memory_navigator.sub_image_matcher.confidence_threshold = old_conf
+                self.memory_navigator.sub_image_matcher.min_matches = old_min
+
+            # 绘制标注图
+            annotated = orig_img.copy()
+            if result.found:
+                cv2.rectangle(annotated, (result.x_min, result.y_min),
+                              (result.x_max, result.y_max), (0, 255, 0), 3)
+                label = f"Conf: {result.confidence:.3f}"
+                cv2.putText(annotated, label,
+                            (result.x_min, max(result.y_min - 10, 25)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+            else:
+                cv2.putText(annotated, "No match found", (30, 50),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
+
+            # 限制输出尺寸
+            max_dim = 800
+            h, w = annotated.shape[:2]
+            if max(h, w) > max_dim:
+                scale = max_dim / max(h, w)
+                annotated = cv2.resize(annotated, (int(w * scale), int(h * scale)))
+
+            _, buf = cv2.imencode('.jpg', annotated, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            annotated_b64 = base64.b64encode(buf).decode('utf-8')
+
+            # 返回结果
+            resp = {
+                'success': True,
+                'result': result.to_dict(),
+                'annotated_image': annotated_b64,
+                'matches_image': None
+            }
+
+            return jsonify(resp)
+
+                # ========================================================================
         # 数据库管理 API
         # ========================================================================
         
@@ -2629,8 +3038,11 @@ class MemoryNavServer:
                             'from_name_eng': getattr(node, 'node_name_eng', ''),
                             'to_name': tgt.node_name if tgt else '',
                             'to_name_eng': getattr(tgt, 'node_name_eng', '') if tgt else '',
-                            'angle': edge.angle,
-                            'pixel_position': list(edge.pixel_position) if edge.pixel_position else None
+                            'camera_name': edge.camera_name,
+                            'landmark_name': edge.landmark_name,
+                            'landmark_name_eng': getattr(edge, 'landmark_name_eng', ''),
+                            'pixel_box': list(edge.pixel_box),
+                            'crop_image_path': edge.crop_image_path
                         })
             
             return jsonify({'success': True, 'nodes': nodes, 'edges': edges})
@@ -2710,8 +3122,8 @@ class MemoryNavServer:
             data = request.json or {}
             from_id = str(data.get('from_id', ''))
             to_id = str(data.get('to_id', ''))
-            angle = float(data.get('angle', 0))
-            pixel = data.get('pixel_position', [512, 512])
+            camera_name = data.get('camera_name', 'camera_1')
+            landmark_name = data.get('landmark_name', '')
             
             if not from_id or not to_id:
                 return jsonify({'success': False, 'error': '缺少必要参数 (from_id, to_id)'})
@@ -2730,13 +3142,13 @@ class MemoryNavServer:
                     return jsonify({'success': False, 'error': '边已存在'})
             
             new_edge = MemoryEdge(
-                source_node_id=from_id,
-                source_node_name=src_node.node_name,
                 target_node_id=to_id,
                 target_node_name=tgt_node.node_name,
                 target_node_name_eng=getattr(tgt_node, 'node_name_eng', ''),
-                angle=angle,
-                pixel_position=tuple(pixel) if pixel else (512, 512)
+                camera_name=camera_name,
+                landmark_name=landmark_name,
+                pixel_box=(0, 0, 0, 0),
+                crop_image_path='',
             )
             src_node.edges.append(new_edge)
             self._save_graph()
@@ -2788,8 +3200,11 @@ class MemoryNavServer:
                     edges.append({
                         'from': node_id,
                         'to': edge.target_node_id,
-                        'angle': edge.angle,
-                        'pixel_position': list(edge.pixel_position) if edge.pixel_position else None
+                        'camera_name': edge.camera_name,
+                        'landmark_name': edge.landmark_name,
+                        'landmark_name_eng': getattr(edge, 'landmark_name_eng', ''),
+                        'pixel_box': list(edge.pixel_box),
+                        'crop_image_path': edge.crop_image_path
                     })
             
             return jsonify({

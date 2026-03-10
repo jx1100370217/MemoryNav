@@ -110,9 +110,6 @@ memory_navigator: Optional[MemoryNavigator] = None
 MEMORY_DATA_DIR = "merged_labeled_data"
 MEMORY_CACHE_PATH = "deploy/memory_nav/memory_cache"
 
-# 默认 stitch 图像尺寸（用于 pixel_position 归一化）
-DEFAULT_STITCH_WIDTH = 1024
-DEFAULT_STITCH_HEIGHT = 1024
 
 
 # ============================================================================
@@ -528,32 +525,26 @@ def decode_camera_images(message_data: dict) -> Optional[Dict[str, np.ndarray]]:
     return camera_images if camera_images else None
 
 
-def get_stitch_image_size(stitch_image_path: str) -> Tuple[int, int]:
-    """
-    获取 stitch 图像尺寸，用于 pixel_position 归一化
 
-    Returns:
-        (width, height)
-    """
-    try:
-        if stitch_image_path and os.path.exists(stitch_image_path):
-            with Image.open(stitch_image_path) as img:
-                w, h = img.size
-                logger.debug(f"[Memory] stitch 图像尺寸: {w}x{h} ({stitch_image_path})")
-                return w, h
-    except Exception as e:
-        logger.warning(f"[Memory] 读取 stitch 图像尺寸失败: {e}")
-    return DEFAULT_STITCH_WIDTH, DEFAULT_STITCH_HEIGHT
 
 
 def build_memory_response(
     robot_id, pts, nav_state: MemoryNavState,
     vpr_result: Optional[VPRResult],
     task_status: str = "executing",
-    message: str = ""
+    message: str = "",
+    sub_image_match: dict = None,
 ) -> dict:
     """
-    构建记忆导航响应
+    构建记忆导航响应（新方案）
+
+    新方案返回：
+    - camera_name: 目标所在相机
+    - landmark_name: 注意力目标地标
+    - crop_image_path: crop 子图路径
+    - sub_image_match: 子图匹配结果（实时匹配的区域百分比）
+
+    机器人控制端根据 camera_name + 匹配区域 自行生成像素目标和避障轨迹。
 
     Args:
         robot_id: 机器人 ID
@@ -562,6 +553,7 @@ def build_memory_response(
         vpr_result: VPR 结果
         task_status: 任务状态 ("executing" / "end")
         message: 消息
+        sub_image_match: 子图匹配结果（可选）
 
     Returns:
         响应字典
@@ -575,20 +567,12 @@ def build_memory_response(
             "pts": pts,
             "task_status": "end",
             "action": [[0.0, 0.0, 0.0]],
-            "pixel_target": None,
+            "camera_name": None,
             "memory_active": False,
             "message": "记忆导航内部错误: 当前步骤为空"
         }
 
-    # 像素目标 (pixel_position 在 node_position_info.json 中已归一化为 [0,1])
-    px, py = step.pixel_position
-    norm_x = max(0.0, min(1.0, float(px)))
-    norm_y = max(0.0, min(1.0, float(py)))
-
-    # 角度: 严格使用 edge 的 angle (绝对朝向)
-    # heading_offset 仅作为参考信息返回，不参与角度计算
     heading_offset = vpr_result.heading_offset if vpr_result else 0.0
-    angle = step.angle
 
     # 构建 memory_info
     memory_info = {
@@ -619,18 +603,36 @@ def build_memory_response(
         "pts": pts,
         "task_status": task_status,
         "action": [[0.0, 0.0, 0.0]],  # 记忆模式下 action 不使用
-        "pixel_target": [norm_x, norm_y],
-        "angle": angle,
+        "camera_name": step.camera_name,
+        "landmark_name": step.landmark_name,
+        "landmark_name_eng": getattr(step, 'landmark_name_eng', ''),
+        "position_name_eng": getattr(step, 'to_node_name_eng', ''),
+        "crop_image_path": step.crop_image_path,
+        "pixel_box_memory": list(step.pixel_box),
+        "sub_image_match": sub_image_match,
         "memory_active": True,
         "memory_info": memory_info,
         "message": message
     }
 
-    logger.info(f"📍 [Memory] 记忆响应: pixel_target=[{norm_x:.4f}, {norm_y:.4f}], "
-                f"angle={angle:.2f}° (edge={step.angle:.2f}°, offset={heading_offset:.2f}° 仅参考), "
+    logger.info(f"📍 [Memory] 记忆响应: camera={step.camera_name}, "
+                f"landmark={step.landmark_name}, "
+                f"match={'成功' if sub_image_match and sub_image_match.get('match', {}).get('found') else '未匹配'}, "
                 f"phase={nav_state.phase}, step={nav_state.current_step_idx + 1}/{nav_state.plan.total_steps}")
 
     return response
+
+
+def do_sub_image_match(navigator, nav_state, camera_images):
+    """执行子图匹配（辅助函数）"""
+    if navigator is None or camera_images is None:
+        return None
+    try:
+        return navigator.match_current_step(camera_images)
+    except Exception as e:
+        logger.warning(f"[Memory] 子图匹配异常: {e}")
+        return None
+
 
 
 # ============================================================================
@@ -662,6 +664,7 @@ async def process_inference_with_memory(message_data, session_state, agent,
     """
     try:
         logger.info(f"[MemoryProxy] 开始处理推理请求 (memory_enabled={memory_enabled})")
+        _sub_match = None  # 子图匹配结果
 
         # ================================================================
         # 1. 基础解析 (同 ws_proxy.py)
@@ -846,6 +849,9 @@ async def process_inference_with_memory(message_data, session_state, agent,
         # 3. 有活跃记忆计划时: VPR 验证 + 响应
         # ================================================================
         if memory_enabled and nav_state.plan is not None and nav_state.phase != 'completed':
+            # 执行子图匹配（供后续响应使用）
+            _sub_match = do_sub_image_match(memory_navigator, nav_state, camera_images) if camera_images else None
+
             step = nav_state.get_current_step()
             if step is None:
                 # 已经到最后一步之后了
@@ -895,7 +901,7 @@ async def process_inference_with_memory(message_data, session_state, agent,
                         session_state['request_count'] += 1
                         session_state['last_instruction'] = instruction
                         session_state['last_task'] = current_task
-                        resp = build_memory_response(robot_id, pts, nav_state, vpr_result)
+                        resp = build_memory_response(robot_id, pts, nav_state, vpr_result, sub_image_match=_sub_match)
                         logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
                         return resp
                     else:
@@ -910,8 +916,9 @@ async def process_inference_with_memory(message_data, session_state, agent,
                             "pts": pts,
                             "task_status": "end",
                             "action": [[0.0, 0.0, 0.0]],
-                            "pixel_target": None,
-                            "angle": None,
+                            "camera_name": None,
+                            "landmark_name": None,
+                            "sub_image_match": None,
                             "memory_active": True,
                             "memory_info": {
                                 "plan_path": nav_state.plan.path if nav_state.plan else [],
@@ -975,7 +982,7 @@ async def process_inference_with_memory(message_data, session_state, agent,
                     session_state['request_count'] += 1
                     session_state['last_instruction'] = instruction
                     session_state['last_task'] = current_task
-                    resp = build_memory_response(robot_id, pts, nav_state, vpr_result)
+                    resp = build_memory_response(robot_id, pts, nav_state, vpr_result, sub_image_match=_sub_match)
                     logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
                     return resp
 
@@ -1003,7 +1010,7 @@ async def process_inference_with_memory(message_data, session_state, agent,
                                 session_state['last_instruction'] = instruction
                                 session_state['last_task'] = current_task
                                 resp = build_memory_response(robot_id, pts, nav_state, vpr_result,
-                                    message=f"记忆导航重规划: {new_plan.start_node_name} → {new_plan.goal_node_name}")
+                                    sub_image_match=_sub_match, message=f"记忆导航重规划: {new_plan.start_node_name} → {new_plan.goal_node_name}")
                                 logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
                                 return resp
                         except Exception as e:
@@ -1052,8 +1059,9 @@ async def process_inference_with_memory(message_data, session_state, agent,
                             "pts": pts,
                             "task_status": "executing",
                             "action": [[1.0, 0.0, 0.0]],  # 前进 1 米
-                            "pixel_target": None,
-                            "angle": None,
+                            "camera_name": step.camera_name if step else None,
+                            "landmark_name": step.landmark_name if step else None,
+                            "sub_image_match": _sub_match,
                             "memory_active": True,
                             "memory_info": {
                                 "plan_path": nav_state.plan.path if nav_state.plan else [],
@@ -1090,7 +1098,7 @@ async def process_inference_with_memory(message_data, session_state, agent,
                                 nav_state.phase = 'step_init'
                                 resp = build_memory_response(
                                     robot_id, pts, nav_state, nav_state.last_vpr_result,
-                                    message=f"记忆导航: 偏离超限，强制前进到下一步"
+                                    sub_image_match=_sub_match, message=f"记忆导航: 偏离超限，强制前进到下一步"
                                 )
                             else:
                                 nav_state.phase = 'completed'
@@ -1100,8 +1108,9 @@ async def process_inference_with_memory(message_data, session_state, agent,
                                     "pts": pts,
                                     "task_status": "end",
                                     "action": [[0.0, 0.0, 0.0]],
-                                    "pixel_target": None,
-                                    "angle": None,
+                                    "camera_name": None,
+                                    "landmark_name": None,
+                                    "sub_image_match": None,
                                     "memory_active": True,
                                     "memory_info": {
                                         "plan_path": nav_state.plan.path if nav_state.plan else [],
@@ -1122,7 +1131,7 @@ async def process_inference_with_memory(message_data, session_state, agent,
                         session_state['last_task'] = current_task
                         resp = build_memory_response(
                             robot_id, pts, nav_state, nav_state.last_vpr_result,
-                            message=f"记忆导航: 检测到偏离 ({nav_state.deviation_count}/{nav_state.MAX_DEVIATIONS})，重发引导纠偏"
+                            sub_image_match=_sub_match, message=f"记忆导航: 检测到偏离 ({nav_state.deviation_count}/{nav_state.MAX_DEVIATIONS})，重发引导纠偏"
                         )
                         logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
                         return resp
@@ -1137,7 +1146,7 @@ async def process_inference_with_memory(message_data, session_state, agent,
                         session_state['last_task'] = current_task
                         resp = build_memory_response(
                             robot_id, pts, nav_state, nav_state.last_vpr_result,
-                            message=f"记忆导航: 趋势不明确，重发引导"
+                            sub_image_match=_sub_match, message=f"记忆导航: 趋势不明确，重发引导"
                         )
                         logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
                         return resp
@@ -1205,13 +1214,16 @@ async def process_inference_with_memory(message_data, session_state, agent,
                         nav_state.consecutive_misses = 0
                         nav_state.last_task = current_task
 
+                        # 首次规划成功，执行子图匹配
+                        _sub_match = do_sub_image_match(memory_navigator, nav_state, camera_images) if camera_images else None
+
                         session_state['request_count'] += 1
                         session_state['last_instruction'] = instruction
                         session_state['last_task'] = current_task
 
                         resp = build_memory_response(
                             robot_id, pts, nav_state, vpr_result,
-                            message=f"记忆导航启动: {plan.start_node_name} → {plan.goal_node_name} "
+                            sub_image_match=_sub_match, message=f"记忆导航启动: {plan.start_node_name} → {plan.goal_node_name} "
                                     f"({plan.total_steps}步)"
                         )
                         logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
@@ -1316,7 +1328,6 @@ async def process_inference_with_memory(message_data, session_state, agent,
             "pts": pts,
             "task_status": "executing",
             "action": [[0.0, 0.0, 0.0]],
-            "pixel_target": None,
             "memory_active": False,
             "message": ""
         }
@@ -1423,7 +1434,6 @@ async def process_inference_with_memory(message_data, session_state, agent,
             "pts": message_data.get('pts', None),
             "task_status": "end",
             "action": [[0.0, 0.0, 0.0]],
-            "pixel_target": None,
             "memory_active": False,
             "message": f"推理处理异常: {e}"
         }
@@ -1638,8 +1648,9 @@ async def main():
     logger.info("    - pts: 时间戳")
     logger.info("    - task_status: 'executing' / 'end'")
     logger.info("    - action: [[x, y, yaw], ...]")
-    logger.info("    - pixel_target: [norm_x, norm_y]")
-    logger.info("    - angle: 角度 (仅记忆导航模式)")
+    logger.info("    - camera_name: 目标相机 (camera_1~4, 仅记忆导航模式)")
+    logger.info("    - landmark_name: 注意力目标地标 (仅记忆导航模式)")
+    logger.info("    - sub_image_match: 子图匹配结果 (仅记忆导航模式)")
     logger.info("    - memory_active: bool")
     logger.info("    - memory_info: {...} (仅记忆导航模式)")
     logger.info("🔧 命令:")

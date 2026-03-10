@@ -249,9 +249,11 @@ class MemoryGraph:
                     to_node_id=to_id,
                     to_node_name=to_node.node_name,
                     to_node_name_eng=getattr(to_node, 'node_name_eng', ''),
-                    angle=edge.angle,
-                    pixel_position=edge.pixel_position,
-                    stitch_image_path=edge.stitch_image_path,
+                    camera_name=edge.camera_name,
+                    landmark_name=edge.landmark_name,
+                    landmark_name_eng=getattr(edge, 'landmark_name_eng', ''),
+                    crop_image_path=edge.crop_image_path,
+                    pixel_box=edge.pixel_box,
                     step_index=i
                 )
                 steps.append(step)
@@ -357,9 +359,11 @@ class MemoryGraph:
                         target_node_id=e_data['target_node_id'],
                         target_node_name=e_data['target_node_name'],
                         target_node_name_eng=e_data.get('target_node_name_eng', ''),
-                        angle=e_data['angle'],
-                        pixel_position=tuple(e_data['pixel_position']),
-                        stitch_image_path=e_data['stitch_image_path']
+                        camera_name=e_data.get('camera_name', ''),
+                        landmark_name=e_data.get('landmark_name', ''),
+                        landmark_name_eng=e_data.get('landmark_name_eng', ''),
+                        pixel_box=tuple(e_data.get('pixel_box', [0, 0, 0, 0])),
+                        crop_image_path=e_data.get('crop_image_path', ''),
                     )
                     edges.append(edge)
                 

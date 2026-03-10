@@ -7,7 +7,7 @@ MemoryNav v2.0 - 记忆导航器
 1. VPR定位：根据当前环视图定位起点
 2. 语义匹配：根据目的地名称匹配终点
 3. 路径规划：规划最短路径
-4. 导航执行：获取每一步的 angle、pixel_position、stitch_image
+4. 导航执行：获取每一步的 camera_name、crop子图匹配区域
 """
 
 import logging
@@ -27,6 +27,7 @@ from .memory_builder import MemoryBuilder
 from .anyloc_extractor import AnyLocExtractor
 from .vpr_config_loader import load_vpr_config, get_threshold
 from .vpr_factory import create_vpr_extractor
+from .sub_image_matcher import SubImageMatcher, SubImageMatchResult
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,13 @@ class MemoryNavigator:
         else:
             self.extractor, self.feature_dim, _ = create_vpr_extractor(
                 vpr_method=vpr_method, device=device, config=anyloc_config)
+        
+        # 子图匹配器
+        self.sub_image_matcher = SubImageMatcher(device=device)
+        try:
+            self.sub_image_matcher.preload()  # 启动时加载模型，后续复用
+        except Exception as e:
+            logger.warning(f"[MemoryNavigator] SubImageMatcher 预加载失败(不影响VPR定位): {e}")
         
         # 当前导航状态
         self.current_node_id: Optional[str] = None
@@ -363,12 +371,13 @@ class MemoryNavigator:
     
     def get_navigation_info(self) -> Optional[Dict]:
         """
-        获取当前导航信息
+        获取当前导航信息（新方案）
         
         返回当前步骤所需的导航数据：
-        - angle: 需要转到的绝对地理角度
-        - pixel_position: 归一化像素目标
-        - stitch_image_path: 前视图路径
+        - camera_name: 目标所在相机 (camera_1~camera_4)
+        - landmark_name: 注意力目标地标
+        - crop_image_path: crop 子图路径
+        - pixel_box: 记忆中的像素框 (x, y, w, h)
         - from_node/to_node: 起止节点信息
         """
         step = self.get_current_step()
@@ -386,9 +395,10 @@ class MemoryNavigator:
                 'id': step.to_node_id,
                 'name': step.to_node_name
             },
-            'angle': step.angle,
-            'pixel_position': step.pixel_position,
-            'stitch_image_path': step.stitch_image_path,
+            'camera_name': step.camera_name,
+            'landmark_name': step.landmark_name,
+            'crop_image_path': step.crop_image_path,
+            'pixel_box': list(step.pixel_box),
             'is_last_step': step.step_index == self.current_plan.total_steps - 1
         }
     
@@ -429,6 +439,71 @@ class MemoryNavigator:
     # 完整导航流程
     # ========================================================================
     
+    def match_current_step(self, camera_images: Dict[str, np.ndarray]) -> Optional[Dict]:
+        """
+        对当前导航步骤执行子图匹配
+        
+        用记忆中的 crop 子图在当前相机图中定位目标区域。
+        
+        Args:
+            camera_images: 当前环视相机图像 {'camera_1': image, ...}
+            
+        Returns:
+            匹配结果字典，包含 camera_name 和匹配区域百分比，
+            若匹配失败则返回 None
+        """
+        step = self.get_current_step()
+        if step is None:
+            return None
+        
+        camera_name = step.camera_name
+        crop_path = step.crop_image_path
+        
+        if not camera_name or camera_name not in camera_images:
+            logger.warning(f"[MemoryNavigator] 相机 {camera_name} 图像不可用")
+            return None
+        
+        if not crop_path:
+            logger.warning(f"[MemoryNavigator] crop 路径为空")
+            return None
+        
+        camera_image = camera_images[camera_name]
+        match_result = self.sub_image_matcher.match_from_path(camera_image, crop_path)
+        
+        result = {
+            'camera_name': camera_name,
+            'landmark_name': step.landmark_name,
+            'landmark_name_eng': getattr(step, 'landmark_name_eng', ''),
+            'position_name_eng': getattr(step, 'to_node_name_eng', ''),
+            'crop_image_path': crop_path,
+            'pixel_box_memory': list(step.pixel_box),
+            'match': match_result.to_dict(),
+        }
+        
+        if match_result.found:
+            logger.info(f"[MemoryNavigator] 子图匹配成功: camera={camera_name}, "
+                       f"confidence={match_result.confidence:.4f}, "
+                       f"center=({match_result.center_x_pct:.1f}%, {match_result.center_y_pct:.1f}%)")
+        else:
+            logger.info(f"[MemoryNavigator] 子图匹配失败: camera={camera_name}, "
+                       f"confidence={match_result.confidence:.4f}, "
+                       f"将使用记忆中的 pixel_box 作为回退")
+            # 回退: 使用记忆中的 pixel_box 计算百分比位置
+            if any(v > 0 for v in step.pixel_box):
+                # 需要知道相机图尺寸来计算百分比
+                img_h, img_w = camera_image.shape[:2]
+                bx, by, bw, bh = step.pixel_box
+                result['fallback_region'] = {
+                    'x_min_pct': round(bx / img_w, 4),
+                    'y_min_pct': round(by / img_h, 4),
+                    'x_max_pct': round((bx + bw) / img_w, 4),
+                    'y_max_pct': round((by + bh) / img_h, 4),
+                    'center_x_pct': round((bx + bw / 2) / img_w, 4),
+                    'center_y_pct': round((by + bh / 2) / img_h, 4),
+                }
+        
+        return result
+
     def navigate_to(self, 
                     destination: str,
                     camera_images: Dict[str, np.ndarray] = None,
@@ -497,6 +572,10 @@ class MemoryNavigator:
         result['success'] = True
         result['message'] = f"导航规划成功: {plan.start_node_name} -> {plan.goal_node_name}, 共{plan.total_steps}步"
         
+        # 5. 如果有相机图，尝试子图匹配
+        if camera_images:
+            result['sub_image_match'] = self.match_current_step(camera_images)
+        
         return result
     
     # ========================================================================
@@ -528,7 +607,8 @@ class MemoryNavigator:
             'node_name': node.node_name,
             'camera_images': node.camera_images,
             'neighbors': [
-                {'id': e.target_node_id, 'name': e.target_node_name, 'angle': e.angle}
+                {'id': e.target_node_id, 'name': e.target_node_name,
+                 'camera_name': e.camera_name, 'landmark_name': e.landmark_name}
                 for e in node.edges
             ],
             'has_features': node.fused_feature is not None

@@ -6,15 +6,17 @@ SelaVPR++ 特征提取器
 基于 SelaVPR++ (T-PAMI 2025) 的视觉位置识别特征提取器。
 通过 MultiConv Adapter 适配 DINOv2 基础模型，支持标准 VPR 和哈希重排两种模式。
 
+代码源自 SelaVPR++ 项目，已内嵌到 MemoryNav 中，
+不再依赖外部代码库。
+
 参考:
 - SelaVPR++: Towards Seamless Adaptation of Foundation Models for Efficient Place Recognition (T-PAMI 2025)
 - https://github.com/Lu-Feng/SelaVPRplusplus
 """
 
 import os
-import sys
 import logging
-from typing import List, Optional
+from typing import List
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -41,15 +43,64 @@ try:
 except ImportError:
     CV2_AVAILABLE = False
 
-# SelaVPR++ 本地仓库路径
-_SELAVPR_REPO_PATH = "/home/ubuntu/Disk/codes/jianxiong/SelaVPRplusplus"
+
+def _build_selavpr_model(backbone: str, aggregation: str, hashing: bool, rerank: bool):
+    """
+    构建 SelaVPR++ 模型并加载预训练权重。
+    逻辑源自原 hubconf.py，已内嵌到 MemoryNav。
+    """
+    from .selavpr_model.network import GeoLocalizationNet
+
+    class SimpleArgs:
+        def __init__(self, **kwargs):
+            self.backbone = kwargs.get('backbone', 'dinov2-large')
+            self.aggregation = kwargs.get('aggregation', 'gem')
+            self.hashing = kwargs.get('hashing', True)
+            self.rerank = kwargs.get('rerank', True)
+            self.resume = True
+            self.foundation_model_path = None
+
+    args = SimpleArgs(
+        backbone=backbone,
+        aggregation=aggregation,
+        hashing=hashing,
+        rerank=rerank,
+    )
+    vpr_model = GeoLocalizationNet(args)
+    vpr_model = torch.nn.DataParallel(vpr_model)
+
+    # 加载预训练权重
+    if backbone == "dinov2-base":
+        if not hashing:
+            url = 'https://github.com/Lu-Feng/SelaVPRplusplus/releases/download/SelaVPR%2B%2B/SelaVPRplusplus_base.pth'
+        elif hashing and rerank:
+            url = 'https://github.com/Lu-Feng/SelaVPRplusplus/releases/download/SelaVPR%2B%2B/SelaVPRplusplus_base_rerank.pth'
+        else:
+            url = None
+    elif backbone == "dinov2-large":
+        if not hashing:
+            url = 'https://github.com/Lu-Feng/SelaVPRplusplus/releases/download/SelaVPR%2B%2B/SelaVPRplusplus_large.pth'
+        elif hashing and rerank:
+            url = 'https://github.com/Lu-Feng/SelaVPRplusplus/releases/download/SelaVPR%2B%2B/SelaVPRplusplus_large_rerank.pth'
+        else:
+            url = None
+    else:
+        url = None
+
+    if url is not None:
+        state = torch.hub.load_state_dict_from_url(
+            url, map_location=torch.device('cpu'), weights_only=False
+        )
+        vpr_model.load_state_dict(state["model_state_dict"])
+
+    return vpr_model
 
 
 class SelaVPRExtractor:
     """
     SelaVPR++ VPR 特征提取器
 
-    通过 torch.hub (本地或远程) 加载预训练模型。
+    直接使用内嵌的模型代码加载预训练模型，不再依赖外部仓库。
 
     支持两种模式:
     - 标准 VPR: 输出高维浮点全局描述子 (base: 2048D, large: 4096D)
@@ -60,7 +111,6 @@ class SelaVPRExtractor:
         aggregation: 聚合方法 'gem', 'boq', 'salad'
         use_hashing: 是否使用哈希模式
         use_rerank: 是否使用重排 (需 use_hashing=True)
-        repo_path: 本地仓库路径
         max_img_size: 最大图像边长
         device: 计算设备
     """
@@ -85,9 +135,12 @@ class SelaVPRExtractor:
         self.aggregation = aggregation
         self.use_hashing = use_hashing
         self.use_rerank = use_rerank
-        self.repo_path = repo_path or _SELAVPR_REPO_PATH
         self.max_img_size = max_img_size
         self.device = device
+
+        # repo_path 参数保留但不再使用（兼容旧配置）
+        if repo_path:
+            logger.info(f"[SelaVPR++] repo_path 参数已忽略，使用内嵌模型代码")
 
         # 标准 VPR 模式输出维度
         self.feature_dim = self.FEATURE_DIMS.get(backbone, 2048)
@@ -107,30 +160,15 @@ class SelaVPRExtractor:
                     f"dim={self.feature_dim}, device={device}")
 
     def _load_model(self):
-        """加载 SelaVPR++ 预训练模型"""
+        """加载 SelaVPR++ 预训练模型（使用内嵌模型代码）"""
         try:
-            # 优先使用本地仓库
-            if os.path.isdir(self.repo_path) and os.path.exists(
-                    os.path.join(self.repo_path, 'hubconf.py')):
-                logger.info(f"[SelaVPR++] 使用本地仓库: {self.repo_path}")
-                self.model = torch.hub.load(
-                    self.repo_path, 'SelaVPRplusplus',
-                    source='local', trust_repo=True,
-                    backbone=self.backbone_name,
-                    aggregation=self.aggregation,
-                    hashing=self.use_hashing,
-                    rerank=self.use_rerank
-                )
-            else:
-                self.model = torch.hub.load(
-                    'Lu-Feng/SelaVPRplusplus', 'SelaVPRplusplus',
-                    trust_repo=True,
-                    backbone=self.backbone_name,
-                    aggregation=self.aggregation,
-                    hashing=self.use_hashing,
-                    rerank=self.use_rerank
-                )
-
+            logger.info("[SelaVPR++] 使用内嵌模型代码构建模型...")
+            self.model = _build_selavpr_model(
+                backbone=self.backbone_name,
+                aggregation=self.aggregation,
+                hashing=self.use_hashing,
+                rerank=self.use_rerank,
+            )
             self.model = self.model.eval().to(self.device)
             logger.info("[SelaVPR++] 模型加载成功")
         except Exception as e:

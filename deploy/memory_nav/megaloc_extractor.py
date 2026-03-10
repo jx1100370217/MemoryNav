@@ -6,15 +6,17 @@ MegaLoc VPR 特征提取器
 基于 MegaLoc (CVPR 2025 Workshop) 的视觉位置识别特征提取器。
 使用 DINOv2 + Optimal Transport 聚合生成全局描述子。
 
+代码源自 MegaLoc 项目，已内嵌到 MemoryNav 中，
+不再依赖外部代码库。
+
 参考:
 - MegaLoc: One Retrieval to Place Them All (CVPR 2025)
 - https://github.com/gmberton/MegaLoc
 """
 
 import os
-import sys
 import logging
-from typing import List, Optional
+from typing import List
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -41,19 +43,38 @@ try:
 except ImportError:
     CV2_AVAILABLE = False
 
-# MegaLoc 本地仓库路径
-_MEGALOC_REPO_PATH = "/home/ubuntu/Disk/codes/jianxiong/MegaLoc"
+
+def _build_megaloc_model():
+    """
+    构建 MegaLoc 模型并加载预训练权重。
+    逻辑源自原 hubconf.py，已内嵌到 MemoryNav。
+    """
+    from .megaloc_model import MegaLoc
+    from huggingface_hub import hf_hub_download
+    from safetensors.torch import load_file
+
+    model = MegaLoc()
+
+    weights_path = hf_hub_download(
+        repo_id="gberton/MegaLoc",
+        filename="model.safetensors",
+    )
+
+    state_dict = load_file(weights_path)
+    model.load_state_dict(state_dict)
+
+    return model
 
 
 class MegaLocExtractor:
     """
     MegaLoc VPR 特征提取器
 
-    通过 torch.hub (本地或远程) 加载预训练的 MegaLoc 模型，提取全局描述子。
+    直接使用内嵌的模型代码加载预训练模型，不再依赖外部仓库。
     输出特征维度: 8448
 
     Args:
-        repo_path: MegaLoc 仓库本地路径 (None=自动检测)
+        repo_path: (已废弃，保留兼容) MegaLoc 仓库本地路径
         max_img_size: 最大图像边长 (需为14的倍数，默认518)
         device: 计算设备
     """
@@ -67,11 +88,14 @@ class MegaLocExtractor:
         if not TORCH_AVAILABLE:
             raise RuntimeError("PyTorch 不可用，无法使用 MegaLoc")
 
-        self.repo_path = repo_path or _MEGALOC_REPO_PATH
         self.max_img_size = max_img_size
         self.device = device
         self.feature_dim = self.FEATURE_DIM
         self.model = None
+
+        # repo_path 参数保留但不再使用（兼容旧配置）
+        if repo_path:
+            logger.info(f"[MegaLoc] repo_path 参数已忽略，使用内嵌模型代码")
 
         # 图像预处理 (与 DINOv2 一致)
         self.base_tf = tvf.Compose([
@@ -86,21 +110,10 @@ class MegaLocExtractor:
                     f"max_img_size={max_img_size}, device={device}")
 
     def _load_model(self):
-        """加载 MegaLoc 预训练模型"""
+        """加载 MegaLoc 预训练模型（使用内嵌模型代码）"""
         try:
-            # 优先使用本地仓库
-            if os.path.isdir(self.repo_path) and os.path.exists(
-                    os.path.join(self.repo_path, 'hubconf.py')):
-                logger.info(f"[MegaLoc] 使用本地仓库: {self.repo_path}")
-                self.model = torch.hub.load(
-                    self.repo_path, "get_trained_model",
-                    source='local', trust_repo=True)
-            else:
-                # 尝试远程
-                self.model = torch.hub.load(
-                    "gmberton/MegaLoc", "get_trained_model",
-                    trust_repo=True)
-
+            logger.info("[MegaLoc] 使用内嵌模型代码构建模型...")
+            self.model = _build_megaloc_model()
             self.model = self.model.eval().to(self.device)
             logger.info("[MegaLoc] 模型加载成功")
         except Exception as e:

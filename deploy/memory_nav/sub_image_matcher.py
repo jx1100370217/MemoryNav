@@ -90,17 +90,24 @@ class SubImageMatchResult:
     method: str = ""
 
     def to_dict(self) -> Dict:
+        top_left = {
+            'x': round(self.x_min_pct / 100.0, 4),
+            'y': round(self.y_min_pct / 100.0, 4),
+        }
+        bottom_right = {
+            'x': round(self.x_max_pct / 100.0, 4),
+            'y': round(self.y_max_pct / 100.0, 4),
+        }
+        center = {
+            'x': round((top_left['x'] + bottom_right['x']) / 2, 4),
+            'y': round((top_left['y'] + bottom_right['y']) / 2, 4),
+        }
         return {
             'found': self.found,
             'confidence': round(self.confidence, 4),
-            'top_left_pct': {
-                'x': round(self.x_min_pct / 100.0, 4),
-                'y': round(self.y_min_pct / 100.0, 4),
-            },
-            'bottom_right_pct': {
-                'x': round(self.x_max_pct / 100.0, 4),
-                'y': round(self.y_max_pct / 100.0, 4),
-            },
+            'top_left_pct': top_left,
+            'bottom_right_pct': bottom_right,
+            'center_pct': center,
             'bbox_pixel': {
                 'x_min': self.x_min, 'y_min': self.y_min,
                 'x_max': self.x_max, 'y_max': self.y_max,

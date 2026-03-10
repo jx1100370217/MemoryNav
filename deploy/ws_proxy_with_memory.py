@@ -624,14 +624,82 @@ def build_memory_response(
 
 
 def do_sub_image_match(navigator, nav_state, camera_images):
-    """执行子图匹配（辅助函数）"""
+    """执行子图匹配（辅助函数）
+    
+    使用 nav_state 中的当前步骤（而非 navigator 内部的 step index），
+    确保子图匹配与 ws_proxy 的步骤状态同步。
+    """
     if navigator is None or camera_images is None:
         return None
     try:
-        return navigator.match_current_step(camera_images)
+        # 从 nav_state 获取当前步骤，避免与 navigator 内部 step index 不同步
+        current_step = nav_state.get_current_step() if nav_state else None
+        return navigator.match_current_step(camera_images, step=current_step)
     except Exception as e:
         logger.warning(f"[Memory] 子图匹配异常: {e}")
         return None
+
+
+def visualize_sub_image_match(camera_images, sub_match_result, pts=None):
+    """
+    在对应的 camera_x 图上标注子图匹配框和中心点，并保存到 deploy/logs/images/
+
+    Args:
+        camera_images: {'camera_1': ndarray(BGR), ...}
+        sub_match_result: do_sub_image_match 返回的结果字典
+        pts: 时间戳（用于文件名）
+    """
+    if sub_match_result is None:
+        return
+    match_info = sub_match_result.get('match')
+    if match_info is None or not match_info.get('found', False):
+        return
+
+    camera_name = sub_match_result.get('camera_name')
+    if not camera_name or camera_name not in camera_images:
+        return
+
+    try:
+        # 复制图像避免修改原图
+        img = camera_images[camera_name].copy()
+        img_h, img_w = img.shape[:2]
+
+        # 从匹配结果获取百分比坐标（0~1 范围）
+        tl = match_info['top_left_pct']
+        br = match_info['bottom_right_pct']
+        ct = match_info['center_pct']
+
+        # 转换为像素坐标
+        x_min = int(tl['x'] * img_w)
+        y_min = int(tl['y'] * img_h)
+        x_max = int(br['x'] * img_w)
+        y_max = int(br['y'] * img_h)
+        cx = int(ct['x'] * img_w)
+        cy = int(ct['y'] * img_h)
+
+        # 绘制绿色矩形框（线宽2）
+        cv2.rectangle(img, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
+
+        # 绘制红色中心点（实心圆，半径5）
+        cv2.circle(img, (cx, cy), 5, (0, 0, 255), -1)
+
+        # 在框上方标注置信度
+        conf = match_info.get('confidence', 0)
+        label = f"conf={conf:.3f}"
+        cv2.putText(img, label, (x_min, max(y_min - 8, 15)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
+        # 保存
+        images_dir = os.path.join(LOG_DIR, 'images')
+        os.makedirs(images_dir, exist_ok=True)
+        ts = f"{pts}" if pts is not None else f"{int(time.time() * 1000)}"
+        save_path = os.path.join(images_dir, f"{ts}_{camera_name}_match.jpg")
+        cv2.imwrite(save_path, img)
+        logger.info(f"💾 [SubImageMatch] 已保存匹配可视化: {save_path} "
+                    f"(box=[{x_min},{y_min},{x_max},{y_max}], center=[{cx},{cy}])")
+
+    except Exception as e:
+        logger.warning(f"[SubImageMatch] 可视化保存失败: {e}", exc_info=True)
 
 
 
@@ -851,6 +919,7 @@ async def process_inference_with_memory(message_data, session_state, agent,
         if memory_enabled and nav_state.plan is not None and nav_state.phase != 'completed':
             # 执行子图匹配（供后续响应使用）
             _sub_match = do_sub_image_match(memory_navigator, nav_state, camera_images) if camera_images else None
+            visualize_sub_image_match(camera_images, _sub_match, pts)
 
             step = nav_state.get_current_step()
             if step is None:
@@ -1216,6 +1285,7 @@ async def process_inference_with_memory(message_data, session_state, agent,
 
                         # 首次规划成功，执行子图匹配
                         _sub_match = do_sub_image_match(memory_navigator, nav_state, camera_images) if camera_images else None
+                        visualize_sub_image_match(camera_images, _sub_match, pts)
 
                         session_state['request_count'] += 1
                         session_state['last_instruction'] = instruction

@@ -439,7 +439,7 @@ class MemoryNavigator:
     # 完整导航流程
     # ========================================================================
     
-    def match_current_step(self, camera_images: Dict[str, np.ndarray]) -> Optional[Dict]:
+    def match_current_step(self, camera_images: Dict[str, np.ndarray], step: 'NavigationStep' = None) -> Optional[Dict]:
         """
         对当前导航步骤执行子图匹配
         
@@ -447,14 +447,16 @@ class MemoryNavigator:
         
         Args:
             camera_images: 当前环视相机图像 {'camera_1': image, ...}
+            step: 外部传入的导航步骤（优先使用），若为None则使用内部当前步骤
             
         Returns:
             匹配结果字典，包含 camera_name 和匹配区域百分比，
             若匹配失败则返回 None
         """
-        step = self.get_current_step()
         if step is None:
-            return None
+            step = self.get_current_step()
+            if step is None:
+                return None
         
         camera_name = step.camera_name
         crop_path = step.crop_image_path

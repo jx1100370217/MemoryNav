@@ -135,8 +135,11 @@ class MemoryNavState:
     MAX_DEVIATIONS: int = 5           # 最大偏离次数 → 强制 advance
     last_query_features: Optional[Dict] = None  # 最近一次提取的特征
     last_good_sub_match: Optional[Dict] = None   # 上一帧成功的子图匹配结果 (confidence >= threshold)
-    last_camera_image: Optional[np.ndarray] = None  # 上一帧相机图像（用于帧间相似度）
+    last_good_query_features: Optional[Dict] = None  # 上一帧匹配成功时的 VPR 特征（用于帧间相似度）
+    # last_camera_image 已废弃，帧间相似度改用 last_query_features 中的 DINOv2 特征
     cache_miss_count: int = 0                     # 连续缓存未命中计数
+    last_frame_similarity: Optional[float] = None     # 最近一次帧间DINOv2相似度
+    last_cache_action: Optional[str] = None           # 最近一次缓存操作: accepted/reused/cleared/no_cache
     fallback_action: Optional[list] = None        # InternVLN 兜底动作
     fallback_pixel_target: Optional[list] = None  # InternVLN 兜底像素目标
     fallback_instruction: Optional[str] = None    # InternVLN 兜底指令
@@ -154,7 +157,7 @@ class MemoryNavState:
         self.deviation_count = 0
         self.last_query_features = None
         self.last_good_sub_match = None
-        self.last_camera_image = None
+        self.last_good_query_features = None
         self.cache_miss_count = 0
         self.fallback_action = None
         self.fallback_pixel_target = None
@@ -179,7 +182,7 @@ class MemoryNavState:
         self.target_sim_history = []
         self.deviation_count = 0
         self.last_good_sub_match = None
-        self.last_camera_image = None
+        self.last_good_query_features = None
         self.cache_miss_count = 0
         self.fallback_action = None
         self.fallback_pixel_target = None
@@ -594,6 +597,8 @@ def build_memory_response(
 
     # 构建 memory_info
     memory_info = {
+        "frame_similarity": nav_state.last_frame_similarity,
+        "cache_action": nav_state.last_cache_action,
         "plan_path": nav_state.plan.path if nav_state.plan else [],
         "current_step": nav_state.current_step_idx,
         "total_steps": nav_state.plan.total_steps if nav_state.plan else 0,
@@ -694,41 +699,50 @@ def _extract_pixel_target(sub_image_match=None):
     return [center['x'], center['y']]
 
 
-SUB_MATCH_CONFIDENCE_THRESHOLD = 0.45
+SUB_MATCH_CONFIDENCE_THRESHOLD = 0.35
 
-FRAME_SIMILARITY_THRESHOLD = 0.95  # 前后帧相似度阈值，高于此值认为场景几乎没变
+FRAME_SIMILARITY_THRESHOLD = 0.70  # 帧间 DINOv2 特征相似度阈值，高于此值认为场景几乎没变
 
 
-def _frame_similarity(img1: np.ndarray, img2: np.ndarray) -> float:
-    """计算两帧图像的 SSIM 结构相似度，范围 [-1, 1]，1.0 = 完全一样。
-    
-    相比直方图相关性，SSIM 对空间位移更敏感：
-    - 相机小幅平移/旋转时 SSIM 会明显下降
-    - 直方图只比较全局颜色分布，对平移几乎无感
+def _frame_similarity_dino(feat1, feat2, camera_name=None):
+    """基于 DINOv2 VPR 特征计算帧间相似度（cosine similarity）。
+
+    复用 VPR 流程已提取的特征，零额外推理成本。
+    相比 SSIM：语义级比较，对光照变化鲁棒，对微小运动不过度敏感。
+
+    Args:
+        feat1, feat2: VPR 查询特征 {'camera_1': ndarray(4096,), ...}
+        camera_name: 指定比较哪个相机，None 则取所有相机的平均相似度
+
+    Returns:
+        cosine similarity，范围 [-1, 1]，1.0 = 完全一样
     """
-    # 转灰度 + 缩放到固定尺寸（加速计算）
-    gray1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY) if len(img1.shape) == 3 else img1
-    gray2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY) if len(img2.shape) == 3 else img2
-    # 缩放到 160x120 加速（原图可能 1920x1080）
-    small1 = cv2.resize(gray1, (160, 120), interpolation=cv2.INTER_AREA)
-    small2 = cv2.resize(gray2, (160, 120), interpolation=cv2.INTER_AREA)
-    # SSIM 计算
-    C1 = (0.01 * 255) ** 2
-    C2 = (0.03 * 255) ** 2
-    mu1 = cv2.GaussianBlur(small1.astype(np.float64), (11, 11), 1.5)
-    mu2 = cv2.GaussianBlur(small2.astype(np.float64), (11, 11), 1.5)
-    mu1_sq = mu1 ** 2
-    mu2_sq = mu2 ** 2
-    mu1_mu2 = mu1 * mu2
-    sigma1_sq = cv2.GaussianBlur(small1.astype(np.float64) ** 2, (11, 11), 1.5) - mu1_sq
-    sigma2_sq = cv2.GaussianBlur(small2.astype(np.float64) ** 2, (11, 11), 1.5) - mu2_sq
-    sigma12 = cv2.GaussianBlur(small1.astype(np.float64) * small2.astype(np.float64), (11, 11), 1.5) - mu1_mu2
-    ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma12 + C2)) / ((mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2))
-    return float(ssim_map.mean())
+    if not feat1 or not feat2:
+        return 0.0
+
+    if camera_name and camera_name in feat1 and camera_name in feat2:
+        a = feat1[camera_name]
+        b = feat2[camera_name]
+        norm_a = np.linalg.norm(a)
+        norm_b = np.linalg.norm(b)
+        if norm_a < 1e-8 or norm_b < 1e-8:
+            return 0.0
+        return float(np.dot(a, b) / (norm_a * norm_b))
+
+    # 所有共有相机的平均相似度
+    sims = []
+    for cam in feat1:
+        if cam in feat2:
+            a, b = feat1[cam], feat2[cam]
+            norm_a, norm_b = np.linalg.norm(a), np.linalg.norm(b)
+            if norm_a > 1e-8 and norm_b > 1e-8:
+                sims.append(float(np.dot(a, b) / (norm_a * norm_b)))
+    return sum(sims) / len(sims) if sims else 0.0
 
 
 def _cache_or_reuse_sub_match(nav_state: MemoryNavState, sub_match: dict,
-                               current_camera_image: np.ndarray = None) -> dict:
+                               query_features: Dict[str, np.ndarray] = None,
+                               camera_name: str = None) -> dict:
     """
     缓存成功的子图匹配结果，失败时基于帧间相似度决定是否复用。
 
@@ -740,34 +754,43 @@ def _cache_or_reuse_sub_match(nav_state: MemoryNavState, sub_match: dict,
     if sub_match is None:
         # 无匹配结果，尝试基于帧相似度复用
         if (nav_state.last_good_sub_match is not None
-                and current_camera_image is not None
-                and nav_state.last_camera_image is not None):
-            sim = _frame_similarity(current_camera_image, nav_state.last_camera_image)
+                and query_features is not None
+                and nav_state.last_good_query_features is not None):
+            sim = _frame_similarity_dino(query_features, nav_state.last_good_query_features, camera_name)
             if sim >= FRAME_SIMILARITY_THRESHOLD:
                 logger.info(f"[SubMatch] 无匹配结果，帧相似度={sim:.4f} >= {FRAME_SIMILARITY_THRESHOLD}，复用缓存")
+                nav_state.last_frame_similarity = sim
+                nav_state.last_cache_action = 'reused'
                 return nav_state.last_good_sub_match
             else:
                 logger.info(f"[SubMatch] 无匹配结果，帧相似度={sim:.4f} < {FRAME_SIMILARITY_THRESHOLD}，场景已变，清除缓存")
+                nav_state.last_frame_similarity = sim
+                nav_state.last_cache_action = 'cleared'
                 nav_state.last_good_sub_match = None
-                nav_state.last_camera_image = None
+                nav_state.last_good_query_features = None
                 return None
+        nav_state.last_frame_similarity = None
+        nav_state.last_cache_action = None
         return None
 
     confidence = sub_match.get('match', {}).get('confidence', 0)
 
     if confidence >= SUB_MATCH_CONFIDENCE_THRESHOLD:
         # 匹配成功，更新缓存 + 保存当前帧
+        nav_state.last_frame_similarity = None
+        nav_state.last_cache_action = 'accepted'
         nav_state.last_good_sub_match = sub_match
-        if current_camera_image is not None:
-            nav_state.last_camera_image = current_camera_image.copy()
+        nav_state.last_good_query_features = {k: v.copy() for k, v in query_features.items()} if query_features else None
         return sub_match
     else:
         # 匹配失败，基于帧相似度决定是否复用
         if (nav_state.last_good_sub_match is not None
-                and current_camera_image is not None
-                and nav_state.last_camera_image is not None):
-            sim = _frame_similarity(current_camera_image, nav_state.last_camera_image)
+                and query_features is not None
+                and nav_state.last_good_query_features is not None):
+            sim = _frame_similarity_dino(query_features, nav_state.last_good_query_features, camera_name)
             if sim >= FRAME_SIMILARITY_THRESHOLD:
+                nav_state.last_frame_similarity = sim
+                nav_state.last_cache_action = 'reused'
                 logger.info(f"[SubMatch] confidence={confidence:.4f} < {SUB_MATCH_CONFIDENCE_THRESHOLD}，"
                             f"帧相似度={sim:.4f} >= {FRAME_SIMILARITY_THRESHOLD}，复用缓存 "
                             f"(cached_conf={nav_state.last_good_sub_match.get('match', {}).get('confidence', 0):.4f})")
@@ -775,10 +798,14 @@ def _cache_or_reuse_sub_match(nav_state: MemoryNavState, sub_match: dict,
             else:
                 logger.info(f"[SubMatch] confidence={confidence:.4f} < {SUB_MATCH_CONFIDENCE_THRESHOLD}，"
                             f"帧相似度={sim:.4f} < {FRAME_SIMILARITY_THRESHOLD}，场景变化大，清除缓存")
+                nav_state.last_frame_similarity = sim
+                nav_state.last_cache_action = 'cleared'
                 nav_state.last_good_sub_match = None
-                nav_state.last_camera_image = None
+                nav_state.last_good_query_features = None
                 return None
         else:
+            nav_state.last_frame_similarity = None
+            nav_state.last_cache_action = 'no_cache'
             logger.info(f"[SubMatch] confidence={confidence:.4f} < {SUB_MATCH_CONFIDENCE_THRESHOLD}，无缓存可用")
             return None  # 返回 None，让上层走 InternVLN 兜底
 
@@ -1081,11 +1108,10 @@ async def process_inference_with_memory(message_data, session_state, agent,
         if memory_enabled and nav_state.plan is not None and nav_state.phase != 'completed':
             # 执行子图匹配（供后续响应使用）
             _sub_match = do_sub_image_match(memory_navigator, nav_state, camera_images) if camera_images else None
-            # 获取当前步骤的相机图像，用于帧间相似度判断
+            # 帧间相似度使用 VPR 已提取的 DINOv2 特征（零额外开销）
             _cache_step = nav_state.get_current_step()
             _cache_cam_name = _cache_step.camera_name if _cache_step else None
-            _cache_cam_img = camera_images.get(_cache_cam_name) if (camera_images and _cache_cam_name) else None
-            _sub_match = _cache_or_reuse_sub_match(nav_state, _sub_match, _cache_cam_img)
+            _sub_match = _cache_or_reuse_sub_match(nav_state, _sub_match, nav_state.last_query_features, _cache_cam_name)
             visualize_sub_image_match(camera_images, _sub_match, pts)
 
             # ---- InternVLN 兜底: 子图匹配失败且无缓存时 ----
@@ -1526,7 +1552,7 @@ async def process_inference_with_memory(message_data, session_state, agent,
 
                         # 首次规划成功，执行子图匹配
                         _sub_match = do_sub_image_match(memory_navigator, nav_state, camera_images) if camera_images else None
-                        _sub_match = _cache_or_reuse_sub_match(nav_state, _sub_match)
+                        _sub_match = _cache_or_reuse_sub_match(nav_state, _sub_match, nav_state.last_query_features)
                         visualize_sub_image_match(camera_images, _sub_match, pts)
 
                         session_state['request_count'] += 1

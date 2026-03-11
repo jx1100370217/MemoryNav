@@ -143,7 +143,7 @@ def _is_homography_degenerate(H, img_shape, tpl_shape, projected_corners):
     img_area = img_h * img_w
     proj_area = cv2.contourArea(projected_corners.astype(np.float32))
     area_ratio = proj_area / img_area
-    if area_ratio > 0.8:  # 占图超过 80% → 退化
+    if area_ratio > 0.3:  # 占图超过 30% → 退化
         return True
     if area_ratio < 0.005:  # 占图不到 0.5% → 太小
         return True
@@ -199,7 +199,7 @@ def _match_features(
     image: np.ndarray,
     template: np.ndarray,
     min_matches: int = 8,
-    confidence_threshold: float = 0.45,
+    confidence_threshold: float = 0.35,
 ) -> SubImageMatchResult:
     """
     使用 SuperPoint + LightGlue 在 image 中定位 template。
@@ -311,7 +311,7 @@ class SubImageMatcher:
 
     def __init__(self, device: str = "cuda:0",
                  min_matches: int = 8,
-                 confidence_threshold: float = 0.45):
+                 confidence_threshold: float = 0.35):
         """
         Args:
             device: 推理设备（模型缓存为全局单例）

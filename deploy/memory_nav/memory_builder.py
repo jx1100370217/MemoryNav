@@ -34,7 +34,7 @@ from .memory_models import MemoryNode, MemoryEdge
 from .memory_graph import MemoryGraph
 from .memory_vpr import MemoryVPR
 from .anyloc_extractor import AnyLocExtractor
-from .vpr_config_loader import load_vpr_config, get_threshold
+from .vpr_config_loader import load_vpr_config, get_threshold, get_order_invariant
 from .vpr_factory import create_vpr_extractor
 
 logger = logging.getLogger(__name__)
@@ -121,7 +121,7 @@ class MemoryBuilder:
         if feature_extractor is not None:
             self.extractor = feature_extractor
             self.feature_dim = feature_dim
-            order_invariant = (True)
+            order_invariant = get_order_invariant()
         else:
             self.extractor, self.feature_dim, order_invariant = create_vpr_extractor(
                 vpr_method=vpr_method, device=device, config=anyloc_config)

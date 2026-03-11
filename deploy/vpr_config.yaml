@@ -10,6 +10,15 @@ vpr_method: selavpr
 # GPU 设备
 device: "cuda:0"
 
+# 是否使用无序匹配 (各方案独立设置)
+# true: 忽略相机顺序，贪心二分匹配（适用于 AnyLoc/MegaLoc/EffoVPR）
+# false: 利用相机空间排列约束，循环移位匹配 + 朝向估计（适用于 SelaVPR++）
+order_invariant:
+  selavpr: false
+  megaloc: true
+  effovpr: true
+  anyloc: true
+
 # VPR 相似度阈值 (各方案独立设置)
 similarity_threshold:
   selavpr: 0.60

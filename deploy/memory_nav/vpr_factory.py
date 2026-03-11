@@ -11,6 +11,7 @@ VPR 提取器工厂
 """
 
 import logging
+from .vpr_config_loader import load_vpr_config, get_order_invariant
 from typing import Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,7 @@ def create_vpr_extractor(vpr_method: str,
         - order_invariant: 是否使用无序匹配模式
     """
     cfg = config or {}
+    _oi = get_order_invariant()
 
     if vpr_method == 'anyloc':
         from .anyloc_extractor import AnyLocExtractor
@@ -50,7 +52,7 @@ def create_vpr_extractor(vpr_method: str,
             max_img_size=cfg.get('max_img_size', 630),
             device=device
         )
-        return extractor, extractor.feature_dim, True
+        return extractor, extractor.feature_dim, _oi
 
     elif vpr_method == 'megaloc':
         from .megaloc_extractor import MegaLocExtractor
@@ -58,7 +60,7 @@ def create_vpr_extractor(vpr_method: str,
             max_img_size=cfg.get('max_img_size', 518),
             device=device
         )
-        return extractor, extractor.feature_dim, True
+        return extractor, extractor.feature_dim, _oi
 
     elif vpr_method == 'effovpr':
         from .effovpr_extractor import EffoVPRExtractor
@@ -70,7 +72,7 @@ def create_vpr_extractor(vpr_method: str,
             max_img_size=cfg.get('max_img_size', 518),
             device=device
         )
-        return extractor, extractor.feature_dim, True
+        return extractor, extractor.feature_dim, _oi
 
     elif vpr_method == 'selavpr':
         from .selavpr_extractor import SelaVPRExtractor
@@ -86,7 +88,7 @@ def create_vpr_extractor(vpr_method: str,
             max_img_size=_selavpr_cfg.get('max_img_size', 518),
             device=device
         )
-        return extractor, extractor.feature_dim, True
+        return extractor, extractor.feature_dim, _oi
 
 
     else:

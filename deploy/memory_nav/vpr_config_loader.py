@@ -42,6 +42,12 @@ def load_vpr_config(config_path: str = None, force_reload: bool = False) -> dict
     defaults = {
         'vpr_method': 'selavpr',
         'device': 'cuda:0',
+        'order_invariant': {
+            'selavpr': False,
+            'megaloc': True,
+            'effovpr': True,
+            'anyloc': True,
+        },
         'similarity_threshold': {
             'selavpr': 0.70,
             'megaloc': 0.70,
@@ -81,6 +87,12 @@ def load_vpr_config(config_path: str = None, force_reload: bool = False) -> dict
                 cfg['vpr_method'] = file_cfg['vpr_method']
             if 'device' in file_cfg:
                 cfg['device'] = file_cfg['device']
+            if 'order_invariant' in file_cfg:
+                if isinstance(file_cfg['order_invariant'], dict):
+                    cfg['order_invariant'].update(file_cfg['order_invariant'])
+                else:
+                    for k in cfg['order_invariant']:
+                        cfg['order_invariant'][k] = bool(file_cfg['order_invariant'])
             if 'similarity_threshold' in file_cfg:
                 if isinstance(file_cfg['similarity_threshold'], dict):
                     cfg['similarity_threshold'].update(file_cfg['similarity_threshold'])
@@ -130,3 +142,14 @@ def get_anyloc_config(cfg: dict = None) -> dict:
     if cfg is None:
         cfg = load_vpr_config()
     return cfg.get('anyloc', {})
+
+
+def get_order_invariant(cfg: dict = None) -> bool:
+    """获取当前 VPR 方法是否使用无序匹配"""
+    if cfg is None:
+        cfg = load_vpr_config()
+    method = cfg['vpr_method']
+    oi = cfg.get('order_invariant', {})
+    # 默认: selavpr 用有序(False)，其余用无序(True)
+    default = (method != 'selavpr')
+    return bool(oi.get(method, default))

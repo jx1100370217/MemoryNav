@@ -134,7 +134,12 @@ class MemoryNavState:
     TREND_WINDOW: int = 2             # 趋势检测滑动窗口
     MAX_DEVIATIONS: int = 5           # 最大偏离次数 → 强制 advance
     last_query_features: Optional[Dict] = None  # 最近一次提取的特征
-    last_good_sub_match: Optional[Dict] = None   # 上一帧成功的子图匹配结果 (confidence >= 0.45)
+    last_good_sub_match: Optional[Dict] = None   # 上一帧成功的子图匹配结果 (confidence >= threshold)
+    last_camera_image: Optional[np.ndarray] = None  # 上一帧相机图像（用于帧间相似度）
+    cache_miss_count: int = 0                     # 连续缓存未命中计数
+    fallback_action: Optional[list] = None        # InternVLN 兜底动作
+    fallback_pixel_target: Optional[list] = None  # InternVLN 兜底像素目标
+    fallback_instruction: Optional[str] = None    # InternVLN 兜底指令
 
     def reset(self):
         """重置状态"""
@@ -149,6 +154,11 @@ class MemoryNavState:
         self.deviation_count = 0
         self.last_query_features = None
         self.last_good_sub_match = None
+        self.last_camera_image = None
+        self.cache_miss_count = 0
+        self.fallback_action = None
+        self.fallback_pixel_target = None
+        self.fallback_instruction = None
         logger.info("[MemoryNavState] 状态已重置")
 
     def get_current_step(self) -> Optional[NavigationStep]:
@@ -169,6 +179,11 @@ class MemoryNavState:
         self.target_sim_history = []
         self.deviation_count = 0
         self.last_good_sub_match = None
+        self.last_camera_image = None
+        self.cache_miss_count = 0
+        self.fallback_action = None
+        self.fallback_pixel_target = None
+        self.fallback_instruction = None
         if self.current_step_idx >= len(self.plan.steps):
             self.phase = 'completed'
             logger.info(f"[MemoryNavState] 导航完成！已到达终点")
@@ -600,13 +615,27 @@ def build_memory_response(
         message = (f"记忆导航: {step.from_node_name} → {step.to_node_name} "
                    f"(步骤{nav_state.current_step_idx + 1}/{nav_state.plan.total_steps})")
 
+    # 当子图匹配失败且无缓存时，使用 InternVLN 兜底结果
+    _use_fallback = (sub_image_match is None and task_status != "end"
+                     and nav_state.fallback_action is not None)
+    if _use_fallback:
+        _action = nav_state.fallback_action
+        _pixel = nav_state.fallback_pixel_target
+        _fallback_inst = nav_state.fallback_instruction
+        logger.info(f"🤖 [Memory] 使用 InternVLN 兜底: instruction='{_fallback_inst}', "
+                    f"action={_action[:3] if _action else None}..., pixel={_pixel}")
+    else:
+        _action = [[0.0, 0.0, 0.0]]  # 记忆模式下 action 不使用
+        _pixel = _extract_pixel_target(sub_image_match)
+        _fallback_inst = None
+
     response = {
         "status": "success",
         "id": robot_id,
         "pts": pts,
         "task_status": task_status,
-        "action": [[0.0, 0.0, 0.0]],  # 记忆模式下 action 不使用
-        "pixel_target": _extract_pixel_target(sub_image_match),
+        "action": _action,
+        "pixel_target": _pixel,
         "camera_name": step.camera_name,
         "landmark_name": step.landmark_name,
         "landmark_name_eng": getattr(step, 'landmark_name_eng', ''),
@@ -614,15 +643,18 @@ def build_memory_response(
         "crop_image_path": step.crop_image_path,
         "pixel_box_memory": list(step.pixel_box),
         "sub_image_match": sub_image_match,
+        "fallback_instruction": _fallback_inst,
         "memory_active": True,
         "memory_info": memory_info,
         "message": message
     }
 
+    fallback_tag = f", fallback='{_fallback_inst}'" if _use_fallback else ""
     logger.info(f"📍 [Memory] 记忆响应: camera={step.camera_name}, "
                 f"landmark={step.landmark_name}, "
                 f"match={'成功' if sub_image_match and sub_image_match.get('match', {}).get('found') else '未匹配'}, "
-                f"phase={nav_state.phase}, step={nav_state.current_step_idx + 1}/{nav_state.plan.total_steps}")
+                f"phase={nav_state.phase}, step={nav_state.current_step_idx + 1}/{nav_state.plan.total_steps}"
+                f"{fallback_tag}")
 
     return response
 
@@ -651,41 +683,104 @@ def _extract_pixel_target(sub_image_match=None):
     match = sub_image_match.get('match')
     if match is None:
         return None
+    # 必须 found=True 且坐标非零才返回
+    if not match.get('found', False):
+        return None
     center = match.get('center_pct')
     if center is None:
+        return None
+    if center.get('x', 0) == 0 and center.get('y', 0) == 0:
         return None
     return [center['x'], center['y']]
 
 
 SUB_MATCH_CONFIDENCE_THRESHOLD = 0.45
 
+FRAME_SIMILARITY_THRESHOLD = 0.95  # 前后帧相似度阈值，高于此值认为场景几乎没变
 
-def _cache_or_reuse_sub_match(nav_state: MemoryNavState, sub_match: dict) -> dict:
-    """
-    缓存成功的子图匹配结果，失败时延用上一帧的结果。
+
+def _frame_similarity(img1: np.ndarray, img2: np.ndarray) -> float:
+    """计算两帧图像的 SSIM 结构相似度，范围 [-1, 1]，1.0 = 完全一样。
     
-    成功条件: confidence >= SUB_MATCH_CONFIDENCE_THRESHOLD (0.45)
+    相比直方图相关性，SSIM 对空间位移更敏感：
+    - 相机小幅平移/旋转时 SSIM 会明显下降
+    - 直方图只比较全局颜色分布，对平移几乎无感
+    """
+    # 转灰度 + 缩放到固定尺寸（加速计算）
+    gray1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY) if len(img1.shape) == 3 else img1
+    gray2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY) if len(img2.shape) == 3 else img2
+    # 缩放到 160x120 加速（原图可能 1920x1080）
+    small1 = cv2.resize(gray1, (160, 120), interpolation=cv2.INTER_AREA)
+    small2 = cv2.resize(gray2, (160, 120), interpolation=cv2.INTER_AREA)
+    # SSIM 计算
+    C1 = (0.01 * 255) ** 2
+    C2 = (0.03 * 255) ** 2
+    mu1 = cv2.GaussianBlur(small1.astype(np.float64), (11, 11), 1.5)
+    mu2 = cv2.GaussianBlur(small2.astype(np.float64), (11, 11), 1.5)
+    mu1_sq = mu1 ** 2
+    mu2_sq = mu2 ** 2
+    mu1_mu2 = mu1 * mu2
+    sigma1_sq = cv2.GaussianBlur(small1.astype(np.float64) ** 2, (11, 11), 1.5) - mu1_sq
+    sigma2_sq = cv2.GaussianBlur(small2.astype(np.float64) ** 2, (11, 11), 1.5) - mu2_sq
+    sigma12 = cv2.GaussianBlur(small1.astype(np.float64) * small2.astype(np.float64), (11, 11), 1.5) - mu1_mu2
+    ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma12 + C2)) / ((mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2))
+    return float(ssim_map.mean())
+
+
+def _cache_or_reuse_sub_match(nav_state: MemoryNavState, sub_match: dict,
+                               current_camera_image: np.ndarray = None) -> dict:
+    """
+    缓存成功的子图匹配结果，失败时基于帧间相似度决定是否复用。
+
+    核心逻辑：
+    - 匹配成功 (conf >= 0.45): 采纳并更新缓存（保存当前帧用于下次相似度比较）
+    - 匹配失败 (conf < 0.45): 若前后帧相似度 > 0.95，复用上一帧匹配框；否则清除缓存
+    - 无缓存可用: 返回 None，让上层走 InternVLN 兜底
     """
     if sub_match is None:
-        # 无匹配结果，延用缓存
-        if nav_state.last_good_sub_match is not None:
-            logger.info(f"[SubMatch] 无匹配结果，延用上一帧缓存")
-        return nav_state.last_good_sub_match
-    
+        # 无匹配结果，尝试基于帧相似度复用
+        if (nav_state.last_good_sub_match is not None
+                and current_camera_image is not None
+                and nav_state.last_camera_image is not None):
+            sim = _frame_similarity(current_camera_image, nav_state.last_camera_image)
+            if sim >= FRAME_SIMILARITY_THRESHOLD:
+                logger.info(f"[SubMatch] 无匹配结果，帧相似度={sim:.4f} >= {FRAME_SIMILARITY_THRESHOLD}，复用缓存")
+                return nav_state.last_good_sub_match
+            else:
+                logger.info(f"[SubMatch] 无匹配结果，帧相似度={sim:.4f} < {FRAME_SIMILARITY_THRESHOLD}，场景已变，清除缓存")
+                nav_state.last_good_sub_match = None
+                nav_state.last_camera_image = None
+                return None
+        return None
+
     confidence = sub_match.get('match', {}).get('confidence', 0)
+
     if confidence >= SUB_MATCH_CONFIDENCE_THRESHOLD:
-        # 匹配成功，更新缓存
+        # 匹配成功，更新缓存 + 保存当前帧
         nav_state.last_good_sub_match = sub_match
+        if current_camera_image is not None:
+            nav_state.last_camera_image = current_camera_image.copy()
         return sub_match
     else:
-        # 匹配失败，延用上一帧
-        if nav_state.last_good_sub_match is not None:
-            logger.info(f"[SubMatch] confidence={confidence:.4f} < {SUB_MATCH_CONFIDENCE_THRESHOLD}，"
-                        f"延用上一帧缓存 (cached_conf={nav_state.last_good_sub_match.get('match', {}).get('confidence', 0):.4f})")
-            return nav_state.last_good_sub_match
+        # 匹配失败，基于帧相似度决定是否复用
+        if (nav_state.last_good_sub_match is not None
+                and current_camera_image is not None
+                and nav_state.last_camera_image is not None):
+            sim = _frame_similarity(current_camera_image, nav_state.last_camera_image)
+            if sim >= FRAME_SIMILARITY_THRESHOLD:
+                logger.info(f"[SubMatch] confidence={confidence:.4f} < {SUB_MATCH_CONFIDENCE_THRESHOLD}，"
+                            f"帧相似度={sim:.4f} >= {FRAME_SIMILARITY_THRESHOLD}，复用缓存 "
+                            f"(cached_conf={nav_state.last_good_sub_match.get('match', {}).get('confidence', 0):.4f})")
+                return nav_state.last_good_sub_match
+            else:
+                logger.info(f"[SubMatch] confidence={confidence:.4f} < {SUB_MATCH_CONFIDENCE_THRESHOLD}，"
+                            f"帧相似度={sim:.4f} < {FRAME_SIMILARITY_THRESHOLD}，场景变化大，清除缓存")
+                nav_state.last_good_sub_match = None
+                nav_state.last_camera_image = None
+                return None
         else:
             logger.info(f"[SubMatch] confidence={confidence:.4f} < {SUB_MATCH_CONFIDENCE_THRESHOLD}，无缓存可用")
-            return sub_match  # 无缓存，返回当前（低置信度）结果
+            return None  # 返回 None，让上层走 InternVLN 兜底
 
 
 def visualize_sub_image_match(camera_images, sub_match_result, pts=None):
@@ -986,8 +1081,79 @@ async def process_inference_with_memory(message_data, session_state, agent,
         if memory_enabled and nav_state.plan is not None and nav_state.phase != 'completed':
             # 执行子图匹配（供后续响应使用）
             _sub_match = do_sub_image_match(memory_navigator, nav_state, camera_images) if camera_images else None
-            _sub_match = _cache_or_reuse_sub_match(nav_state, _sub_match)
+            # 获取当前步骤的相机图像，用于帧间相似度判断
+            _cache_step = nav_state.get_current_step()
+            _cache_cam_name = _cache_step.camera_name if _cache_step else None
+            _cache_cam_img = camera_images.get(_cache_cam_name) if (camera_images and _cache_cam_name) else None
+            _sub_match = _cache_or_reuse_sub_match(nav_state, _sub_match, _cache_cam_img)
             visualize_sub_image_match(camera_images, _sub_match, pts)
+
+            # ---- InternVLN 兜底: 子图匹配失败且无缓存时 ----
+            nav_state.fallback_action = None
+            nav_state.fallback_pixel_target = None
+            nav_state.fallback_instruction = None
+            if _sub_match is None:
+                _fb_step = nav_state.get_current_step()
+                _fb_landmark_eng = getattr(_fb_step, 'landmark_name_eng', '') if _fb_step else ''
+                if _fb_landmark_eng:
+                    _fb_instruction = f"Go to the {_fb_landmark_eng}."
+                    nav_state.fallback_instruction = _fb_instruction
+                    logger.info(f"🤖 [Memory] 子图匹配无结果，启动 InternVLN 兜底: '{_fb_instruction}'")
+                    try:
+                        # 解码深度图
+                        if 'depth' in message_data and message_data['depth']:
+                            _fb_depth = decode_base64_depth(message_data['depth'])
+                            if _fb_depth is None:
+                                _fb_depth = np.zeros((rgb.shape[0], rgb.shape[1]), dtype=np.float32)
+                        else:
+                            _fb_depth = np.zeros((rgb.shape[0], rgb.shape[1]), dtype=np.float32)
+                        # 解析 pose
+                        if 'pose' in message_data and message_data['pose']:
+                            _fb_pose = np.array(message_data['pose'], dtype=np.float32)
+                        else:
+                            _fb_pose = np.eye(4, dtype=np.float32)
+                        # 解析 intrinsic
+                        if 'intrinsic' in message_data and message_data['intrinsic']:
+                            _fb_intrinsic = np.array(message_data['intrinsic'], dtype=np.float32)
+                        else:
+                            _fb_intrinsic = np.array([
+                                [386.5, 0.0, 328.9, 0.0],
+                                [0.0, 386.5, 244.0, 0.0],
+                                [0.0, 0.0, 1.0, 0.0],
+                                [0.0, 0.0, 0.0, 1.0]
+                            ], dtype=np.float32)
+                        _fb_look_down = message_data.get('look_down', False)
+
+                        _fb_start = time.time()
+                        async with agent_lock:
+                            _fb_output = await asyncio.to_thread(
+                                agent.step,
+                                rgb, _fb_depth, _fb_pose, _fb_instruction, _fb_intrinsic, _fb_look_down
+                            )
+                        _fb_time = time.time() - _fb_start
+                        logger.info(f"🤖 [Memory] InternVLN 兜底推理完成: {_fb_time:.2f}s")
+
+                        # 提取 action
+                        if _fb_output.output_action is not None:
+                            _fb_robot_action, _fb_task_status = convert_output_action_to_robot_action(_fb_output.output_action)
+                            nav_state.fallback_action = _fb_robot_action
+                            action_map = {0: 'STOP', 1: '↑前进', 2: '←左转', 3: '→右转', 5: '↓向下看'}
+                            _fb_action_str = ', '.join([f"{action_map.get(a, str(a))}" for a in _fb_output.output_action[:5]])
+                            logger.info(f"🤖 [Memory] InternVLN 兜底动作: {_fb_action_str}")
+                        elif _fb_output.output_trajectory is not None:
+                            _fb_robot_action = convert_trajectory_to_robot_action(_fb_output.output_trajectory.tolist())
+                            nav_state.fallback_action = _fb_robot_action
+                            logger.info(f"🤖 [Memory] InternVLN 兜底轨迹: {len(_fb_robot_action)} points")
+
+                        # 提取 pixel_target
+                        if _fb_output.output_pixel is not None:
+                            _fb_py = _fb_output.output_pixel[0] / 480.0
+                            _fb_px = _fb_output.output_pixel[1] / 640.0
+                            nav_state.fallback_pixel_target = [_fb_px, _fb_py]
+                            logger.info(f"🤖 [Memory] InternVLN 兜底像素: [{_fb_px:.4f}, {_fb_py:.4f}]")
+
+                    except Exception as e:
+                        logger.warning(f"🤖 [Memory] InternVLN 兜底推理异常: {e}", exc_info=True)
 
             step = nav_state.get_current_step()
             if step is None:
@@ -1191,16 +1357,20 @@ async def process_inference_with_memory(message_data, session_state, agent,
                         session_state['request_count'] += 1
                         session_state['last_instruction'] = instruction
                         session_state['last_task'] = current_task
+                        # 趋势正确时优先用 InternVLN 兜底的 action（如果有），否则直行 1m
+                        _trend_action = nav_state.fallback_action if (nav_state.fallback_action and _sub_match is None) else [[1.0, 0.0, 0.0]]
+                        _trend_pixel = nav_state.fallback_pixel_target if (nav_state.fallback_pixel_target and _sub_match is None) else _extract_pixel_target(_sub_match)
                         resp = {
                             "status": "success",
                             "id": robot_id,
                             "pts": pts,
                             "task_status": "executing",
-                            "action": [[1.0, 0.0, 0.0]],  # 前进 1 米
-                            "pixel_target": _extract_pixel_target(_sub_match),
+                            "action": _trend_action,
+                            "pixel_target": _trend_pixel,
                             "camera_name": step.camera_name if step else None,
                             "landmark_name": step.landmark_name if step else None,
                             "sub_image_match": _sub_match,
+                            "fallback_instruction": nav_state.fallback_instruction if _sub_match is None else None,
                             "memory_active": True,
                             "memory_info": {
                                 "plan_path": nav_state.plan.path if nav_state.plan else [],

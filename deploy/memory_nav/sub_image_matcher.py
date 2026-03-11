@@ -145,8 +145,18 @@ def _is_homography_degenerate(H, img_shape, tpl_shape, projected_corners):
     area_ratio = proj_area / img_area
     if area_ratio > 0.8:  # 占图超过 80% → 退化
         return True
-    if proj_area < 100:  # 太小
+    if area_ratio < 0.005:  # 占图不到 0.5% → 太小
         return True
+    if proj_area < 100:  # 绝对面积太小
+        return True
+
+    # 2b. 投影面积 vs 模板面积的缩放比
+    tpl_h_local, tpl_w_local = tpl_shape[:2]
+    tpl_area = tpl_h_local * tpl_w_local
+    if tpl_area > 0:
+        scale_ratio = proj_area / tpl_area
+        if scale_ratio < 0.1 or scale_ratio > 10.0:  # 缩放超过10倍 → 退化
+            return True
 
     # 3. 凸性检查：非凸说明 fold
     if not cv2.isContourConvex(projected_corners.astype(np.int32)):

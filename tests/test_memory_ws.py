@@ -401,10 +401,10 @@ async def run_test():
         # 子图匹配缓存复用详情
         if cache_action and cache_action != 'accepted':
             if cache_action == 'reused':
-                print(f"      {C_CYAN}│ 🔄 缓存复用: 帧间DINOv2相似度={frame_sim:.4f} >= 0.85, "
+                print(f"      {C_CYAN}│ 🔄 缓存复用: 帧间DINOv2相似度={frame_sim:.4f} >= 0.70, "
                       f"sub_conf={sub_conf:.3f} < threshold, 复用上次匹配结果{C_RESET}")
             elif cache_action == 'cleared':
-                print(f"      {C_RED}│ 🗑️ 缓存清除: 帧间DINOv2相似度={frame_sim:.4f} < 0.85, "
+                print(f"      {C_RED}│ 🗑️ 缓存清除: 帧间DINOv2相似度={frame_sim:.4f} < 0.70, "
                       f"场景变化大{C_RESET}")
             elif cache_action == 'no_cache':
                 print(f"      {C_DIM}│ ❌ 无缓存: sub_conf={sub_conf:.3f} < threshold, 无历史缓存可用{C_RESET}")
@@ -473,8 +473,8 @@ async def run_test():
     total_cache_events = stat_cache_reused + stat_cache_cleared + stat_cache_no_cache
     if total_cache_events > 0:
         print(f"\n  {C_BOLD}【帧间相似度 & 缓存复用】{C_RESET}")
-        print(f"  {'缓存复用次数':>16s}: {stat_cache_reused} ({C_GREEN}帧间DINOv2相似度 >= 0.85{C_RESET})")
-        print(f"  {'缓存清除次数':>16s}: {stat_cache_cleared} ({C_RED}帧间DINOv2相似度 < 0.85{C_RESET})")
+        print(f"  {'缓存复用次数':>16s}: {stat_cache_reused} ({C_GREEN}帧间DINOv2相似度 >= 0.70{C_RESET})")
+        print(f"  {'缓存清除次数':>16s}: {stat_cache_cleared} ({C_RED}帧间DINOv2相似度 < 0.70{C_RESET})")
         print(f"  {'无缓存可用':>16s}: {stat_cache_no_cache}")
         if stat_frame_sims:
             sims_only = [s[1] for s in stat_frame_sims]
@@ -485,7 +485,7 @@ async def run_test():
             print(f"  {'帧间相似度序列':>16s}: ", end="")
             for _, sim, action in stat_frame_sims:
                 if action == 'reused':
-                    print(f"{C_GREEN}{'█' if sim >= 0.85 else '▄'}{C_RESET}", end="")
+                    print(f"{C_GREEN}{'█' if sim >= 0.70 else '▄'}{C_RESET}", end="")
                 elif action == 'cleared':
                     print(f"{C_RED}▁{C_RESET}", end="")
                 else:

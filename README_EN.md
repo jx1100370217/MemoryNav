@@ -26,43 +26,12 @@ MemoryNav is a visual memory navigation system for mobile robots. It captures im
 - **🔍 Multi-Method VPR**: 4 state-of-the-art VPR backends, switchable via a single config file
 - **🗺️ Topological Memory Graph**: Auto-built from labeled data with shortest-path planning
 - **🔄 Cyclic Shift Matching**: 4-camera cyclic shift algorithm for orientation-invariant localization
-- **🎯 Sub-Image Matching Navigation**: SuperPoint + LightGlue based attention crop localization for real-time target matching *(New in v1.4.0)*
+- **🎯 Sub-Image Matching Navigation**: SuperPoint + LightGlue based attention crop localization for real-time target matching
+- **💾 Sub-Image Match Caching**: Automatically reuses last successful match when current match fails, improving navigation continuity
+- **📤 Unified Output Format**: Consistent output format regardless of memory mode, always provides `pixel_target`
 - **🤖 VLA Fallback**: Automatic fallback to InternVLA when VPR loses track
 - **🌐 WebSocket Service**: Real-time image streaming and navigation command output
 - **⚙️ Unified Configuration**: All VPR parameters in `deploy/vpr_config.yaml`, one change applies everywhere
-
----
-
-## 🆕 v1.5.0 Highlights
-
-> **Unified Output Format + Sub-Image Match Caching**
-
-### Key Changes
-
-- **📤 Unified Output Format**: When memory is OFF, `ws_proxy_with_memory.py` output is identical to `ws_proxy.py` (always includes `pixel_target`, no `memory_active` or extra fields)
-- **🎯 Unified pixel_target**: When memory is ON, `sub_image_match.match.center_pct` is automatically mapped to `pixel_target: [x, y]` (normalized 0~1), consistent with InternVLA's `pixel_target` format
-- **💾 Sub-Image Match Caching**: When `sub_image_match` confidence < 0.45, automatically reuses the last successful match result (`pixel_target` and `sub_image_match.match`); cache is cleared on step advance or task reset
-- **🧪 Test Script Modernization**: `test_memory_ws.py` removes legacy `angle` references, adds `camera_name`, `sub_conf`, `pixel_target` columns and sub-image match statistics
-
-### Output Format Overview
-
-| Scenario | pixel_target Source | memory_active |
-|----------|-------------------|---------------|
-| Memory OFF + InternVLA | `output_pixel / image_size` | Not included |
-| Memory ON + Match Success | `sub_image_match.match.center_pct` | `true` |
-| Memory ON + Match Fail | Cached from last good frame | `true` |
-| Memory ON + VLA Fallback | `output_pixel / image_size` | `true` |
-
-### Previous Versions
-
-<details>
-<summary>v1.4.0 — Sub-Image Matching Navigation Architecture</summary>
-
-- Upgraded from angle-based to SuperPoint + LightGlue sub-image matching navigation
-- Edge model changed from `angle + pixel_position` to `camera_name + crop_image + pixel_box`
-- Added sub-image matching verification visualization page
-
-</details>
 
 ---
 
@@ -79,7 +48,7 @@ MemoryNav/
 │   │   ├── memory_vpr.py           # VPR matching engine (cyclic shift + order-invariant)
 │   │   ├── memory_builder.py       # Memory builder (build graph from labeled data)
 │   │   ├── memory_navigator.py     # Navigator main interface
-│   │   ├── sub_image_matcher.py    # Sub-image matcher (SuperPoint + LightGlue) ⭐ NEW
+│   │   ├── sub_image_matcher.py    # Sub-image matcher (SuperPoint + LightGlue)
 │   │   ├── vpr_factory.py          # VPR extractor factory
 │   │   ├── anyloc_extractor.py     # AnyLoc (DINOv2 + VLAD)
 │   │   ├── megaloc_extractor.py    # MegaLoc (DINOv2 + OT aggregation)
@@ -98,33 +67,38 @@ MemoryNav/
 
 ---
 
-## 🎯 Sub-Image Matching Navigation (New in v1.4.0)
+## 🎯 Sub-Image Matching Navigation
 
-v1.4.0 introduces **SuperPoint + LightGlue** based sub-image matching, replacing the previous angle + pixel coordinate approach:
+Navigation based on **SuperPoint + LightGlue** sub-image matching:
 
 ### How It Works
 
 1. **During memory building**: Each edge is annotated with `camera_name` (which camera sees the target) and `crop_image` (attention crop)
 2. **During navigation**: The crop image from memory is matched against the live camera feed
-3. **Target localization**: SuperPoint extracts keypoints → LightGlue matches → computes target region as percentage coordinates
-4. **Fallback**: When matching fails, uses the stored `pixel_box` from memory as an estimate
+3. **Target localization**: SuperPoint extracts keypoints → LightGlue matches → computes target region as percentage coordinates → output as `pixel_target`
+4. **Caching mechanism**: When match confidence drops below 0.45, automatically reuses the last successful match result; cache is cleared on step advance
+5. **Fallback**: When matching fails with no cache available, uses the stored `pixel_box` from memory as an estimate
 
 ### Edge Data Structure
 
 ```yaml
-# Old (v1.3.0)
-edge:
-  angle: 37.5                    # Turn angle
-  pixel_position: [0.48, 0.52]  # Pixel target
-  stitch_image: "stitch.jpg"    # Stitched image
-
-# New (v1.4.0)
 edge:
   camera_name: "camera_2"              # Target camera
   landmark_name: "Elevator"            # Landmark name
   pixel_box: [120, 80, 200, 160]       # (x, y, w, h) bounding box
   crop_image_path: "crop_elevator.jpg"  # Attention crop image
 ```
+
+### Output Format
+
+All responses include a unified `pixel_target: [x, y]` (normalized 0~1):
+
+| Scenario | pixel_target Source | memory_active |
+|----------|-------------------|---------------|
+| Memory OFF + InternVLA | `output_pixel / image_size` | Not included |
+| Memory ON + Match Success | `sub_image_match.match.center_pct` | `true` |
+| Memory ON + Match Fail | Cached from last good frame | `true` |
+| Memory ON + VLA Fallback | `output_pixel / image_size` | `true` |
 
 ---
 
@@ -240,7 +214,8 @@ for step in plan['plan']['steps']:
 # Sub-image matching (during navigation execution)
 match = navigator.match_current_step(images)
 if match and match['match']['found']:
-    print(f"Target located: ({match['match']['center_x_pct']:.1f}%, {match['match']['center_y_pct']:.1f}%)")
+    center = match['match']['center_pct']
+    print(f"Target located: ({center['x']:.3f}, {center['y']:.3f})")
 ```
 
 ---
@@ -338,7 +313,7 @@ Cyclic shift matching supports 4 heading offsets: `0°`, `-75°`, `180°`, `+105
 # Unit tests
 python -m pytest tests/test_memory_nav.py -v
 
-# WebSocket integration test (with per-frame VPR decision logs + stats + trend chart)
+# WebSocket integration test (with per-frame decision logs + stats + trend chart)
 python tests/test_memory_ws.py
 ```
 
@@ -346,6 +321,43 @@ Test output includes:
 - 📊 Per-frame details (VPR matching, sub-image match confidence, camera, pixel_target, decision type)
 - 📈 VPR similarity trend ASCII chart
 - 📋 Statistics report (VPR match rate, sub-image match rate, node distribution, decision distribution, phase distribution)
+
+---
+
+## 📋 Changelog
+
+### v1.5.0
+
+- **Unified output format**: Memory-OFF output identical to `ws_proxy.py`, always includes `pixel_target`, no `memory_active` extra fields
+- **Unified pixel_target**: Memory-ON maps `sub_image_match.match.center_pct` to `pixel_target: [x, y]`
+- **Sub-image match caching**: Reuses last successful result when confidence < 0.45; cache cleared on step advance or task reset
+- **Test modernization**: Removed legacy `angle` references, added `camera_name`, `sub_conf`, `pixel_target` columns and sub-image match statistics
+
+### v1.4.0
+
+- **Sub-image matching navigation**: Upgraded from angle-based to SuperPoint + LightGlue sub-image matching
+- **Edge model refactor**: From `angle + pixel_position` to `camera_name + crop_image + pixel_box`
+- **Sub-image match visualization**: New verification page
+
+### v1.3.0
+
+- **Unified config management**: All VPR parameters centralized in `deploy/vpr_config.yaml`
+- **Embedded model code**: SelaVPR++ and MegaLoc code embedded, removed external dependencies
+
+### v1.2.0
+
+- **Multi-VPR support**: Added SelaVPR++, MegaLoc, EffoVPR methods
+- **VPR factory pattern**: Unified extractor interface with one-click switching
+
+### v1.1.0
+
+- **Memory navigation service**: WebSocket proxy + VPR localization + path planning
+- **Trend detection**: Similarity trend analysis for direction validation
+
+### v1.0.0
+
+- **Foundation**: Topological memory graph, AnyLoc VPR, InternVLA inference
+- **Cyclic shift matching**: Orientation-invariant 4-camera localization algorithm
 
 ---
 

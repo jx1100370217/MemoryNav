@@ -26,43 +26,12 @@ MemoryNav 是一个面向移动机器人的视觉记忆导航系统。系统通�
 - **🔍 多方案 VPR 定位**：支持 4 种 SOTA 视觉位置识别方案，统一配置文件一键切换
 - **🗺️ 拓扑记忆图**：自动从标注数据构建节点-边拓扑图，支持最短路径规划
 - **🔄 循环移位匹配**：4 相机循环移位算法，支持任意朝向下的定位与偏转角估计
-- **🎯 子图匹配导航**：基于 SuperPoint + LightGlue 的注意力子图定位，实时在相机图中匹配导航目标 *(v1.4.0 新增)*
+- **🎯 子图匹配导航**：基于 SuperPoint + LightGlue 的注意力子图定位，实时在相机图中匹配导航目标
+- **💾 子图匹配缓存**：匹配失败时自动延用上一帧的成功结果，提升导航连续性
+- **📤 统一输出格式**：记忆模式开关两种状态下输出格式一致，始终提供 `pixel_target`
 - **🤖 VLA 兜底推理**：VPR 丢失时自动切换 InternVLA 模型继续导航
 - **🌐 WebSocket 服务**：实时流式接收图像、返回导航指令
 - **⚙️ 统一配置管理**：所有 VPR 参数集中在 `deploy/vpr_config.yaml`，一处修改全局生效
-
----
-
-## 🆕 v1.5.0 更新亮点
-
-> **输出格式统一 + 子图匹配缓存策略**
-
-### 主要变更
-
-- **📤 输出格式统一**：记忆关闭时，`ws_proxy_with_memory.py` 输出与 `ws_proxy.py` 完全一致（始终包含 `pixel_target`，不输出 `memory_active` 等额外字段）
-- **🎯 pixel_target 统一输出**：记忆开启时，`sub_image_match.match.center_pct` 自动映射为 `pixel_target: [x, y]`（归一化 0~1），与 InternVLA 推理的 `pixel_target` 格式一致
-- **💾 子图匹配缓存**：当 `sub_image_match` 置信度低于 0.45 时，自动延用上一帧的成功匹配结果（`pixel_target` 和 `sub_image_match.match`），步骤切换或任务重置时清空缓存
-- **🧪 测试脚本现代化**：`test_memory_ws.py` 移除旧版 `angle` 字段引用，新增 `camera_name`、`sub_conf`、`pixel_target` 列和子图匹配统计
-
-### 输出格式对比
-
-| 场景 | pixel_target 来源 | memory_active |
-|------|-------------------|---------------|
-| 记忆关闭 + InternVLA 推理 | `output_pixel / 图像尺寸` | 不输出 |
-| 记忆开启 + 子图匹配成功 | `sub_image_match.match.center_pct` | `true` |
-| 记忆开启 + 子图匹配失败 | 延用上一帧缓存 | `true` |
-| 记忆开启 + VLA 兜底 | `output_pixel / 图像尺寸` | `true` |
-
-### 历史版本
-
-<details>
-<summary>v1.4.0 — 子图匹配导航架构</summary>
-
-- 从角度导航升级到 SuperPoint + LightGlue 子图匹配导航
-- 边模型从 `angle + pixel_position` 改为 `camera_name + crop_image + pixel_box`
-- 新增子图匹配验证可视化页面
-
-</details>
 
 ---
 
@@ -79,7 +48,7 @@ MemoryNav/
 │   │   ├── memory_vpr.py           # VPR 匹配引擎 (循环移位 + 无序匹配)
 │   │   ├── memory_builder.py       # 记忆构建器 (从标注数据构建拓扑图)
 │   │   ├── memory_navigator.py     # 导航器主接口
-│   │   ├── sub_image_matcher.py    # 子图匹配器 (SuperPoint + LightGlue) ⭐ NEW
+│   │   ├── sub_image_matcher.py    # 子图匹配器 (SuperPoint + LightGlue)
 │   │   ├── vpr_factory.py          # VPR 提取器工厂
 │   │   ├── anyloc_extractor.py     # AnyLoc (DINOv2 + VLAD)
 │   │   ├── megaloc_extractor.py    # MegaLoc (DINOv2 + OT聚合)
@@ -98,33 +67,38 @@ MemoryNav/
 
 ---
 
-## 🎯 子图匹配导航（v1.4.0 新方案）
+## 🎯 子图匹配导航
 
-v1.4.0 引入基于 **SuperPoint + LightGlue** 的子图匹配，取代旧版的角度+像素坐标方案：
+基于 **SuperPoint + LightGlue** 的子图匹配导航方案：
 
 ### 工作原理
 
 1. **记忆构建时**：为每条边标注 `camera_name`（目标所在相机）和 `crop_image`（注意力子图）
 2. **导航执行时**：从记忆中取出 crop 子图，在当前对应相机的实时画面中进行特征匹配
-3. **目标定位**：SuperPoint 提取关键点 → LightGlue 匹配 → 计算目标区域百分比坐标
-4. **回退机制**：匹配失败时使用记忆中的 `pixel_box` 作为估计值
+3. **目标定位**：SuperPoint 提取关键点 → LightGlue 匹配 → 计算目标区域百分比坐标 → 输出为 `pixel_target`
+4. **缓存机制**：匹配置信度低于 0.45 时，自动延用上一帧的成功匹配结果，步骤切换时清空缓存
+5. **回退机制**：匹配失败且无缓存时，使用记忆中的 `pixel_box` 作为估计值
 
 ### 边数据结构
 
 ```yaml
-# 旧方案 (v1.3.0)
 edge:
-  angle: 37.5              # 转向角度
-  pixel_position: [0.48, 0.52]  # 像素目标
-  stitch_image: "stitch.jpg"    # 拼接图
-
-# 新方案 (v1.4.0)
-edge:
-  camera_name: "camera_2"       # 目标所在相机
-  landmark_name: "电梯"          # 地标名称
-  pixel_box: [120, 80, 200, 160]  # (x, y, w, h) 像素框
+  camera_name: "camera_2"              # 目标所在相机
+  landmark_name: "电梯"                 # 地标名称
+  pixel_box: [120, 80, 200, 160]       # (x, y, w, h) 像素框
   crop_image_path: "crop_elevator.jpg"  # 注意力子图
 ```
+
+### 输出格式
+
+所有响应统一包含 `pixel_target: [x, y]`（归一化 0~1）：
+
+| 场景 | pixel_target 来源 | memory_active |
+|------|-------------------|---------------|
+| 记忆关闭 + InternVLA 推理 | `output_pixel / 图像尺寸` | 不输出 |
+| 记忆开启 + 子图匹配成功 | `sub_image_match.match.center_pct` | `true` |
+| 记忆开启 + 子图匹配失败 | 延用上一帧缓存 | `true` |
+| 记忆开启 + VLA 兜底 | `output_pixel / 图像尺寸` | `true` |
 
 ---
 
@@ -240,7 +214,8 @@ for step in plan['plan']['steps']:
 # 子图匹配（导航执行中）
 match = navigator.match_current_step(images)
 if match and match['match']['found']:
-    print(f"目标定位: ({match['match']['center_x_pct']:.1f}%, {match['match']['center_y_pct']:.1f}%)")
+    center = match['match']['center_pct']
+    print(f"目标定位: ({center['x']:.3f}, {center['y']:.3f})")
 ```
 
 ---
@@ -338,7 +313,7 @@ if match and match['match']['found']:
 # 单元测试
 python -m pytest tests/test_memory_nav.py -v
 
-# WebSocket 集成测试 (含逐帧VPR决策日志 + 统计报告 + 相似度趋势图)
+# WebSocket 集成测试 (含逐帧决策日志 + 统计报告 + 相似度趋势图)
 python tests/test_memory_ws.py
 ```
 
@@ -346,6 +321,43 @@ python tests/test_memory_ws.py
 - 📊 逐帧详情（VPR 匹配、子图匹配置信度、camera、pixel_target、决策类型）
 - 📈 VPR 相似度变化趋势 ASCII 图
 - 📋 统计报告（VPR 匹配率、子图匹配率、节点分布、决策分布、Phase 分布）
+
+---
+
+## 📋 更新日志
+
+### v1.5.0
+
+- **输出格式统一**：记忆关闭时输出与 `ws_proxy.py` 完全一致，始终包含 `pixel_target`，不输出 `memory_active` 等额外字段
+- **pixel_target 统一输出**：记忆开启时 `sub_image_match.match.center_pct` 自动映射为 `pixel_target: [x, y]`
+- **子图匹配缓存**：置信度低于 0.45 时自动延用上一帧成功结果，步骤切换或任务重置时清空
+- **测试脚本优化**：移除旧版 `angle` 引用，新增 `camera_name`、`sub_conf`、`pixel_target` 展示列和子图匹配统计
+
+### v1.4.0
+
+- **子图匹配导航**：从角度导航升级到 SuperPoint + LightGlue 子图匹配
+- **边模型重构**：从 `angle + pixel_position` 改为 `camera_name + crop_image + pixel_box`
+- **子图匹配可视化**：新增可视化验证页面
+
+### v1.3.0
+
+- **统一配置管理**：所有 VPR 参数集中到 `deploy/vpr_config.yaml`
+- **内嵌模型代码**：SelaVPR++ 和 MegaLoc 模型代码内嵌，移除外部依赖
+
+### v1.2.0
+
+- **多 VPR 方案支持**：新增 SelaVPR++、MegaLoc、EffoVPR 三种方案
+- **VPR 工厂模式**：统一提取器接口，一键切换
+
+### v1.1.0
+
+- **记忆导航服务**：WebSocket 代理 + VPR 定位 + 路径规划
+- **趋势检测**：相似度趋势判断方向正确性
+
+### v1.0.0
+
+- **基础框架**：拓扑记忆图、AnyLoc VPR、InternVLA 推理
+- **循环移位匹配**：4 相机朝向无关定位算法
 
 ---
 

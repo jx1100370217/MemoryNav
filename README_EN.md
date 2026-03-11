@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-1.4.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v1.4.0)
+[![Version](https://img.shields.io/badge/Version-1.5.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v1.5.0)
 
 A robot memory navigation system based on Visual Place Recognition (VPR) and topological mapping
 
@@ -33,17 +33,36 @@ MemoryNav is a visual memory navigation system for mobile robots. It captures im
 
 ---
 
-## 🆕 v1.4.0 Highlights
+## 🆕 v1.5.0 Highlights
 
-> **Architecture Upgrade: From Angle-Based to Sub-Image Matching Navigation**
+> **Unified Output Format + Sub-Image Match Caching**
 
-| Feature | v1.3.0 (Old) | v1.4.0 (New) |
-|---------|---------------|---------------|
-| **Edge Model** | `angle + pixel_position + stitch_image` | `camera_name + crop_image + pixel_box` |
-| **Navigation** | Server computes turn angle & pixel target | Sends attention crop; client matches & localizes |
-| **Target Localization** | Fixed angle + pixel coordinates | SuperPoint+LightGlue real-time sub-image matching |
-| **Flexibility** | Requires precise calibration | Adapts to viewpoint changes, more robust |
-| **Visualization** | Basic topology display | New sub-image matching verification page |
+### Key Changes
+
+- **📤 Unified Output Format**: When memory is OFF, `ws_proxy_with_memory.py` output is identical to `ws_proxy.py` (always includes `pixel_target`, no `memory_active` or extra fields)
+- **🎯 Unified pixel_target**: When memory is ON, `sub_image_match.match.center_pct` is automatically mapped to `pixel_target: [x, y]` (normalized 0~1), consistent with InternVLA's `pixel_target` format
+- **💾 Sub-Image Match Caching**: When `sub_image_match` confidence < 0.45, automatically reuses the last successful match result (`pixel_target` and `sub_image_match.match`); cache is cleared on step advance or task reset
+- **🧪 Test Script Modernization**: `test_memory_ws.py` removes legacy `angle` references, adds `camera_name`, `sub_conf`, `pixel_target` columns and sub-image match statistics
+
+### Output Format Overview
+
+| Scenario | pixel_target Source | memory_active |
+|----------|-------------------|---------------|
+| Memory OFF + InternVLA | `output_pixel / image_size` | Not included |
+| Memory ON + Match Success | `sub_image_match.match.center_pct` | `true` |
+| Memory ON + Match Fail | Cached from last good frame | `true` |
+| Memory ON + VLA Fallback | `output_pixel / image_size` | `true` |
+
+### Previous Versions
+
+<details>
+<summary>v1.4.0 — Sub-Image Matching Navigation Architecture</summary>
+
+- Upgraded from angle-based to SuperPoint + LightGlue sub-image matching navigation
+- Edge model changed from `angle + pixel_position` to `camera_name + crop_image + pixel_box`
+- Added sub-image matching verification visualization page
+
+</details>
 
 ---
 
@@ -253,17 +272,16 @@ if match and match['match']['found']:
     "id": "robot_01",
     "task_status": "executing",
     "action": [[0.5, 0.0, 0.1]],
+    "pixel_target": [0.485, 0.521],
     "memory_active": true,
+    "camera_name": "camera_2",
+    "landmark_name": "Elevator",
     "memory_info": {
         "phase": "verifying",
         "current_step": 1,
         "total_steps": 3,
         "from_node": "Lobby",
         "to_node": "Reception",
-        "camera_name": "camera_2",
-        "landmark_name": "Elevator",
-        "crop_image_path": "merged_labeled_data/node_5/crop_elevator.jpg",
-        "pixel_box": [120, 80, 200, 160],
         "vpr_similarity": 0.85,
         "vpr_confidence": 0.85,
         "vpr_matched_node": "node_5",
@@ -276,12 +294,9 @@ if match and match['match']['found']:
         "match": {
             "found": true,
             "confidence": 0.92,
-            "center_x_pct": 48.5,
-            "center_y_pct": 52.1,
-            "x_min_pct": 30.2,
-            "y_min_pct": 35.8,
-            "x_max_pct": 66.8,
-            "y_max_pct": 68.4
+            "center_pct": {"x": 0.485, "y": 0.521},
+            "top_left_pct": {"x": 0.302, "y": 0.358},
+            "bottom_right_pct": {"x": 0.668, "y": 0.684}
         }
     }
 }
@@ -328,9 +343,9 @@ python tests/test_memory_ws.py
 ```
 
 Test output includes:
-- 📊 Per-frame VPR matching details (similarity, confidence, matched node, decision type)
+- 📊 Per-frame details (VPR matching, sub-image match confidence, camera, pixel_target, decision type)
 - 📈 VPR similarity trend ASCII chart
-- 📋 Statistics report (match rate, node distribution, decision distribution, phase distribution)
+- 📋 Statistics report (VPR match rate, sub-image match rate, node distribution, decision distribution, phase distribution)
 
 ---
 

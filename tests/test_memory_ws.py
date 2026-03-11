@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-test_memory_ws.py - 三层记忆导航策略 WebSocket 集成测试
+test_memory_ws.py - 记忆导航 WebSocket 集成测试
 
 使用 memory_test_data/ 真实轨迹数据，完整回放帧序列，
 验证从 C8打印区(1) 经 C8微波炉区域(3) 到达 C8前台区(8) 的完整记忆导航过程。
 
-三层策略:
-  Layer 1: 记忆引导 - 每步首次请求返回 angle + pixel_goal
+导航策略:
+  Layer 1: 记忆引导 - 每步返回 camera_name + landmark_name + pixel_target (子图匹配)
   Layer 2: VPR持续验证 - 匹配目标节点→advance, 匹配源节点→重复引导
-  Layer 3: 模型兜底 - VPR失败或匹配路径外节点时的处理
-  稀疏容错: 连续N次VPR失败→强制advance
+  Layer 3: 模型兜底 - VPR失败或匹配路径外节点时走 InternVLA 推理
+  趋势检测: 相似度趋势判断方向正确性
+  稀疏容错: 连续偏离超限→强制advance
 
 用法:
   1. 启动 ws_proxy_with_memory.py:
@@ -103,12 +104,22 @@ def fmt_similarity(sim, threshold=0.70):
         return f"{C_DIM}{sim:.4f}{C_RESET}"
 
 
+def fmt_confidence(conf, threshold=0.45):
+    """格式化子图匹配置信度"""
+    if conf >= threshold:
+        return f"{C_GREEN}{conf:.3f}{C_RESET}"
+    elif conf > 0:
+        return f"{C_RED}{conf:.3f}{C_RESET}"
+    else:
+        return f"{C_DIM}  ─  {C_RESET}"
+
+
 def fmt_phase(phase):
     """格式化 phase 状态"""
     colors = {
         'step_init': C_CYAN,
         'verifying': C_BLUE,
-        'model_fallback': C_YELLOW,
+        'fallback': C_YELLOW,
         'completed': C_GREEN,
         'trend_go_straight': C_MAGENTA,
     }
@@ -128,15 +139,16 @@ def fmt_decision(decision):
         'force_advance': f"{C_BG_YELLOW}{C_WHITE} FORCE ADV {C_RESET}",
         'completed': f"{C_BG_GREEN}{C_WHITE} COMPLETED {C_RESET}",
         'init': f"{C_DIM}INIT{C_RESET}",
+        'fallback': f"{C_YELLOW}FALLBACK{C_RESET}",
     }
     return colors.get(decision, decision)
 
 
-def print_separator(char='─', width=120):
+def print_separator(char='─', width=140):
     print(f"{C_DIM}{char * width}{C_RESET}")
 
 
-def print_header(title, width=120):
+def print_header(title, width=140):
     print(f"\n{C_BOLD}{'═' * width}{C_RESET}")
     padding = (width - len(title) - 4) // 2
     print(f"{C_BOLD}{'═' * padding}  {title}  {'═' * padding}{C_RESET}")
@@ -146,7 +158,7 @@ def print_header(title, width=120):
 async def run_test():
     """完整轨迹回放测试"""
 
-    print_header("🧪 三层记忆导航策略 — 完整轨迹回放测试")
+    print_header("🧪 记忆导航 — 完整轨迹回放测试")
     print(f"  {C_BOLD}服务器:{C_RESET}  {WS_URL}")
     print(f"  {C_BOLD}任务:{C_RESET}    {TASK}")
     print(f"  {C_BOLD}数据:{C_RESET}    {DATA_DIR}")
@@ -215,7 +227,8 @@ async def run_test():
     # 表头
     print(f"\n{C_BOLD}{'帧':>5s} │ {'步骤':>4s} │ {'Phase':^18s} │ {'决策':^14s} │ "
           f"{'VPR匹配节点':^20s} │ {'VPR sim':>8s} │ {'VPR conf':>8s} │ "
-          f"{'from → to':^30s} │ {'angle':>7s} │ {'pixel_target':>14s} │ {'misses':>6s}{C_RESET}")
+          f"{'from → to':^30s} │ {'camera':>10s} │ {'sub_conf':>8s} │ "
+          f"{'pixel_target':>14s} │ {'misses':>6s}{C_RESET}")
     print_separator('─')
 
     sample_indices = list(range(0, total_frames, SAMPLE_STEP))
@@ -232,6 +245,8 @@ async def run_test():
     stat_max_consecutive_misses = 0
     stat_steps_completed = 0
     stat_sim_history = []  # (frame_idx, vpr_sim, vpr_conf, matched_node)
+    stat_sub_match_hits = 0
+    stat_sub_match_misses = 0
 
     last_step = -1
     last_phase = None
@@ -257,14 +272,26 @@ async def run_test():
         vpr_conf = mi.get('vpr_confidence', 0.0)
         vpr_matched = mi.get('vpr_matched_node', None)
         consecutive_misses = mi.get('consecutive_misses', 0)
-        heading_offset = mi.get('heading_offset', 0.0)
         plan_path = mi.get('plan_path', [])
 
         active = resp.get('memory_active', False)
-        angle = resp.get('angle')
-        pixel = resp.get('pixel_target')
+        camera_name = resp.get('camera_name', None)
+        landmark_name = resp.get('landmark_name', None)
+        pixel_target = resp.get('pixel_target', None)
         task_status = resp.get('task_status', '')
         message = resp.get('message', '')
+
+        # 子图匹配信息
+        sub_match = resp.get('sub_image_match')
+        sub_conf = 0.0
+        sub_found = False
+        if sub_match and sub_match.get('match'):
+            sub_conf = sub_match['match'].get('confidence', 0.0)
+            sub_found = sub_match['match'].get('found', False)
+            if sub_conf >= 0.45:
+                stat_sub_match_hits += 1
+            else:
+                stat_sub_match_misses += 1
 
         # 统计
         stat_phases[phase] += 1
@@ -281,7 +308,6 @@ async def run_test():
         # 判断决策类型
         decision = 'continue'
         step_changed = (step_idx != last_step and last_step != -1)
-        phase_changed = (phase != last_phase)
 
         if task_status == 'end':
             decision = 'completed'
@@ -299,13 +325,14 @@ async def run_test():
             decision = 'go_straight'
         elif '重规划' in message or '重新规划' in message:
             decision = 'replan'
+        elif phase == 'fallback':
+            decision = 'fallback'
 
         stat_decisions[decision] += 1
 
         # ─── 逐帧详细日志 ───
         # VPR 匹配节点显示
         if vpr_matched:
-            # 尝试从响应中获取匹配节点名称
             matched_name = vpr_matched
             if vpr_matched == to_node_id:
                 matched_display = f"{C_GREEN}✓ {matched_name}{C_RESET}"
@@ -318,14 +345,16 @@ async def run_test():
 
         # 格式化各字段
         step_str = f"{step_idx+1}/{total_steps}" if total_steps > 0 else "─"
-        angle_str = f"{angle:7.1f}°" if angle is not None else f"{'─':>7s}"
-        pixel_str = f"({pixel[0]:.3f},{pixel[1]:.3f})" if pixel else f"{'─':>14s}"
+        camera_str = f"{camera_name}" if camera_name else f"{'─':>10s}"
+        sub_conf_str = fmt_confidence(sub_conf)
+        pixel_str = f"({pixel_target[0]:.3f},{pixel_target[1]:.3f})" if pixel_target else f"{'─':>14s}"
         miss_str = f"{consecutive_misses}" if consecutive_misses > 0 else f"{C_DIM}0{C_RESET}"
         nav_str = f"{from_node} → {to_node}" if from_node else "─"
 
         print(f"{frame_idx:5d} │ {step_str:>4s} │ {fmt_phase(phase)} │ {fmt_decision(decision):>14s} │ "
               f"{matched_display:>20s} │ {fmt_similarity(vpr_sim):>8s} │ {fmt_similarity(vpr_conf):>8s} │ "
-              f"{nav_str:^30s} │ {angle_str} │ {pixel_str:>14s} │ {miss_str:>6s}")
+              f"{nav_str:^30s} │ {camera_str:>10s} │ {sub_conf_str:>8s} │ "
+              f"{pixel_str:>14s} │ {miss_str:>6s}")
 
         # 关键事件详细信息
         if decision in ('advance', 'skip_advance'):
@@ -347,9 +376,15 @@ async def run_test():
         elif decision == 'completed':
             print(f"      {C_GREEN}│ 🎉 {message}{C_RESET}")
 
-        # 补充: 有消息且是重要消息时打印
+        # 子图匹配详情 (关键帧)
+        if sub_match and landmark_name and decision in ('init', 'advance', 'skip_advance'):
+            center = sub_match.get('match', {}).get('center_pct', {})
+            print(f"      {C_DIM}│ 🎯 子图匹配: camera={camera_name}, landmark={landmark_name}, "
+                  f"conf={sub_conf:.3f}, center=({center.get('x', 0):.3f},{center.get('y', 0):.3f}){C_RESET}")
+
+        # 重要消息
         if message and decision not in ('continue', 'miss', 'init', 'completed'):
-            if '完成' in message or '重规划' in message or '强制' in message:
+            if '完成' in message or '重规划' in message or '强制' in message or '偏离' in message:
                 print(f"      {C_DIM}│ 💬 {message}{C_RESET}")
 
         last_step = step_idx
@@ -399,6 +434,14 @@ async def run_test():
         if confs:
             print(f"  {'置信度 (匹配帧)':>16s}: min={min(confs):.4f}  avg={sum(confs)/len(confs):.4f}  max={max(confs):.4f}")
 
+    # 子图匹配统计
+    total_sub = stat_sub_match_hits + stat_sub_match_misses
+    if total_sub > 0:
+        sub_hit_rate = stat_sub_match_hits / total_sub * 100
+        print(f"\n  {C_BOLD}【子图匹配统计】{C_RESET}")
+        print(f"  {'匹配成功 (≥0.45)':>16s}: {stat_sub_match_hits} / {total_sub} ({sub_hit_rate:.1f}%)")
+        print(f"  {'匹配失败 (<0.45)':>16s}: {stat_sub_match_misses}")
+
     # VPR 匹配节点分布
     if stat_vpr_matches:
         print(f"\n  {C_BOLD}【VPR 匹配节点分布】{C_RESET}")
@@ -424,14 +467,12 @@ async def run_test():
     # VPR 相似度变化趋势 (ASCII 图)
     if stat_sim_history and len(stat_sim_history) > 5:
         print(f"\n  {C_BOLD}【VPR 相似度趋势】{C_RESET}")
-        # 选取最多 60 个采样点
         step_size = max(1, len(stat_sim_history) // 60)
         sampled = stat_sim_history[::step_size]
         chart_height = 8
         max_sim = 1.0
         min_sim = 0.0
 
-        # 每行输出
         for row in range(chart_height, -1, -1):
             threshold_val = min_sim + (max_sim - min_sim) * row / chart_height
             line = f"  {threshold_val:5.2f} │"

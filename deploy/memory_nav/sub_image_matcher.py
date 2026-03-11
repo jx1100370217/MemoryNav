@@ -189,7 +189,7 @@ def _match_features(
     image: np.ndarray,
     template: np.ndarray,
     min_matches: int = 8,
-    confidence_threshold: float = 0.5,
+    confidence_threshold: float = 0.45,
 ) -> SubImageMatchResult:
     """
     使用 SuperPoint + LightGlue 在 image 中定位 template。
@@ -301,7 +301,7 @@ class SubImageMatcher:
 
     def __init__(self, device: str = "cuda:0",
                  min_matches: int = 8,
-                 confidence_threshold: float = 0.5):
+                 confidence_threshold: float = 0.45):
         """
         Args:
             device: 推理设备（模型缓存为全局单例）

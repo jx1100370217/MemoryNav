@@ -134,6 +134,7 @@ class MemoryNavState:
     TREND_WINDOW: int = 2             # 趋势检测滑动窗口
     MAX_DEVIATIONS: int = 5           # 最大偏离次数 → 强制 advance
     last_query_features: Optional[Dict] = None  # 最近一次提取的特征
+    last_good_sub_match: Optional[Dict] = None   # 上一帧成功的子图匹配结果 (confidence >= 0.45)
 
     def reset(self):
         """重置状态"""
@@ -147,6 +148,7 @@ class MemoryNavState:
         self.target_sim_history = []
         self.deviation_count = 0
         self.last_query_features = None
+        self.last_good_sub_match = None
         logger.info("[MemoryNavState] 状态已重置")
 
     def get_current_step(self) -> Optional[NavigationStep]:
@@ -166,6 +168,7 @@ class MemoryNavState:
         self.source_sim_history = []
         self.target_sim_history = []
         self.deviation_count = 0
+        self.last_good_sub_match = None
         if self.current_step_idx >= len(self.plan.steps):
             self.phase = 'completed'
             logger.info(f"[MemoryNavState] 导航完成！已到达终点")
@@ -567,8 +570,8 @@ def build_memory_response(
             "pts": pts,
             "task_status": "end",
             "action": [[0.0, 0.0, 0.0]],
+            "pixel_target": None,
             "camera_name": None,
-            "memory_active": False,
             "message": "记忆导航内部错误: 当前步骤为空"
         }
 
@@ -603,6 +606,7 @@ def build_memory_response(
         "pts": pts,
         "task_status": task_status,
         "action": [[0.0, 0.0, 0.0]],  # 记忆模式下 action 不使用
+        "pixel_target": _extract_pixel_target(sub_image_match),
         "camera_name": step.camera_name,
         "landmark_name": step.landmark_name,
         "landmark_name_eng": getattr(step, 'landmark_name_eng', ''),
@@ -638,6 +642,50 @@ def do_sub_image_match(navigator, nav_state, camera_images):
     except Exception as e:
         logger.warning(f"[Memory] 子图匹配异常: {e}")
         return None
+
+
+def _extract_pixel_target(sub_image_match=None):
+    """从子图匹配结果中提取 pixel_target [x, y] (归一化 0~1)，无结果返回 None"""
+    if sub_image_match is None:
+        return None
+    match = sub_image_match.get('match')
+    if match is None:
+        return None
+    center = match.get('center_pct')
+    if center is None:
+        return None
+    return [center['x'], center['y']]
+
+
+SUB_MATCH_CONFIDENCE_THRESHOLD = 0.45
+
+
+def _cache_or_reuse_sub_match(nav_state: MemoryNavState, sub_match: dict) -> dict:
+    """
+    缓存成功的子图匹配结果，失败时延用上一帧的结果。
+    
+    成功条件: confidence >= SUB_MATCH_CONFIDENCE_THRESHOLD (0.45)
+    """
+    if sub_match is None:
+        # 无匹配结果，延用缓存
+        if nav_state.last_good_sub_match is not None:
+            logger.info(f"[SubMatch] 无匹配结果，延用上一帧缓存")
+        return nav_state.last_good_sub_match
+    
+    confidence = sub_match.get('match', {}).get('confidence', 0)
+    if confidence >= SUB_MATCH_CONFIDENCE_THRESHOLD:
+        # 匹配成功，更新缓存
+        nav_state.last_good_sub_match = sub_match
+        return sub_match
+    else:
+        # 匹配失败，延用上一帧
+        if nav_state.last_good_sub_match is not None:
+            logger.info(f"[SubMatch] confidence={confidence:.4f} < {SUB_MATCH_CONFIDENCE_THRESHOLD}，"
+                        f"延用上一帧缓存 (cached_conf={nav_state.last_good_sub_match.get('match', {}).get('confidence', 0):.4f})")
+            return nav_state.last_good_sub_match
+        else:
+            logger.info(f"[SubMatch] confidence={confidence:.4f} < {SUB_MATCH_CONFIDENCE_THRESHOLD}，无缓存可用")
+            return sub_match  # 无缓存，返回当前（低置信度）结果
 
 
 def visualize_sub_image_match(camera_images, sub_match_result, pts=None):
@@ -774,7 +822,7 @@ async def process_inference_with_memory(message_data, session_state, agent,
             return {
                 "status": "error", "id": robot_id, "pts": pts,
                 "task_status": "end", "action": [[0.0, 0.0, 0.0]],
-                "pixel_target": None, "memory_active": False,
+                "pixel_target": None,
                 "message": "缺少必要字段: task"
             }
 
@@ -782,7 +830,7 @@ async def process_inference_with_memory(message_data, session_state, agent,
             return {
                 "status": "error", "id": robot_id, "pts": pts,
                 "task_status": "end", "action": [[0.0, 0.0, 0.0]],
-                "pixel_target": None, "memory_active": False,
+                "pixel_target": None,
                 "message": "缺少必要字段: images.front_1"
             }
 
@@ -797,7 +845,7 @@ async def process_inference_with_memory(message_data, session_state, agent,
             return {
                 "status": "error", "id": robot_id, "pts": pts,
                 "task_status": "end", "action": [[0.0, 0.0, 0.0]],
-                "pixel_target": None, "memory_active": False,
+                "pixel_target": None,
                 "message": "RGB图像(images.front_1)解码失败"
             }
 
@@ -843,7 +891,7 @@ async def process_inference_with_memory(message_data, session_state, agent,
                 return {
                     "status": "error", "id": robot_id, "pts": pts,
                     "task_status": "end", "action": [[0.0, 0.0, 0.0]],
-                    "pixel_target": None, "memory_active": False,
+                    "pixel_target": None,
                     "message": "首次请求时task不能为空"
                 }
 
@@ -872,7 +920,7 @@ async def process_inference_with_memory(message_data, session_state, agent,
             response = {
                 "status": "success", "id": robot_id, "pts": pts,
                 "task_status": "end", "action": [[0.0, 0.0, 0.0]],
-                "pixel_target": None, "memory_active": False,
+                "pixel_target": None,
                 "message": "收到STOP指令，任务结束"
             }
             logger.info(f"📤 响应JSON: {json.dumps(response, ensure_ascii=False, indent=2)}")
@@ -895,7 +943,7 @@ async def process_inference_with_memory(message_data, session_state, agent,
             response = {
                 "status": "success", "id": robot_id, "pts": pts,
                 "task_status": "end", "action": [action],
-                "pixel_target": None, "memory_active": False,
+                "pixel_target": None,
                 "message": f"执行直接控制指令: {instruction}"
             }
             logger.info(f"📤 响应JSON: {json.dumps(response, ensure_ascii=False, indent=2)}")
@@ -938,6 +986,7 @@ async def process_inference_with_memory(message_data, session_state, agent,
         if memory_enabled and nav_state.plan is not None and nav_state.phase != 'completed':
             # 执行子图匹配（供后续响应使用）
             _sub_match = do_sub_image_match(memory_navigator, nav_state, camera_images) if camera_images else None
+            _sub_match = _cache_or_reuse_sub_match(nav_state, _sub_match)
             visualize_sub_image_match(camera_images, _sub_match, pts)
 
             step = nav_state.get_current_step()
@@ -1004,6 +1053,7 @@ async def process_inference_with_memory(message_data, session_state, agent,
                             "pts": pts,
                             "task_status": "end",
                             "action": [[0.0, 0.0, 0.0]],
+                            "pixel_target": None,
                             "camera_name": None,
                             "landmark_name": None,
                             "sub_image_match": None,
@@ -1147,6 +1197,7 @@ async def process_inference_with_memory(message_data, session_state, agent,
                             "pts": pts,
                             "task_status": "executing",
                             "action": [[1.0, 0.0, 0.0]],  # 前进 1 米
+                            "pixel_target": _extract_pixel_target(_sub_match),
                             "camera_name": step.camera_name if step else None,
                             "landmark_name": step.landmark_name if step else None,
                             "sub_image_match": _sub_match,
@@ -1196,6 +1247,7 @@ async def process_inference_with_memory(message_data, session_state, agent,
                                     "pts": pts,
                                     "task_status": "end",
                                     "action": [[0.0, 0.0, 0.0]],
+                                    "pixel_target": None,
                                     "camera_name": None,
                                     "landmark_name": None,
                                     "sub_image_match": None,
@@ -1304,6 +1356,7 @@ async def process_inference_with_memory(message_data, session_state, agent,
 
                         # 首次规划成功，执行子图匹配
                         _sub_match = do_sub_image_match(memory_navigator, nav_state, camera_images) if camera_images else None
+                        _sub_match = _cache_or_reuse_sub_match(nav_state, _sub_match)
                         visualize_sub_image_match(camera_images, _sub_match, pts)
 
                         session_state['request_count'] += 1
@@ -1417,12 +1470,12 @@ async def process_inference_with_memory(message_data, session_state, agent,
             "pts": pts,
             "task_status": "executing",
             "action": [[0.0, 0.0, 0.0]],
-            "memory_active": False,
+            "pixel_target": None,
             "message": ""
         }
 
-        # 如果有记忆 fallback 状态，标记
-        if nav_state.phase == 'fallback' and nav_state.plan is not None:
+        # 如果有记忆 fallback 状态，标记（仅记忆启用时）
+        if memory_enabled and nav_state.phase == 'fallback' and nav_state.plan is not None:
             response["memory_active"] = True
             step = nav_state.get_current_step()
             if step:
@@ -1523,7 +1576,7 @@ async def process_inference_with_memory(message_data, session_state, agent,
             "pts": message_data.get('pts', None),
             "task_status": "end",
             "action": [[0.0, 0.0, 0.0]],
-            "memory_active": False,
+            "pixel_target": None,
             "message": f"推理处理异常: {e}"
         }
 

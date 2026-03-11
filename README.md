@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-1.4.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v1.4.0)
+[![Version](https://img.shields.io/badge/Version-1.5.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v1.5.0)
 
 基于视觉位置识别（VPR）和拓扑地图的机器人记忆导航系统
 
@@ -33,17 +33,36 @@ MemoryNav 是一个面向移动机器人的视觉记忆导航系统。系统通�
 
 ---
 
-## 🆕 v1.4.0 更新亮点
+## 🆕 v1.5.0 更新亮点
 
-> **架构升级：从角度导航到子图匹配导航**
+> **输出格式统一 + 子图匹配缓存策略**
 
-| 特性 | v1.3.0（旧方案） | v1.4.0（新方案） |
-|------|------------------|------------------|
-| **边模型** | `angle + pixel_position + stitch_image` | `camera_name + crop_image + pixel_box` |
-| **导航方式** | 服务端计算转向角度和像素目标 | 下发注意力子图，客户端自行匹配定位 |
-| **目标定位** | 固定角度 + 像素坐标 | SuperPoint+LightGlue 实时子图匹配 |
-| **灵活性** | 依赖精确标定 | 自适应视角变化，鲁棒性更强 |
-| **可视化** | 基础拓扑图展示 | 新增子图匹配验证页面 |
+### 主要变更
+
+- **📤 输出格式统一**：记忆关闭时，`ws_proxy_with_memory.py` 输出与 `ws_proxy.py` 完全一致（始终包含 `pixel_target`，不输出 `memory_active` 等额外字段）
+- **🎯 pixel_target 统一输出**：记忆开启时，`sub_image_match.match.center_pct` 自动映射为 `pixel_target: [x, y]`（归一化 0~1），与 InternVLA 推理的 `pixel_target` 格式一致
+- **💾 子图匹配缓存**：当 `sub_image_match` 置信度低于 0.45 时，自动延用上一帧的成功匹配结果（`pixel_target` 和 `sub_image_match.match`），步骤切换或任务重置时清空缓存
+- **🧪 测试脚本现代化**：`test_memory_ws.py` 移除旧版 `angle` 字段引用，新增 `camera_name`、`sub_conf`、`pixel_target` 列和子图匹配统计
+
+### 输出格式对比
+
+| 场景 | pixel_target 来源 | memory_active |
+|------|-------------------|---------------|
+| 记忆关闭 + InternVLA 推理 | `output_pixel / 图像尺寸` | 不输出 |
+| 记忆开启 + 子图匹配成功 | `sub_image_match.match.center_pct` | `true` |
+| 记忆开启 + 子图匹配失败 | 延用上一帧缓存 | `true` |
+| 记忆开启 + VLA 兜底 | `output_pixel / 图像尺寸` | `true` |
+
+### 历史版本
+
+<details>
+<summary>v1.4.0 — 子图匹配导航架构</summary>
+
+- 从角度导航升级到 SuperPoint + LightGlue 子图匹配导航
+- 边模型从 `angle + pixel_position` 改为 `camera_name + crop_image + pixel_box`
+- 新增子图匹配验证可视化页面
+
+</details>
 
 ---
 
@@ -253,17 +272,16 @@ if match and match['match']['found']:
     "id": "robot_01",
     "task_status": "executing",
     "action": [[0.5, 0.0, 0.1]],
+    "pixel_target": [0.485, 0.521],
     "memory_active": true,
+    "camera_name": "camera_2",
+    "landmark_name": "电梯",
     "memory_info": {
         "phase": "verifying",
         "current_step": 1,
         "total_steps": 3,
         "from_node": "大厅",
         "to_node": "前台",
-        "camera_name": "camera_2",
-        "landmark_name": "电梯",
-        "crop_image_path": "merged_labeled_data/node_5/crop_elevator.jpg",
-        "pixel_box": [120, 80, 200, 160],
         "vpr_similarity": 0.85,
         "vpr_confidence": 0.85,
         "vpr_matched_node": "node_5",
@@ -276,12 +294,9 @@ if match and match['match']['found']:
         "match": {
             "found": true,
             "confidence": 0.92,
-            "center_x_pct": 48.5,
-            "center_y_pct": 52.1,
-            "x_min_pct": 30.2,
-            "y_min_pct": 35.8,
-            "x_max_pct": 66.8,
-            "y_max_pct": 68.4
+            "center_pct": {"x": 0.485, "y": 0.521},
+            "top_left_pct": {"x": 0.302, "y": 0.358},
+            "bottom_right_pct": {"x": 0.668, "y": 0.684}
         }
     }
 }
@@ -328,9 +343,9 @@ python tests/test_memory_ws.py
 ```
 
 测试输出包含：
-- 📊 逐帧 VPR 匹配详情（相似度、置信度、匹配节点、决策类型）
+- 📊 逐帧详情（VPR 匹配、子图匹配置信度、camera、pixel_target、决策类型）
 - 📈 VPR 相似度变化趋势 ASCII 图
-- 📋 统计报告（匹配率、节点分布、决策分布、Phase 分布）
+- 📋 统计报告（VPR 匹配率、子图匹配率、节点分布、决策分布、Phase 分布）
 
 ---
 

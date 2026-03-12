@@ -842,7 +842,7 @@ def visualize_sub_image_match(camera_images, sub_match_result, pts=None, cache_a
     is_found = match_info.get('found', False)
     is_reused = (cache_action == 'reused')
 
-    if not is_found and not is_reused and not has_bbox:
+    if not has_bbox:
         return
 
     try:

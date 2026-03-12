@@ -104,7 +104,7 @@ def fmt_similarity(sim, threshold=0.70):
         return f"{C_DIM}{sim:.4f}{C_RESET}"
 
 
-def fmt_confidence(conf, threshold=0.45):
+def fmt_confidence(conf, threshold=0.35):
     """格式化子图匹配置信度"""
     if conf >= threshold:
         return f"{C_GREEN}{conf:.3f}{C_RESET}"
@@ -251,6 +251,10 @@ async def run_test():
     stat_cache_cleared = 0        # 场景变化清除缓存次数
     stat_cache_no_cache = 0       # 无缓存可用次数
     stat_frame_sims = []          # 帧间相似度历史 (frame_idx, sim, reused)
+    stat_cache_reused = 0         # 帧间相似度复用缓存次数
+    stat_cache_cleared = 0        # 场景变化清除缓存次数
+    stat_cache_no_cache = 0       # 无缓存可用次数
+    stat_frame_sims = []          # 帧间相似度历史 (frame_idx, sim, reused)
 
     last_step = -1
     last_phase = None
@@ -285,21 +289,22 @@ async def run_test():
         task_status = resp.get('task_status', '')
         message = resp.get('message', '')
 
-        # 子图匹配信息
+        # 帧间相似度 & 缓存复用信息（从 memory_info 提取，先于子图统计）
+        frame_sim = mi.get('frame_similarity', None)
+        cache_action = mi.get('cache_action', None)  # 'reused' / 'cleared' / 'no_cache' / 'accepted'
+
+        # 子图匹配信息（缓存复用不计入成功率）
         sub_match = resp.get('sub_image_match')
         sub_conf = 0.0
         sub_found = False
         if sub_match and sub_match.get('match'):
             sub_conf = sub_match['match'].get('confidence', 0.0)
             sub_found = sub_match['match'].get('found', False)
-            if sub_conf >= 0.45:
-                stat_sub_match_hits += 1
-            else:
-                stat_sub_match_misses += 1
-
-        # 帧间相似度 & 缓存复用信息（从 memory_info 提取）
-        frame_sim = mi.get('frame_similarity', None)
-        cache_action = mi.get('cache_action', None)  # 'reused' / 'cleared' / 'no_cache' / 'accepted'
+            if cache_action != 'reused':
+                if sub_conf >= 0.35:
+                    stat_sub_match_hits += 1
+                else:
+                    stat_sub_match_misses += 1
         if cache_action == 'reused':
             stat_cache_reused += 1
         elif cache_action == 'cleared':
@@ -409,6 +414,17 @@ async def run_test():
             elif cache_action == 'no_cache':
                 print(f"      {C_DIM}│ ❌ 无缓存: sub_conf={sub_conf:.3f} < threshold, 无历史缓存可用{C_RESET}")
 
+        # 子图匹配缓存复用详情
+        if cache_action and cache_action != 'accepted':
+            if cache_action == 'reused':
+                print(f"      {C_CYAN}│ 🔄 缓存复用: 帧间DINOv2相似度={frame_sim:.4f} >= 0.85, "
+                      f"sub_conf={sub_conf:.3f} < threshold, 复用上次匹配结果{C_RESET}")
+            elif cache_action == 'cleared':
+                print(f"      {C_RED}│ 🗑️ 缓存清除: 帧间DINOv2相似度={frame_sim:.4f} < 0.85, "
+                      f"场景变化大{C_RESET}")
+            elif cache_action == 'no_cache':
+                print(f"      {C_DIM}│ ❌ 无缓存: sub_conf={sub_conf:.3f} < threshold, 无历史缓存可用{C_RESET}")
+
         # 重要消息
         if message and decision not in ('continue', 'miss', 'init', 'completed'):
             if '完成' in message or '重规划' in message or '强制' in message or '偏离' in message:
@@ -466,8 +482,9 @@ async def run_test():
     if total_sub > 0:
         sub_hit_rate = stat_sub_match_hits / total_sub * 100
         print(f"\n  {C_BOLD}【子图匹配统计】{C_RESET}")
-        print(f"  {'匹配成功 (≥0.45)':>16s}: {stat_sub_match_hits} / {total_sub} ({sub_hit_rate:.1f}%)")
-        print(f"  {'匹配失败 (<0.45)':>16s}: {stat_sub_match_misses}")
+        print(f"  {'匹配成功 (≥0.35)':>16s}: {stat_sub_match_hits} / {total_sub} ({sub_hit_rate:.1f}%)  (不含缓存复用)")
+        print(f"  {'匹配失败 (<0.35)':>16s}: {stat_sub_match_misses}")
+        print(f"  {'缓存复用 (不计入)':>16s}: {stat_cache_reused}")
 
     # 帧间相似度 & 缓存复用统计
     total_cache_events = stat_cache_reused + stat_cache_cleared + stat_cache_no_cache
@@ -486,6 +503,29 @@ async def run_test():
             for _, sim, action in stat_frame_sims:
                 if action == 'reused':
                     print(f"{C_GREEN}{'█' if sim >= 0.70 else '▄'}{C_RESET}", end="")
+                elif action == 'cleared':
+                    print(f"{C_RED}▁{C_RESET}", end="")
+                else:
+                    print(f"{C_DIM}·{C_RESET}", end="")
+            print(f"  {C_DIM}(█=复用 ▁=清除 ·=无缓存){C_RESET}")
+
+    # 帧间相似度 & 缓存复用统计
+    total_cache_events = stat_cache_reused + stat_cache_cleared + stat_cache_no_cache
+    if total_cache_events > 0:
+        print(f"\n  {C_BOLD}【帧间相似度 & 缓存复用】{C_RESET}")
+        print(f"  {'缓存复用次数':>16s}: {stat_cache_reused} ({C_GREEN}帧间DINOv2相似度 >= 0.85{C_RESET})")
+        print(f"  {'缓存清除次数':>16s}: {stat_cache_cleared} ({C_RED}帧间DINOv2相似度 < 0.85{C_RESET})")
+        print(f"  {'无缓存可用':>16s}: {stat_cache_no_cache}")
+        if stat_frame_sims:
+            sims_only = [s[1] for s in stat_frame_sims]
+            print(f"  {'帧间相似度':>16s}: min={min(sims_only):.4f}  avg={sum(sims_only)/len(sims_only):.4f}  max={max(sims_only):.4f}")
+
+        # 帧间相似度趋势迷你图
+        if len(stat_frame_sims) > 3:
+            print(f"  {'帧间相似度序列':>16s}: ", end="")
+            for _, sim, action in stat_frame_sims:
+                if action == 'reused':
+                    print(f"{C_GREEN}{'█' if sim >= 0.85 else '▄'}{C_RESET}", end="")
                 elif action == 'cleared':
                     print(f"{C_RED}▁{C_RESET}", end="")
                 else:

@@ -810,18 +810,20 @@ def _cache_or_reuse_sub_match(nav_state: MemoryNavState, sub_match: dict,
             return None  # 返回 None，让上层走 InternVLN 兜底
 
 
-def visualize_sub_image_match(camera_images, sub_match_result, pts=None):
+def visualize_sub_image_match(camera_images, sub_match_result, pts=None, cache_action=None):
     """
     在对应的 camera_x 图上标注子图匹配框和中心点，并保存到 deploy/logs/images/
 
-    支持两种模式：
-    1. match.found=True (confidence >= 0.5) → 绿色框 + 红色中心点 (高置信度)
-    2. match.found=False 但有 bbox 数据 → 黄色框 + 蓝色中心点 (低置信度)
+    支持三种模式：
+    1. 直接匹配成功 (found=True) → 绿色框 + 红色中心点
+    2. 缓存复用 (cache_action='reused') → 黄色框 + 蓝色中心点
+    3. 匹配失败但有 bbox → 灰色框 + 灰色中心点
 
     Args:
         camera_images: {'camera_1': ndarray(BGR), ...}
         sub_match_result: do_sub_image_match 返回的结果字典
         pts: 时间戳（用于文件名）
+        cache_action: 缓存动作 ('accepted'/'reused'/'cleared'/'no_cache'/None)
     """
     if sub_match_result is None:
         return
@@ -829,21 +831,21 @@ def visualize_sub_image_match(camera_images, sub_match_result, pts=None):
     if match_info is None:
         return
 
+    camera_name = sub_match_result.get('camera_name')
+    if not camera_name or camera_name not in camera_images:
+        return
+
     # 需要有 bbox 数据（至少有非零坐标）
     bbox = match_info.get('bbox_pixel', {})
     has_bbox = (bbox.get('x_max', 0) > bbox.get('x_min', 0) and
                 bbox.get('y_max', 0) > bbox.get('y_min', 0))
     is_found = match_info.get('found', False)
+    is_reused = (cache_action == 'reused')
 
-    if not is_found and not has_bbox:
-        return
-
-    camera_name = sub_match_result.get('camera_name')
-    if not camera_name or camera_name not in camera_images:
+    if not is_found and not is_reused and not has_bbox:
         return
 
     try:
-        # 复制图像避免修改原图
         img = camera_images[camera_name].copy()
         img_h, img_w = img.shape[:2]
 
@@ -851,41 +853,50 @@ def visualize_sub_image_match(camera_images, sub_match_result, pts=None):
         os.makedirs(images_dir, exist_ok=True)
         ts = f"{pts}" if pts is not None else f"{int(time.time() * 1000)}"
 
-        # 从匹配结果获取百分比坐标（0~1 范围）
-        tl = match_info['top_left_pct']
-        br = match_info['bottom_right_pct']
-        ct = match_info['center_pct']
-
-        # 转换为像素坐标
-        x_min = int(tl['x'] * img_w)
-        y_min = int(tl['y'] * img_h)
-        x_max = int(br['x'] * img_w)
-        y_max = int(br['y'] * img_h)
-        cx = int(ct['x'] * img_w)
-        cy = int(ct['y'] * img_h)
-
         conf = match_info.get('confidence', 0)
 
-        if is_found:
-            # ---- 高置信度: 绿色框 + 红色中心点 ----
+        if has_bbox:
+            tl = match_info['top_left_pct']
+            br = match_info['bottom_right_pct']
+            ct = match_info['center_pct']
+            x_min = int(tl['x'] * img_w)
+            y_min = int(tl['y'] * img_h)
+            x_max = int(br['x'] * img_w)
+            y_max = int(br['y'] * img_h)
+            cx = int(ct['x'] * img_w)
+            cy = int(ct['y'] * img_h)
+        else:
+            x_min = y_min = x_max = y_max = cx = cy = 0
+
+        if is_reused:
+            # ---- 缓存复用: 黄色框 + 蓝色中心点 ----
+            if has_bbox:
+                cv2.rectangle(img, (x_min, y_min), (x_max, y_max), (0, 255, 255), 2)
+                cv2.circle(img, (cx, cy), 5, (255, 0, 0), -1)
+            label = f"reused conf={conf:.3f}"
+            cv2.putText(img, label, (max(x_min, 10), max(y_min - 8, 25)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+        elif is_found:
+            # ---- 直接匹配成功: 绿色框 + 红色中心点 ----
             cv2.rectangle(img, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
             cv2.circle(img, (cx, cy), 5, (0, 0, 255), -1)
             label = f"conf={conf:.3f}"
             cv2.putText(img, label, (x_min, max(y_min - 8, 15)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
         else:
-            # ---- 低置信度: 黄色框 + 蓝色中心点 ----
-            cv2.rectangle(img, (x_min, y_min), (x_max, y_max), (0, 255, 255), 2)
-            cv2.circle(img, (cx, cy), 5, (255, 0, 0), -1)
+            # ---- 低置信度: 灰色框 + 灰色中心点 ----
+            cv2.rectangle(img, (x_min, y_min), (x_max, y_max), (128, 128, 128), 2)
+            cv2.circle(img, (cx, cy), 5, (128, 128, 128), -1)
             label = f"low conf={conf:.3f}"
             cv2.putText(img, label, (x_min, max(y_min - 8, 15)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (128, 128, 128), 1)
 
+        mode_str = "reused" if is_reused else ("found" if is_found else "low")
         save_path = os.path.join(images_dir, f"{ts}_{camera_name}_match.jpg")
         cv2.imwrite(save_path, img)
-        logger.info(f"💾 [SubImageMatch] 已保存匹配可视化: {save_path} "
+        logger.info(f"\U0001f4be [SubImageMatch] 已保存匹配可视化: {save_path} "
                     f"(box=[{x_min},{y_min},{x_max},{y_max}], center=[{cx},{cy}], "
-                    f"conf={conf:.3f}, found={is_found})")
+                    f"conf={conf:.3f}, mode={mode_str})")
 
     except Exception as e:
         logger.warning(f"[SubImageMatch] 可视化保存失败: {e}", exc_info=True)
@@ -1112,7 +1123,7 @@ async def process_inference_with_memory(message_data, session_state, agent,
             _cache_step = nav_state.get_current_step()
             _cache_cam_name = _cache_step.camera_name if _cache_step else None
             _sub_match = _cache_or_reuse_sub_match(nav_state, _sub_match, nav_state.last_query_features, _cache_cam_name)
-            visualize_sub_image_match(camera_images, _sub_match, pts)
+            visualize_sub_image_match(camera_images, _sub_match, pts, cache_action=nav_state.last_cache_action)
 
             # ---- InternVLN 兜底: 子图匹配失败且无缓存时 ----
             nav_state.fallback_action = None
@@ -1553,7 +1564,7 @@ async def process_inference_with_memory(message_data, session_state, agent,
                         # 首次规划成功，执行子图匹配
                         _sub_match = do_sub_image_match(memory_navigator, nav_state, camera_images) if camera_images else None
                         _sub_match = _cache_or_reuse_sub_match(nav_state, _sub_match, nav_state.last_query_features)
-                        visualize_sub_image_match(camera_images, _sub_match, pts)
+                        visualize_sub_image_match(camera_images, _sub_match, pts, cache_action=nav_state.last_cache_action)
 
                         session_state['request_count'] += 1
                         session_state['last_instruction'] = instruction

@@ -14,6 +14,7 @@ MemoryNav - 子图匹配模块
 import os
 import logging
 import time
+import math
 from dataclasses import dataclass
 from typing import Optional, Tuple, Dict
 
@@ -255,7 +256,12 @@ def _match_features(
     projected = cv2.perspectiveTransform(corners, H).reshape(-1, 2)
 
     inlier_ratio = mask.sum() / len(mask) if mask is not None else 0
-    confidence = float(inlier_ratio)
+    n_inliers = int(mask.sum()) if mask is not None else 0
+    # confidence = sqrt(inlier_ratio * inlier_quality)
+    # inlier_quality 惩罚低 inlier 数量的情况（防止少量匹配点碰巧得高 ratio）
+    _MIN_INLIERS = 20
+    inlier_quality = min(1.0, n_inliers / _MIN_INLIERS)
+    confidence = float(math.sqrt(inlier_ratio * inlier_quality))
 
     # Homography 退化检测
     if _is_homography_degenerate(H, image.shape, template.shape, projected):
@@ -266,7 +272,7 @@ def _match_features(
             found=False, confidence=round(confidence, 4),
             elapsed_ms=round(elapsed_ms, 1),
             method=f"SuperPoint+LightGlue ({n_matches} matches, "
-                   f"{int(inlier_ratio*100)}% inliers, H degenerate)",
+                   f"{n_inliers} inliers, {int(inlier_ratio*100)}%, H degenerate)",
         )
 
     x_min = max(0, int(projected[:, 0].min()))
@@ -290,7 +296,7 @@ def _match_features(
         y_max_pct=round(y_max / img_h * 100, 2),
         elapsed_ms=round(elapsed_ms, 1),
         method=f"SuperPoint+LightGlue ({n_matches} matches, "
-               f"{int(inlier_ratio*100)}% inliers)",
+               f"{n_inliers} inliers, {int(inlier_ratio*100)}%)",
     )
 
 

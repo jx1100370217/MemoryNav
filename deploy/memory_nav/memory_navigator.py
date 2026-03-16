@@ -376,8 +376,7 @@ class MemoryNavigator:
         返回当前步骤所需的导航数据：
         - camera_name: 目标所在相机 (camera_1~camera_4)
         - landmark_name: 注意力目标地标
-        - crop_image_path: crop 子图路径
-        - pixel_box: 记忆中的像素框 (x, y, w, h)
+        - crop_image_paths: 三级子图路径 (big/mid/small)
         - from_node/to_node: 起止节点信息
         """
         step = self.get_current_step()
@@ -397,8 +396,8 @@ class MemoryNavigator:
             },
             'camera_name': step.camera_name,
             'landmark_name': step.landmark_name,
+            'crop_image_paths': step.crop_image_paths,
             'crop_image_path': step.crop_image_path,
-            'pixel_box': list(step.pixel_box),
             'is_last_step': step.step_index == self.current_plan.total_steps - 1
         }
     
@@ -439,56 +438,102 @@ class MemoryNavigator:
     # 完整导航流程
     # ========================================================================
     
+    def _cascade_match_single_camera(self, camera_image: np.ndarray,
+                                     crop_paths: Dict[str, str],
+                                     camera_name: str) -> Tuple[Optional[SubImageMatchResult], Optional[str]]:
+        """
+        在单个相机图上执行级联匹配: small → mid → big
+        
+        Returns:
+            (match_result, matched_scale) — 匹配成功返回结果和尺度，失败返回 (None, None)
+        """
+        for scale in ['small', 'mid', 'big']:
+            crop_path = crop_paths.get(scale, '')
+            if not crop_path:
+                continue
+            result = self.sub_image_matcher.match_from_path(camera_image, crop_path)
+            if result.found:
+                logger.info(f"[MemoryNavigator] 级联匹配命中: camera={camera_name}, "
+                           f"scale={scale}, confidence={result.confidence:.4f}")
+                return result, scale
+            else:
+                logger.debug(f"[MemoryNavigator] 级联匹配未命中: camera={camera_name}, "
+                            f"scale={scale}, confidence={result.confidence:.4f}")
+        return None, None
+
     def match_current_step(self, camera_images: Dict[str, np.ndarray], step: 'NavigationStep' = None) -> Optional[Dict]:
         """
         对当前导航步骤执行子图匹配
         
-        用记忆中的 crop 子图在当前相机图中定位目标区域。
+        遍历所有相机 (camera_1~camera_4)，每个相机执行级联匹配 (small→mid→big)，
+        选择 confidence 最高的匹配结果。
         
         Args:
             camera_images: 当前环视相机图像 {'camera_1': image, ...}
             step: 外部传入的导航步骤（优先使用），若为None则使用内部当前步骤
             
         Returns:
-            匹配结果字典，包含 camera_name 和匹配区域百分比，
-            若匹配失败则返回 None
+            匹配结果字典，若匹配失败则返回 None
         """
         if step is None:
             step = self.get_current_step()
             if step is None:
                 return None
         
-        camera_name = step.camera_name
-        crop_path = step.crop_image_path
-        
-        if not camera_name or camera_name not in camera_images:
-            logger.warning(f"[MemoryNavigator] 相机 {camera_name} 图像不可用")
+        crop_paths = step.crop_image_paths
+        if not crop_paths:
+            logger.warning(f"[MemoryNavigator] crop_image_paths 为空")
             return None
         
-        if not crop_path:
-            logger.warning(f"[MemoryNavigator] crop 路径为空")
-            return None
+        memory_camera = step.camera_name
         
-        camera_image = camera_images[camera_name]
-        match_result = self.sub_image_matcher.match_from_path(camera_image, crop_path)
+        # 遍历所有相机，找最佳匹配
+        best_result = None
+        best_scale = None
+        best_camera = None
+        best_confidence = -1.0
+        
+        for cam_name in sorted(camera_images.keys()):
+            cam_image = camera_images[cam_name]
+            match_result, matched_scale = self._cascade_match_single_camera(
+                cam_image, crop_paths, cam_name)
+            
+            if match_result is not None and match_result.confidence > best_confidence:
+                best_result = match_result
+                best_scale = matched_scale
+                best_camera = cam_name
+                best_confidence = match_result.confidence
+        
+        # 所有相机都匹配失败
+        if best_result is None:
+            logger.info(f"[MemoryNavigator] 子图匹配全部失败: "
+                       f"landmark={step.landmark_name}, 已尝试 {len(camera_images)} 个相机")
+            best_result = SubImageMatchResult(
+                found=False, confidence=0.0,
+                method=f"all cameras cascade(small->mid->big) failed"
+            )
+            best_camera = memory_camera or ''
         
         result = {
-            'camera_name': camera_name,
+            'camera_name': best_camera,
             'landmark_name': step.landmark_name,
             'landmark_name_eng': getattr(step, 'landmark_name_eng', ''),
             'position_name_eng': getattr(step, 'to_node_name_eng', ''),
-            'crop_image_path': crop_path,
-            'pixel_box_memory': list(step.pixel_box),
-            'match': match_result.to_dict(),
+            'crop_image_paths': crop_paths,
+            'crop_image_path': crop_paths.get(best_scale, '') if best_scale else '',
+            'match': best_result.to_dict(),
+            'matched_scale': best_scale,
+            'memory_camera': memory_camera,
         }
         
-        if match_result.found:
-            logger.info(f"[MemoryNavigator] 子图匹配成功: camera={camera_name}, "
-                       f"confidence={match_result.confidence:.4f}, "
-                       f"center=({match_result.center_x_pct:.1f}%, {match_result.center_y_pct:.1f}%)")
+        if best_result.found:
+            camera_note = f" (记忆标注: {memory_camera})" if best_camera != memory_camera else ""
+            logger.info(f"[MemoryNavigator] 子图匹配成功: camera={best_camera}{camera_note}, "
+                       f"scale={best_scale}, "
+                       f"confidence={best_result.confidence:.4f}, "
+                       f"center=({best_result.center_x_pct:.1f}%, {best_result.center_y_pct:.1f}%)")
         else:
-            logger.info(f"[MemoryNavigator] 子图匹配失败: camera={camera_name}, "
-                       f"confidence={match_result.confidence:.4f}")
+            logger.info(f"[MemoryNavigator] 子图匹配失败: landmark={step.landmark_name}")
         
         return result
 

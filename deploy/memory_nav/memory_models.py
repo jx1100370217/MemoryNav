@@ -21,22 +21,25 @@ import numpy as np
 @dataclass
 class MemoryEdge:
     """
-    记忆边 - 节点间的连接信息（新方案）
+    记忆边 - 节点间的连接信息
 
     存储从当前节点到目标节点的导航线索：
     - camera_name: 注意力子图所在的相机 (camera_1~camera_4)
     - landmark_name: 注意力目标的地标名称（如"电梯"、"办公桌"）
-    - pixel_box: 子图在相机原图中的像素 bounding box (x, y, w, h)
-    - crop_image_path: 裁剪的注意力子图路径
+    - crop_image_paths: 三级注意力子图路径 {"big": ..., "mid": ..., "small": ...}
+    - big_box/mid_box/small_box: 归一化 bounding box
     """
     target_node_id: str               # 目标节点ID
     target_node_name: str             # 目标节点名称
     camera_name: str                  # 相机名称 (camera_1~camera_4)
     landmark_name: str                # 地标名称
-    pixel_box: Tuple[int, int, int, int]  # (x, y, w, h) 像素坐标
-    crop_image_path: str              # crop 子图文件路径（相对于节点目录）
+    crop_image_paths: Dict[str, str] = field(default_factory=dict)  # 三级子图路径 {"big": ..., "mid": ..., "small": ...}
+    big_box: Tuple[float, ...] = ()    # normalized bbox (big)
+    mid_box: Tuple[float, ...] = ()    # normalized bbox (mid)
+    small_box: Tuple[float, ...] = ()  # normalized bbox (small)
     target_node_name_eng: str = ""    # 目标节点英文名称
     landmark_name_eng: str = ""       # 地标英文名称
+    crop_image_path: str = ""         # 向 big 的兼容引用
 
     def to_dict(self) -> Dict:
         """转换为字典"""
@@ -47,22 +50,30 @@ class MemoryEdge:
             'camera_name': self.camera_name,
             'landmark_name': self.landmark_name,
             'landmark_name_eng': self.landmark_name_eng,
-            'pixel_box': list(self.pixel_box),
+            'crop_image_paths': self.crop_image_paths,
             'crop_image_path': self.crop_image_path,
+            'big_box': list(self.big_box),
+            'mid_box': list(self.mid_box),
+            'small_box': list(self.small_box),
         }
 
     @classmethod
     def from_dict(cls, data: Dict, base_path: str = "") -> 'MemoryEdge':
         """从字典创建"""
-        # 解析 pixel_box
-        pixel_box_raw = data.get('pixel_box', '0,0,0,0')
-        if isinstance(pixel_box_raw, str):
-            parts = list(map(int, pixel_box_raw.split(',')))
-            pixel_box = tuple(parts[:4])
-        elif isinstance(pixel_box_raw, (list, tuple)):
-            pixel_box = tuple(int(x) for x in pixel_box_raw[:4])
-        else:
-            pixel_box = (0, 0, 0, 0)
+        # 解析 crop_image_paths
+        crop_image_paths = data.get('crop_image_paths', {})
+
+        # 解析 normalized boxes
+        def _parse_float_box(raw):
+            if isinstance(raw, str) and raw:
+                return tuple(float(x) for x in raw.split(','))
+            elif isinstance(raw, (list, tuple)):
+                return tuple(float(x) for x in raw)
+            return ()
+
+        big_box = _parse_float_box(data.get('big_box', ()))
+        mid_box = _parse_float_box(data.get('mid_box', ()))
+        small_box = _parse_float_box(data.get('small_box', ()))
 
         return cls(
             target_node_id=str(data.get('position_id', '')),
@@ -71,8 +82,11 @@ class MemoryEdge:
             camera_name=data.get('camera_name', ''),
             landmark_name=data.get('landmark_name', ''),
             landmark_name_eng=data.get('landmark_name_eng', ''),
-            pixel_box=pixel_box,
+            crop_image_paths=crop_image_paths,
             crop_image_path=data.get('crop_image_path', ''),
+            big_box=big_box,
+            mid_box=mid_box,
+            small_box=small_box,
         )
 
 
@@ -136,13 +150,12 @@ class MemoryNode:
 @dataclass
 class NavigationStep:
     """
-    导航步骤 - 从一个节点到下一个节点的导航信息（新方案）
+    导航步骤 - 从一个节点到下一个节点的导航信息
 
-    新方案不再返回 angle + pixel_position，而是返回：
+    返回：
     - camera_name: 目标所在的相机
     - landmark_name: 注意力目标地标
-    - crop_image_path: crop 子图路径（用于实时子图匹配）
-    - pixel_box: 记忆中子图的原始像素框
+    - crop_image_paths: 三级子图路径 {"big": ..., "mid": ..., "small": ...}
     """
     from_node_id: str                 # 起始节点ID
     from_node_name: str               # 起始节点名称
@@ -150,12 +163,12 @@ class NavigationStep:
     to_node_name: str                 # 目标节点名称
     camera_name: str                  # 目标相机 (camera_1~camera_4)
     landmark_name: str                # 注意力地标名称
-    crop_image_path: str              # crop 子图路径
-    pixel_box: Tuple[int, int, int, int]  # (x, y, w, h) 记忆中的像素框
-    step_index: int                   # 步骤序号
+    crop_image_paths: Dict[str, str] = field(default_factory=dict)  # 三级子图路径
+    step_index: int = 0               # 步骤序号
     from_node_name_eng: str = ""
     to_node_name_eng: str = ""
     landmark_name_eng: str = ""
+    crop_image_path: str = ""         # 向 big 的兼容引用
 
     def to_dict(self) -> Dict:
         """转换为字典"""
@@ -174,8 +187,8 @@ class NavigationStep:
             'camera_name': self.camera_name,
             'landmark_name': self.landmark_name,
             'landmark_name_eng': self.landmark_name_eng,
+            'crop_image_paths': self.crop_image_paths,
             'crop_image_path': self.crop_image_path,
-            'pixel_box': list(self.pixel_box),
         }
 
 

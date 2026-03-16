@@ -562,7 +562,8 @@ def build_memory_response(
     新方案返回：
     - camera_name: 目标所在相机
     - landmark_name: 注意力目标地标
-    - crop_image_path: crop 子图路径
+    - crop_image_paths: 三级子图路径 (big/mid/small)
+    - crop_image_path: crop 子图路径 (big 兼容引用)
     - sub_image_match: 子图匹配结果（实时匹配的区域百分比）
 
     机器人控制端根据 camera_name + 匹配区域 自行生成像素目标和避障轨迹。
@@ -641,12 +642,12 @@ def build_memory_response(
         "task_status": task_status,
         "action": _action,
         "pixel_target": _pixel,
-        "camera_name": step.camera_name,
+        "camera_name": sub_image_match.get('camera_name') if sub_image_match else None,
         "landmark_name": step.landmark_name,
         "landmark_name_eng": getattr(step, 'landmark_name_eng', ''),
         "position_name_eng": getattr(step, 'to_node_name_eng', ''),
+        "crop_image_paths": step.crop_image_paths,
         "crop_image_path": step.crop_image_path,
-        "pixel_box_memory": list(step.pixel_box),
         "sub_image_match": sub_image_match,
         "fallback_instruction": _fallback_inst,
         "memory_active": True,
@@ -673,7 +674,6 @@ def do_sub_image_match(navigator, nav_state, camera_images):
     if navigator is None or camera_images is None:
         return None
     try:
-        # 从 nav_state 获取当前步骤，避免与 navigator 内部 step index 不同步
         current_step = nav_state.get_current_step() if nav_state else None
         return navigator.match_current_step(camera_images, step=current_step)
     except Exception as e:

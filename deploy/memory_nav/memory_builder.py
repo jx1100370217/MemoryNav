@@ -276,26 +276,35 @@ class MemoryBuilder:
         edges = []
         for next_pos in next_positions:
             camera_name = next_pos.get("camera_name", "")
-            crop_image_path_rel = next_pos.get("crop_image_path", "")
 
-            # 新方案要求 camera_name 必须存在
+            # camera_name 必须存在
             if not camera_name:
                 logger.debug(f"[MemoryBuilder] 跳过无 camera_name 的边: "
                             f"{node_id} -> {next_pos.get('position_id', '?')}")
                 continue
 
-            # 解析 pixel_box (格式: "x,y,w,h")
-            pixel_box_raw = next_pos.get("pixel_box", "0,0,0,0")
-            if isinstance(pixel_box_raw, str):
-                parts = list(map(int, pixel_box_raw.split(",")))
-                pixel_box = tuple(parts[:4])
-            elif isinstance(pixel_box_raw, (list, tuple)):
-                pixel_box = tuple(int(x) for x in pixel_box_raw[:4])
-            else:
-                pixel_box = (0, 0, 0, 0)
+            # 解析三级子图路径 crop_image_paths (big/mid/small)
+            raw_crop_paths = next_pos.get("crop_image_paths", {})
+            crop_image_paths = {}
+            for scale_key, rel_path in raw_crop_paths.items():
+                if rel_path:
+                    crop_image_paths[scale_key] = str(node_dir / rel_path)
 
-            # crop 图路径（转为绝对路径）
+            # crop_image_path 指向 big（兼容引用）
+            crop_image_path_rel = next_pos.get("crop_image_path", "")
             crop_path = str(node_dir / crop_image_path_rel) if crop_image_path_rel else ""
+
+            # 解析 normalized boxes (逗号分隔浮点数字符串)
+            def _parse_norm_box(raw):
+                if isinstance(raw, str) and raw:
+                    return tuple(float(x) for x in raw.split(','))
+                elif isinstance(raw, (list, tuple)):
+                    return tuple(float(x) for x in raw)
+                return ()
+
+            big_box = _parse_norm_box(next_pos.get("big_box", ""))
+            mid_box = _parse_norm_box(next_pos.get("mid_box", ""))
+            small_box = _parse_norm_box(next_pos.get("small_box", ""))
 
             edge = MemoryEdge(
                 target_node_id=str(next_pos.get("position_id", "")),
@@ -304,8 +313,11 @@ class MemoryBuilder:
                 camera_name=camera_name,
                 landmark_name=next_pos.get("landmark_name", ""),
                 landmark_name_eng=next_pos.get("landmark_name_eng", ""),
-                pixel_box=pixel_box,
+                crop_image_paths=crop_image_paths,
                 crop_image_path=crop_path,
+                big_box=big_box,
+                mid_box=mid_box,
+                small_box=small_box,
             )
             edges.append(edge)
 

@@ -2036,9 +2036,16 @@ HTML_TEMPLATE = '''
                                     <span class="step-angle">${step.camera_name} → ${step.landmark_name}</span>
                                 </div>
                                 <div style="display:flex; gap:8px; font-size:11px; color:var(--text-dim); margin:4px 0 4px 36px">
-                                    ${step.pixel_box ? `<span>📦 pixel_box: (${step.pixel_box.join(', ')})</span>` : ''}
+                                    
                                 </div>
-                                ${step.crop_image_path ? `<img class="step-image" src="/api/image?path=${encodeURIComponent(step.crop_image_path)}">` : ''}
+                                ${step.crop_image_paths && Object.keys(step.crop_image_paths).length > 0
+                                    ? Object.entries(step.crop_image_paths).map(([scale, path]) =>
+                                        `<div style="display:inline-block;margin:2px;text-align:center">
+                                            <div style="font-size:10px;color:var(--text-dim)">${scale}</div>
+                                            <img class="step-image" src="/api/image?path=${encodeURIComponent(path)}" style="max-width:120px">
+                                        </div>`
+                                    ).join('')
+                                    : ''}
                             </div>
                         `;
                     });
@@ -2760,8 +2767,8 @@ class MemoryNavServer:
                             'camera_name': edge.camera_name,
                             'landmark_name': edge.landmark_name,
                             'landmark_name_eng': getattr(edge, 'landmark_name_eng', ''),
-                            'pixel_box': list(edge.pixel_box),
                             'crop_image_path': edge.crop_image_path,
+                            'crop_image_paths': edge.crop_image_paths,
                             'target_name': edge.target_node_name,
                             'target_name_eng': getattr(edge, 'target_node_name_eng', ''),
                             'bidirectional': reverse_exists
@@ -2789,8 +2796,8 @@ class MemoryNavServer:
                     'camera_name': edge.camera_name,
                     'landmark_name': edge.landmark_name,
                     'landmark_name_eng': getattr(edge, 'landmark_name_eng', ''),
-                    'pixel_box': list(edge.pixel_box),
-                    'crop_image_path': edge.crop_image_path
+                    'crop_image_path': edge.crop_image_path,
+                    'crop_image_paths': edge.crop_image_paths,
                 })
             
             return jsonify({
@@ -2833,8 +2840,8 @@ class MemoryNavServer:
                     'camera_name': s.camera_name,
                     'landmark_name': s.landmark_name,
                     'landmark_name_eng': getattr(s, 'landmark_name_eng', ''),
-                    'pixel_box': list(s.pixel_box),
-                    'crop_image_path': s.crop_image_path
+                    'crop_image_path': s.crop_image_path,
+                    'crop_image_paths': s.crop_image_paths,
                 } for s in plan.steps]
                 
                 return jsonify({
@@ -3035,8 +3042,8 @@ class MemoryNavServer:
                             'camera_name': edge.camera_name,
                             'landmark_name': edge.landmark_name,
                             'landmark_name_eng': getattr(edge, 'landmark_name_eng', ''),
-                            'pixel_box': list(edge.pixel_box),
-                            'crop_image_path': edge.crop_image_path
+                            'crop_image_path': edge.crop_image_path,
+                            'crop_image_paths': edge.crop_image_paths,
                         })
             
             return jsonify({'success': True, 'nodes': nodes, 'edges': edges})
@@ -3141,7 +3148,6 @@ class MemoryNavServer:
                 target_node_name_eng=getattr(tgt_node, 'node_name_eng', ''),
                 camera_name=camera_name,
                 landmark_name=landmark_name,
-                pixel_box=(0, 0, 0, 0),
                 crop_image_path='',
             )
             src_node.edges.append(new_edge)
@@ -3197,8 +3203,8 @@ class MemoryNavServer:
                         'camera_name': edge.camera_name,
                         'landmark_name': edge.landmark_name,
                         'landmark_name_eng': getattr(edge, 'landmark_name_eng', ''),
-                        'pixel_box': list(edge.pixel_box),
-                        'crop_image_path': edge.crop_image_path
+                            'crop_image_path': edge.crop_image_path,
+                        'crop_image_paths': edge.crop_image_paths,
                     })
             
             return jsonify({

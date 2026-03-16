@@ -31,6 +31,10 @@ _device = "cuda" if torch.cuda.is_available() else "cpu"
 _extractor = None
 _matcher = None
 
+# 匹配分辨率（提取特征前 resize 到此分辨率，坐标映射回原图）
+_MATCH_W = 1280
+_MATCH_H = 960
+
 
 def _load_models():
     """加载并缓存 SuperPoint + LightGlue 模型（仅首次调用时加载）。"""
@@ -41,7 +45,7 @@ def _load_models():
     from lightglue import LightGlue, SuperPoint
 
     logger.info("[SubImageMatcher] 正在加载 SuperPoint ...")
-    _extractor = SuperPoint(max_num_keypoints=2048).eval().to(_device)
+    _extractor = SuperPoint(max_num_keypoints=4096).eval().to(_device)
     logger.info("[SubImageMatcher] 正在加载 LightGlue ...")
     _matcher = LightGlue(features="superpoint").eval().to(_device)
     logger.info(f"[SubImageMatcher] 模型加载完成 (device={_device})")
@@ -200,7 +204,7 @@ def _match_features(
     image: np.ndarray,
     template: np.ndarray,
     min_matches: int = 8,
-    confidence_threshold: float = 0.35,
+    confidence_threshold: float = 0.55,
 ) -> SubImageMatchResult:
     """
     使用 SuperPoint + LightGlue 在 image 中定位 template。
@@ -210,11 +214,22 @@ def _match_features(
     t0 = time.perf_counter()
 
     extractor, matcher = _load_models()
-    img_h, img_w = image.shape[:2]
+    orig_h, orig_w = image.shape[:2]
+    img_h, img_w = orig_h, orig_w  # 百分比计算基于原始尺寸
 
-    # 提取特征
-    feats0 = _extract_features(extractor, image)
-    feats1 = _extract_features(extractor, template)
+    # Resize 到匹配分辨率以获取更多特征点
+    scale_x = orig_w / _MATCH_W
+    scale_y = orig_h / _MATCH_H
+    image_resized = cv2.resize(image, (_MATCH_W, _MATCH_H), interpolation=cv2.INTER_LINEAR)
+    # 模板按相同比例缩放（保持宽高比）
+    tpl_h_orig, tpl_w_orig = template.shape[:2]
+    tpl_w_resized = max(1, int(tpl_w_orig / scale_x))
+    tpl_h_resized = max(1, int(tpl_h_orig / scale_y))
+    template_resized = cv2.resize(template, (tpl_w_resized, tpl_h_resized), interpolation=cv2.INTER_LINEAR)
+
+    # 提取特征（在 resize 后的图像上）
+    feats0 = _extract_features(extractor, image_resized)
+    feats1 = _extract_features(extractor, template_resized)
 
     # 匹配
     with torch.no_grad():
@@ -227,6 +242,12 @@ def _match_features(
     valid = matches0 > -1
     mkpts0 = kpts0[valid]
     mkpts1 = kpts1[matches0[valid]]
+
+    # 将关键点坐标映射回原始分辨率
+    mkpts0[:, 0] *= scale_x
+    mkpts0[:, 1] *= scale_y
+    mkpts1[:, 0] *= scale_x
+    mkpts1[:, 1] *= scale_y
 
     elapsed_ms = (time.perf_counter() - t0) * 1000
     n_matches = len(mkpts0)
@@ -248,7 +269,7 @@ def _match_features(
             method=f"SuperPoint+LightGlue ({n_matches} matches, H failed)",
         )
 
-    tpl_h, tpl_w = template.shape[:2]
+    tpl_h, tpl_w = tpl_h_orig, tpl_w_orig  # 使用原始模板尺寸
     corners = np.float32([
         [0, 0], [tpl_w, 0], [tpl_w, tpl_h], [0, tpl_h]
     ]).reshape(-1, 1, 2)
@@ -317,7 +338,7 @@ class SubImageMatcher:
 
     def __init__(self, device: str = "cuda:0",
                  min_matches: int = 8,
-                 confidence_threshold: float = 0.35):
+                 confidence_threshold: float = 0.55):
         """
         Args:
             device: 推理设备（模型缓存为全局单例）

@@ -1584,9 +1584,6 @@ HTML_TEMPLATE = '''
                             <input type="text" id="gnd-landmark" placeholder="输入地标名称，如：电梯、打印机、玻璃门">
                         </div>
 
-                        <div style="margin:12px 0; padding:10px; background:var(--bg-card); border-radius:8px; font-size:12px; color:var(--text-dim)">
-                            💡 <strong>Qwen3.5 打点</strong> 直接使用中文 landmark_name，不需要英文翻译或 "Go to the ..." 前缀。
-                        </div>
 
                         <div style="display:flex; gap:8px; margin-bottom:16px">
                             <button class="btn btn-primary" style="flex:1" onclick="runGrounding()">🎯 开始打点</button>

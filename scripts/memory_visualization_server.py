@@ -50,7 +50,6 @@ try:
     from deploy.memory_nav import (
         MemoryNavigator, MemoryBuilder, MemoryGraph, MemoryVPR,
         MemoryNode, MemoryEdge, NavigationPlan, VPRResult,
-        Qwen35PointGrounder
     )
     MEMORY_NAV_AVAILABLE = True
 except ImportError as e:
@@ -2844,9 +2843,6 @@ class MemoryNavServer:
             CORS(self.app)
             self._setup_routes()
         
-        # Qwen3.5 打点器 (兜底模型)
-        self.qwen35_grounder: Optional[Qwen35PointGrounder] = None
-        
         # 初始化记忆系统
         self._init_memory()
     
@@ -3220,18 +3216,19 @@ class MemoryNavServer:
             if image is None:
                 return jsonify({'success': False, 'error': '请上传图片或提供图片路径'})
 
-            # 确保 Qwen3.5 已启动
-            if self.qwen35_grounder is None:
-                self.qwen35_grounder = Qwen35PointGrounder()
-            
-            if not self.qwen35_grounder.is_ready:
+            if self.memory_navigator is None:
+                return jsonify({'success': False, 'error': 'memory_nav 未初始化'})
+
+            # 使用 MemoryNavigator 中的 Qwen3.5 打点器 (模型在 ws_proxy 启动时加载)
+            grounder = self.memory_navigator.qwen35_grounder
+            if not grounder.is_ready:
                 try:
-                    self.qwen35_grounder.start()
+                    grounder.start()
                 except Exception as e:
                     return jsonify({'success': False, 'error': f'Qwen3.5 启动失败: {e}'})
 
             # 执行打点
-            result = self.qwen35_grounder.predict(image, landmark_name)
+            result = grounder.predict(image, landmark_name)
 
             # 绘制标注图
             annotated = image.copy()

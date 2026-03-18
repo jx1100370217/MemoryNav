@@ -1947,6 +1947,13 @@ async def main():
         logger.info("InternVLA 未加载，兜底模型使用 Qwen3.5 打点方案")
     if memory_navigator is not None:
         logger.info("✅ 记忆导航模块已就绪")
+        # 启动时预加载 Qwen3.5 打点模型
+        try:
+            logger.info("正在加载 Qwen3.5 打点模型...")
+            memory_navigator.qwen35_grounder.start()
+            logger.info("✅ Qwen3.5 打点模型加载完成！")
+        except Exception as e:
+            logger.warning(f"⚠️ Qwen3.5 打点模型加载失败 (将在首次使用时重试): {e}")
     else:
         logger.warning("⚠️ 记忆导航模块初始化失败")
 

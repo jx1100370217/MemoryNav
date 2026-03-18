@@ -923,7 +923,7 @@ def visualize_qwen35_grounding(camera_images, grounding_result, landmark_name, p
     """
     在对应的 camera 图上标注 Qwen3.5 兜底打点结果，保存到 deploy/logs/images/
 
-    橙色十字准星 + 同心圆 + 地标名称标注
+    橙色十字准星 + 同心圆 + 地标名称标注（PIL 绘制中文）
 
     Args:
         camera_images: {'camera_1': ndarray(BGR), ...}
@@ -950,33 +950,63 @@ def visualize_qwen35_grounding(camera_images, grounding_result, landmark_name, p
         px = int(point[0] * img_w)
         py = int(point[1] * img_h)
 
-        # 橙色十字准星
-        color = (0, 140, 255)  # BGR orange
-        cv2.line(img, (px - 30, py), (px + 30, py), color, 3)
-        cv2.line(img, (px, py - 30), (px, py + 30), color, 3)
-        # 实心圆
-        cv2.circle(img, (px, py), 8, color, -1)
+        # 橙色十字准星 (OpenCV 画几何图形)
+        color_bgr = (0, 140, 255)  # BGR orange
+        cv2.line(img, (px - 30, py), (px + 30, py), color_bgr, 3)
+        cv2.line(img, (px, py - 30), (px, py + 30), color_bgr, 3)
+        cv2.circle(img, (px, py), 8, color_bgr, -1)
         cv2.circle(img, (px, py), 10, (255, 255, 255), 2)
-        # 同心圆
-        cv2.circle(img, (px, py), 24, color, 2)
-        cv2.circle(img, (px, py), 40, color, 1)
+        cv2.circle(img, (px, py), 24, color_bgr, 2)
+        cv2.circle(img, (px, py), 40, color_bgr, 1)
+
+        # 用 PIL 绘制中文文字
+        from PIL import Image as PILImage, ImageDraw as PILDraw, ImageFont as PILFont
+
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        pil_img = PILImage.fromarray(img_rgb)
+        draw = PILDraw.Draw(pil_img)
+
+        # 加载中文字体
+        font_paths = [
+            "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        ]
+        font_large = None
+        font_small = None
+        for fp in font_paths:
+            if os.path.exists(fp):
+                font_large = PILFont.truetype(fp, 22)
+                font_small = PILFont.truetype(fp, 16)
+                break
+        if font_large is None:
+            font_large = PILFont.load_default()
+            font_small = PILFont.load_default()
+
+        color_rgb = (255, 140, 0)  # RGB orange
 
         # 坐标标注
         coord_label = f"[{point[0]:.3f}, {point[1]:.3f}]"
-        cv2.putText(img, coord_label, (px + 15, py - 15),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+        draw.text((px + 15, py - 20), coord_label, fill=color_rgb, font=font_small)
 
-        # 顶部标注: Qwen3.5 + landmark
+        # 顶部标注: Qwen3.5 + landmark (黑底)
         label = f"Qwen3.5: {landmark_name}"
-        cv2.rectangle(img, (0, 0), (len(label) * 14 + 20, 35), (0, 0, 0), -1)
-        cv2.putText(img, label, (10, 25),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+        bbox = draw.textbbox((0, 0), label, font=font_large)
+        text_w = bbox[2] - bbox[0] + 20
+        draw.rectangle([(0, 0), (text_w, 32)], fill=(0, 0, 0))
+        draw.text((10, 4), label, fill=color_rgb, font=font_large)
 
+        # 右上角耗时
         latency = grounding_result.get("latency", 0)
         if latency:
             lat_label = f"{latency:.2f}s"
-            cv2.putText(img, lat_label, (img_w - 80, 25),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+            lat_bbox = draw.textbbox((0, 0), lat_label, font=font_small)
+            lat_w = lat_bbox[2] - lat_bbox[0]
+            draw.text((img_w - lat_w - 10, 6), lat_label, fill=(200, 200, 200), font=font_small)
+
+        # 转回 OpenCV BGR
+        img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
         save_path = os.path.join(images_dir, f"{ts}_{camera_name}_qwen35.jpg")
         cv2.imwrite(save_path, img)

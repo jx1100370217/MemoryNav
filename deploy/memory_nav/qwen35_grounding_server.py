@@ -56,18 +56,21 @@ def load_model():
 
 
 def build_prompt(landmark_name: str) -> str:
-    """构建打点 prompt，直接使用中文 landmark_name，要求输出置信度"""
+    """构建打点 prompt，直接使用中文 landmark_name，要求输出百分比坐标和置信度"""
     return (
-        f'Point to "{landmark_name}" in this image. '
-        f'Output ONLY JSON: {{"point": [x, y], "confidence": c}} '
-        f'where x,y are coordinates in [0, 1000] range, '
-        f'and c is your confidence between 0.0 and 1.0 '
-        f'(1.0 = certain the object is there, 0.0 = not found).'
+        f'Locate "{landmark_name}" in this image. '
+        f'Output ONLY a JSON object with exactly this format: '
+        f'{{"x": 0.XX, "y": 0.XX, "confidence": 0.XX}} '
+        f'where x is the horizontal position (0.0=left edge, 1.0=right edge), '
+        f'y is the vertical position (0.0=top edge, 1.0=bottom edge), '
+        f'and confidence is how sure you are the object is at that location '
+        f'(0.0=not found/guessing, 1.0=absolutely certain). '
+        f'Output ONLY the JSON, nothing else.'
     )
 
 
 def parse_coordinates(response: str):
-    """从模型输出中解析坐标"""
+    """从模型输出中解析坐标 (百分比格式 [0,1] 或 [0,1000])"""
     # 清理 thinking 标签
     clean = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL).strip()
     clean = re.sub(r'```\w*\n?', '', clean).strip()
@@ -77,26 +80,38 @@ def parse_coordinates(response: str):
     if m:
         try:
             d = json.loads(m.group())
-            # 兼容多种格式
+            confidence = float(d.get("confidence", 0.5))
+
+            # 新格式: {"x": 0.XX, "y": 0.XX, "confidence": 0.XX}
+            if "x" in d and "y" in d:
+                x, y = float(d["x"]), float(d["y"])
+                # 如果值 > 1，说明模型输出的是 [0,1000] 范围
+                if x > 1.0 or y > 1.0:
+                    x, y = x / 1000.0, y / 1000.0
+                return {"point": [x, y], "confidence": confidence}
+
+            # 兼容旧格式: {"point": [x, y]}
             if "point_2d" in d and "point" not in d:
                 d["point"] = d.pop("point_2d")
             if "point" in d:
-                # 确保 confidence 字段存在
-                if "confidence" not in d:
-                    d["confidence"] = 0.5
-                return d
-        except json.JSONDecodeError:
+                pt = d["point"]
+                x, y = float(pt[0]), float(pt[1])
+                if x > 1.0 or y > 1.0:
+                    x, y = x / 1000.0, y / 1000.0
+                return {"point": [x, y], "confidence": confidence}
+        except (json.JSONDecodeError, ValueError, TypeError):
             pass
 
-    # regex fallback
-    m = re.search(r'point(?:_2d)?\D*\[\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*\]', clean)
-    if m:
-        return {"point": [float(m.group(1)), float(m.group(2))]}
-
     # 数字 fallback
-    nums = re.findall(r'\d+(?:\.\d+)?', clean)
+    nums = re.findall(r'\d+\.\d+|\d+', clean)
     if len(nums) >= 2:
-        return {"point": [float(nums[0]), float(nums[1])]}
+        x, y = float(nums[0]), float(nums[1])
+        if x > 1.0 or y > 1.0:
+            x, y = x / 1000.0, y / 1000.0
+        conf = float(nums[2]) if len(nums) >= 3 else 0.3
+        if conf > 1.0:
+            conf = conf / 100.0  # 可能输出了百分制
+        return {"point": [x, y], "confidence": max(0.0, min(1.0, conf))}
 
     return None
 
@@ -145,9 +160,8 @@ def predict(image_b64: str, landmark_name: str):
     result = parse_coordinates(response)
 
     if result and "point" in result:
-        # 归一化到 [0, 1]
-        px_norm = result["point"][0] / 1000.0
-        py_norm = result["point"][1] / 1000.0
+        px_norm = result["point"][0]
+        py_norm = result["point"][1]
 
         # 使用模型输出的置信度
         confidence = float(result.get("confidence", 0.5))
@@ -156,7 +170,6 @@ def predict(image_b64: str, landmark_name: str):
         return {
             "status": "ok",
             "point": [round(px_norm, 4), round(py_norm, 4)],
-            "point_1000": result["point"],
             "confidence": round(confidence, 2),
             "raw_response": response,
             "latency": round(latency, 3),

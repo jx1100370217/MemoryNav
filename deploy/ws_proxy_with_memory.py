@@ -286,7 +286,8 @@ def init_memory_navigator(device: str = "cuda:0", vpr_method: str = "selavpr") -
         # 创建 VPR 导航器 (支持: anyloc, megaloc, effovpr, selavpr)
         navigator = MemoryNavigator(
             vpr_method=vpr_method,
-            device=device
+            device=device,
+            qwen35_gpu="0"
         )
         logger.info(f"[Memory] {vpr_method.upper()} VPR 导航器已创建 (dim={navigator.feature_dim}, device={device})")
 
@@ -1938,13 +1939,9 @@ async def main():
     logger.info(f"📊 VPR 方法: {vpr_method}, 设备: {vpr_device}")
     memory_navigator = init_memory_navigator(device=vpr_device, vpr_method=vpr_method)
 
-    # 启动时加载 InternVLA 模型 (可选)
-    logger.info("正在加载 InternVLA 模型...")
-    global_agent = init_agent()
-    if global_agent is not None:
-        logger.info("InternVLA 模型加载完成！")
-    else:
-        logger.info("InternVLA 未加载，兜底模型使用 Qwen3.5 打点方案")
+    # InternVLA 默认不加载，需要时按需启动
+    global_agent = None
+    logger.info("InternVLA 模型默认不加载，需要时按需启动")
     if memory_navigator is not None:
         logger.info("✅ 记忆导航模块已就绪")
         # 启动时预加载 Qwen3.5 打点模型

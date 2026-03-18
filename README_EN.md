@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-1.6.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v1.6.0)
+[![Version](https://img.shields.io/badge/Version-1.7.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v1.7.0)
 
 A robot memory navigation system based on Visual Place Recognition (VPR) and topological mapping
 
@@ -19,7 +19,7 @@ A robot memory navigation system based on Visual Place Recognition (VPR) and top
 
 ## 📖 Introduction
 
-MemoryNav is a visual memory navigation system for mobile robots. It captures images from 4 surround-view fisheye cameras, localizes the robot within a pre-built topological memory graph using VPR, and generates navigation actions via the InternVLA vision-language model — enabling "remember where you've been, navigate there again" capability.
+MemoryNav is a visual memory navigation system for mobile robots. It captures images from 4 surround-view fisheye cameras, localizes the robot within a pre-built topological memory graph using VPR, and generates fallback point grounding via Qwen3.5-9B vision-language model — enabling "remember where you've been, navigate there again" capability.
 
 ### Key Features
 
@@ -29,7 +29,7 @@ MemoryNav is a visual memory navigation system for mobile robots. It captures im
 - **🎯 DINOv3 Sub-Image Matching**: Dense patch feature matching using DINOv3, with sliding window cosine similarity for real-time target localization in camera feeds
 - **💾 Sub-Image Match Caching**: Automatically reuses last successful match when current match fails, improving navigation continuity
 - **📤 Unified Output Format**: Consistent output format regardless of memory mode, always provides `pixel_target`
-- **🤖 VLA Fallback**: Automatic fallback to InternVLA when VPR loses track
+- **🤖 Qwen3.5 Fallback**: Automatic fallback to Qwen3.5-9B VLM for point grounding when VPR/sub-image matching fails, using Chinese landmark names directly
 - **🌐 WebSocket Service**: Real-time image streaming and navigation command output
 - **⚙️ Unified Configuration**: All VPR parameters in `deploy/vpr_config.yaml`, one change applies everywhere
 
@@ -58,7 +58,7 @@ MemoryNav/
 │   └── build_memory.sh             # Memory build script
 ├── internnav/                      # InternNav framework
 ├── scripts/                        # Utility scripts
-│   └── memory_visualization_server.py  # Memory graph visualization (with sub-image matching)
+│   └── memory_visualization_server.py  # Memory visualization (sub-image match + point grounding)
 ├── tests/                          # Tests
 │   ├── test_memory_nav.py          # Unit tests
 │   └── test_memory_ws.py           # WebSocket integration test (detailed logging)
@@ -326,6 +326,16 @@ Test output includes:
 ---
 
 ## 📋 Changelog
+
+### v1.7.0
+
+- **Qwen3.5 Fallback Point Grounding**: Replaced InternVLA with Qwen3.5-9B VLM for fallback grounding
+  - Uses Chinese `landmark_name` directly (no English translation or "Go to the ..." prefix needed)
+  - Runs as subprocess (qwen3 conda env) to avoid transformers version conflicts
+  - Supports single-image and multi-camera point grounding
+- **InternVLA Lazy Loading**: InternVLA model no longer loaded at startup, initialized on-demand to save GPU memory
+- **Visualization: Model Grounding Tab**: New 🎯 Model Grounding tab in visualization server for interactive grounding verification
+- **Model Loading Optimization**: Qwen3.5 loaded once at ws_proxy startup, shared across visualization server
 
 ### v1.6.0
 

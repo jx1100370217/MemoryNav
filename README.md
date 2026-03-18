@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-1.6.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v1.6.0)
+[![Version](https://img.shields.io/badge/Version-1.7.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v1.7.0)
 
 基于视觉位置识别（VPR）和拓扑地图的机器人记忆导航系统
 
@@ -19,7 +19,7 @@
 
 ## 📖 简介
 
-MemoryNav 是一个面向移动机器人的视觉记忆导航系统。系统通过 4 个环视鱼眼相机采集图像，利用 VPR 技术在预建的拓扑记忆图中定位，结合 InternVLA 视觉语言模型生成导航动作，实现"记住去过的地方，再走一次"的记忆导航能力。
+MemoryNav 是一个面向移动机器人的视觉记忆导航系统。系统通过 4 个环视鱼眼相机采集图像，利用 VPR 技术在预建的拓扑记忆图中定位，结合 Qwen3.5-9B 视觉语言模型进行兜底打点导航，实现"记住去过的地方，再走一次"的记忆导航能力。
 
 ### 核心能力
 
@@ -29,7 +29,7 @@ MemoryNav 是一个面向移动机器人的视觉记忆导航系统。系统通�
 - **🎯 DINOv3 子图匹配**：基于 DINOv3 密集 patch 特征的子图定位，滑动窗口余弦相似度匹配，实时在相机图中定位导航目标
 - **💾 子图匹配缓存**：匹配失败时自动延用上一帧的成功结果，提升导航连续性
 - **📤 统一输出格式**：记忆模式开关两种状态下输出格式一致，始终提供 `pixel_target`
-- **🤖 VLA 兜底推理**：VPR 丢失时自动切换 InternVLA 模型继续导航
+- **🤖 Qwen3.5 兜底打点**：VPR/子图匹配失败时自动切换 Qwen3.5-9B 视觉语言模型打点定位，直接使用中文地标名称
 - **🌐 WebSocket 服务**：实时流式接收图像、返回导航指令
 - **⚙️ 统一配置管理**：所有 VPR 参数集中在 `deploy/vpr_config.yaml`，一处修改全局生效
 
@@ -49,6 +49,8 @@ MemoryNav/
 │   │   ├── memory_builder.py       # 记忆构建器 (从标注数据构建拓扑图)
 │   │   ├── memory_navigator.py     # 导航器主接口
 │   │   ├── sub_image_matcher.py    # 子图匹配器 (DINOv3 密集特征匹配)
+│   │   ├── qwen35_point_grounder.py # Qwen3.5 打点封装 (兜底模型)
+│   │   ├── qwen35_grounding_server.py # Qwen3.5 子进程推理服务
 │   │   ├── vpr_factory.py          # VPR 提取器工厂
 │   │   ├── anyloc_extractor.py     # AnyLoc (DINOv2 + VLAD)
 │   │   ├── megaloc_extractor.py    # MegaLoc (DINOv2 + OT聚合)
@@ -58,7 +60,7 @@ MemoryNav/
 │   └── build_memory.sh             # 记忆构建脚本
 ├── internnav/                      # InternNav 导航框架
 ├── scripts/                        # 工具脚本
-│   └── memory_visualization_server.py  # 记忆图可视化服务 (含子图匹配验证)
+│   └── memory_visualization_server.py  # 记忆图可视化服务 (含子图匹配验证 + 模型打点验证)
 ├── tests/                          # 测试
 │   ├── test_memory_nav.py          # 记忆模块单元测试
 │   └── test_memory_ws.py           # WebSocket 集成测试 (详细日志版)
@@ -99,7 +101,7 @@ edge:
 | 记忆关闭 + InternVLA 推理 | `output_pixel / 图像尺寸` | 不输出 |
 | 记忆开启 + 子图匹配成功 | `sub_image_match.match.center_pct` | `true` |
 | 记忆开启 + 子图匹配失败 | 延用上一帧缓存 | `true` |
-| 记忆开启 + VLA 兜底 | `output_pixel / 图像尺寸` | `true` |
+| 记忆开启 + Qwen3.5 兜底 | Qwen3.5 打点归一化坐标 | `true` |
 
 ---
 
@@ -326,6 +328,16 @@ python tests/test_memory_ws.py
 ---
 
 ## 📋 更新日志
+
+### v1.7.0
+
+- **Qwen3.5 兜底打点**：新增基于 Qwen3.5-9B VLM 的打点方案替代 InternVLA 兜底模型
+  - 直接使用中文 `landmark_name`（无需英文翻译或 "Go to the ..." 前缀）
+  - 子进程模式运行（qwen3 conda 环境），避免 transformers 版本冲突
+  - 支持单图打点和多相机遍历打点
+- **InternVLA 按需加载**：InternVLA 模型默认不加载，需要时按需启动，节省 GPU 显存
+- **可视化新增模型打点模块**：`memory_visualization_server.py` 新增🎯模型打点 Tab，上传图片+输入地标即可验证打点效果
+- **模型加载优化**：Qwen3.5 在 ws_proxy 启动时统一加载，visualization_server 复用同一实例
 
 ### v1.6.0
 

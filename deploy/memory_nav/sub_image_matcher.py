@@ -343,7 +343,7 @@ class SubImageMatcher:
 
     def __init__(self, device: str = "cuda:0",
                  min_matches: int = 50,
-                 confidence_threshold: float = 0.6,
+                 confidence_threshold: float = 0.65,
                  default_method: str = "dinov3"):
         """
         Args:

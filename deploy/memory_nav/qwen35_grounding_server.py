@@ -96,6 +96,46 @@ def parse_coordinates(response: str):
     return None
 
 
+def estimate_confidence(response: str, parsed: dict, px_norm: float, py_norm: float) -> float:
+    """
+    根据模型输出质量估算置信度
+
+    评分规则:
+    - 基础分 0.5 (成功解析出坐标)
+    - +0.2 如果输出是干净的 JSON (模型确定性高)
+    - +0.1 如果坐标在合理范围 [0.05, 0.95] 内 (非边缘)
+    - +0.1 如果输出简短 (<50字符，无多余推理)
+    - -0.2 如果坐标在极端边缘 (<0.02 或 >0.98)
+    - -0.1 如果是 fallback 解析 (非 JSON 格式)
+    """
+    score = 0.5
+
+    # 干净的 JSON 输出 (模型确定性高)
+    clean = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL).strip()
+    clean = re.sub(r'```\w*\n?', '', clean).strip()
+    json_match = re.search(r'\{[^{}]*\}', clean)
+    if json_match:
+        try:
+            json.loads(json_match.group())
+            score += 0.2  # 干净 JSON
+        except:
+            score -= 0.1  # JSON 解析失败，靠 fallback
+    else:
+        score -= 0.1  # 无 JSON，纯 fallback
+
+    # 坐标合理性
+    if 0.05 <= px_norm <= 0.95 and 0.05 <= py_norm <= 0.95:
+        score += 0.1
+    elif px_norm < 0.02 or px_norm > 0.98 or py_norm < 0.02 or py_norm > 0.98:
+        score -= 0.2  # 极端边缘，可能是瞎猜
+
+    # 输出简洁性
+    if len(clean) < 50:
+        score += 0.1  # 短输出，模型很确定
+
+    return round(max(0.1, min(1.0, score)), 2)
+
+
 def predict(image_b64: str, landmark_name: str):
     """执行推理"""
     # 解码图像
@@ -143,11 +183,15 @@ def predict(image_b64: str, landmark_name: str):
         # 归一化到 [0, 1]
         px_norm = result["point"][0] / 1000.0
         py_norm = result["point"][1] / 1000.0
+
+        # 估算置信度：根据解析质量和坐标合理性
+        confidence = estimate_confidence(response, result, px_norm, py_norm)
+
         return {
             "status": "ok",
             "point": [round(px_norm, 4), round(py_norm, 4)],
             "point_1000": result["point"],
-            "confidence": 0.8,  # Qwen3.5 不直接输出置信度，给默认值
+            "confidence": confidence,
             "raw_response": response,
             "latency": round(latency, 3),
         }

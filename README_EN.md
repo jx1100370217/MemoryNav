@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-1.5.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v1.5.0)
+[![Version](https://img.shields.io/badge/Version-1.6.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v1.6.0)
 
 A robot memory navigation system based on Visual Place Recognition (VPR) and topological mapping
 
@@ -26,7 +26,7 @@ MemoryNav is a visual memory navigation system for mobile robots. It captures im
 - **🔍 Multi-Method VPR**: 4 state-of-the-art VPR backends, switchable via a single config file
 - **🗺️ Topological Memory Graph**: Auto-built from labeled data with shortest-path planning
 - **🔄 Cyclic Shift Matching**: 4-camera cyclic shift algorithm for orientation-invariant localization
-- **🎯 Sub-Image Matching Navigation**: SuperPoint + LightGlue based attention crop localization for real-time target matching
+- **🎯 DINOv3 Sub-Image Matching**: Dense patch feature matching using DINOv3, with sliding window cosine similarity for real-time target localization in camera feeds
 - **💾 Sub-Image Match Caching**: Automatically reuses last successful match when current match fails, improving navigation continuity
 - **📤 Unified Output Format**: Consistent output format regardless of memory mode, always provides `pixel_target`
 - **🤖 VLA Fallback**: Automatic fallback to InternVLA when VPR loses track
@@ -48,7 +48,7 @@ MemoryNav/
 │   │   ├── memory_vpr.py           # VPR matching engine (cyclic shift + order-invariant)
 │   │   ├── memory_builder.py       # Memory builder (build graph from labeled data)
 │   │   ├── memory_navigator.py     # Navigator main interface
-│   │   ├── sub_image_matcher.py    # Sub-image matcher (SuperPoint + LightGlue)
+│   │   ├── sub_image_matcher.py    # Sub-image matcher (DINOv3 dense feature matching)
 │   │   ├── vpr_factory.py          # VPR extractor factory
 │   │   ├── anyloc_extractor.py     # AnyLoc (DINOv2 + VLAD)
 │   │   ├── megaloc_extractor.py    # MegaLoc (DINOv2 + OT aggregation)
@@ -69,15 +69,16 @@ MemoryNav/
 
 ## 🎯 Sub-Image Matching Navigation
 
-Navigation based on **SuperPoint + LightGlue** sub-image matching:
+Navigation based on **DINOv3** dense patch feature matching:
 
 ### How It Works
 
 1. **During memory building**: Each edge is annotated with `camera_name` (which camera sees the target) and `crop_image` (attention crop)
-2. **During navigation**: The crop image from memory is matched against the live camera feed
-3. **Target localization**: SuperPoint extracts keypoints → LightGlue matches → computes target region as percentage coordinates → output as `pixel_target`
-4. **Caching mechanism**: When match confidence drops below 0.45, automatically reuses the last successful match result; cache is cleared on step advance
-5. **Fallback**: When matching fails with no cache available, uses the stored `pixel_box` from memory as an estimate
+2. **During navigation**: The crop image from memory is matched against the live camera feed using dense feature matching
+3. **Target localization**: DINOv3 ViT-B/16 extracts dense patch tokens → sliding window + unfold acceleration → cosine similarity peak → output as `pixel_target`
+4. **Match threshold**: Confidence ≥ 0.6 is considered a successful match
+5. **Caching mechanism**: Automatically reuses the last successful match result on failure; cache is cleared on step advance
+6. **Fallback**: When matching fails with no cache available, uses the stored `pixel_box` from memory as an estimate
 
 ### Edge Data Structure
 
@@ -325,6 +326,17 @@ Test output includes:
 ---
 
 ## 📋 Changelog
+
+### v1.6.0
+
+- **Sub-image matching streamlined**: Removed SuperPoint+LightGlue and Qwen3.5, kept only **DINOv3** dense feature matching
+- **Unified match threshold**: Confidence threshold adjusted from 0.55 to **0.6**
+- **DINOv3 matching**: Loads DINOv3 ViT-B/16 via timm, extracts dense patch tokens, sliding window + unfold accelerated cosine similarity matching
+- **Frame similarity upgrade**: Replaced SSIM with DINOv2 inter-frame similarity, threshold 0.70
+- **Sub-image matching enhancement**: Feature point limit raised to 4096, matching resolution up to 1280×960
+- **Three-level crop cascade**: small/mid/big crop scales with full-camera traversal for improved matching robustness
+- **Visualization improvements**: Full result saving, yellow-box annotation for cache reuse, save only on valid bbox
+- **VPR config fix**: `order_invariant` unified via `vpr_config.yaml`, fixed SelaVPR++ misusing order-invariant matching
 
 ### v1.5.0
 

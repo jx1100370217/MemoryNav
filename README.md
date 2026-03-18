@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-1.5.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v1.5.0)
+[![Version](https://img.shields.io/badge/Version-1.6.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v1.6.0)
 
 基于视觉位置识别（VPR）和拓扑地图的机器人记忆导航系统
 
@@ -26,7 +26,7 @@ MemoryNav 是一个面向移动机器人的视觉记忆导航系统。系统通�
 - **🔍 多方案 VPR 定位**：支持 4 种 SOTA 视觉位置识别方案，统一配置文件一键切换
 - **🗺️ 拓扑记忆图**：自动从标注数据构建节点-边拓扑图，支持最短路径规划
 - **🔄 循环移位匹配**：4 相机循环移位算法，支持任意朝向下的定位与偏转角估计
-- **🎯 子图匹配导航**：基于 SuperPoint + LightGlue 的注意力子图定位，实时在相机图中匹配导航目标
+- **🎯 DINOv3 子图匹配**：基于 DINOv3 密集 patch 特征的子图定位，滑动窗口余弦相似度匹配，实时在相机图中定位导航目标
 - **💾 子图匹配缓存**：匹配失败时自动延用上一帧的成功结果，提升导航连续性
 - **📤 统一输出格式**：记忆模式开关两种状态下输出格式一致，始终提供 `pixel_target`
 - **🤖 VLA 兜底推理**：VPR 丢失时自动切换 InternVLA 模型继续导航
@@ -48,7 +48,7 @@ MemoryNav/
 │   │   ├── memory_vpr.py           # VPR 匹配引擎 (循环移位 + 无序匹配)
 │   │   ├── memory_builder.py       # 记忆构建器 (从标注数据构建拓扑图)
 │   │   ├── memory_navigator.py     # 导航器主接口
-│   │   ├── sub_image_matcher.py    # 子图匹配器 (SuperPoint + LightGlue)
+│   │   ├── sub_image_matcher.py    # 子图匹配器 (DINOv3 密集特征匹配)
 │   │   ├── vpr_factory.py          # VPR 提取器工厂
 │   │   ├── anyloc_extractor.py     # AnyLoc (DINOv2 + VLAD)
 │   │   ├── megaloc_extractor.py    # MegaLoc (DINOv2 + OT聚合)
@@ -69,15 +69,16 @@ MemoryNav/
 
 ## 🎯 子图匹配导航
 
-基于 **SuperPoint + LightGlue** 的子图匹配导航方案：
+基于 **DINOv3** 密集 patch 特征的子图匹配导航方案：
 
 ### 工作原理
 
 1. **记忆构建时**：为每条边标注 `camera_name`（目标所在相机）和 `crop_image`（注意力子图）
-2. **导航执行时**：从记忆中取出 crop 子图，在当前对应相机的实时画面中进行特征匹配
-3. **目标定位**：SuperPoint 提取关键点 → LightGlue 匹配 → 计算目标区域百分比坐标 → 输出为 `pixel_target`
-4. **缓存机制**：匹配置信度低于 0.45 时，自动延用上一帧的成功匹配结果，步骤切换时清空缓存
-5. **回退机制**：匹配失败且无缓存时，使用记忆中的 `pixel_box` 作为估计值
+2. **导航执行时**：从记忆中取出 crop 子图，在当前对应相机的实时画面中进行密集特征匹配
+3. **目标定位**：DINOv3 ViT-B/16 提取密集 patch token → 滑动窗口 + unfold 加速 → 余弦相似度最大位置 → 输出为 `pixel_target`
+4. **匹配阈值**：置信度 ≥ 0.6 视为匹配成功
+5. **缓存机制**：匹配失败时自动延用上一帧的成功匹配结果，步骤切换时清空缓存
+6. **回退机制**：匹配失败且无缓存时，使用记忆中的 `pixel_box` 作为估计值
 
 ### 边数据结构
 
@@ -325,6 +326,17 @@ python tests/test_memory_ws.py
 ---
 
 ## 📋 更新日志
+
+### v1.6.0
+
+- **子图匹配精简**：移除 SuperPoint+LightGlue 和 Qwen3.5 方案，仅保留 **DINOv3** 密集特征匹配
+- **匹配阈值统一**：置信度阈值从 0.55 调整为 **0.6**
+- **DINOv3 匹配原理**：通过 timm 加载 DINOv3 ViT-B/16，提取密集 patch token，滑动窗口 + unfold 加速余弦相似度匹配
+- **帧间相似度升级**：SSIM 替换为 DINOv2 帧间相似度，阈值 0.70
+- **子图匹配增强**：特征点上限提升至 4096，匹配分辨率升至 1280×960
+- **三级 crop 级联匹配**：small/mid/big 三种裁剪尺度级联匹配 + 全相机遍历，提升匹配鲁棒性
+- **子图匹配可视化优化**：全量保存可视化结果，缓存复用用黄框标注，仅有效 bbox 时保存
+- **VPR 配置修复**：`order_invariant` 统一由 `vpr_config.yaml` 配置，修复 SelaVPR++ 误用无序匹配
 
 ### v1.5.0
 

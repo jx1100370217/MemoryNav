@@ -3230,29 +3230,59 @@ class MemoryNavServer:
             # 执行打点
             result = grounder.predict(image, landmark_name)
 
-            # 绘制标注图
+            # 绘制标注图 (PIL 绘制中文)
+            from PIL import Image as PILImage, ImageDraw as PILDraw, ImageFont as PILFont
+
             annotated = image.copy()
             h, w = annotated.shape[:2]
+
             if result.get('success') and result.get('point'):
                 px, py = result['point_pixel']
-                # 十字准星
-                cv2.line(annotated, (px - 30, py), (px + 30, py), (0, 102, 255), 3)
-                cv2.line(annotated, (px, py - 30), (px, py + 30), (0, 102, 255), 3)
-                # 圆心
-                cv2.circle(annotated, (px, py), 8, (0, 102, 255), -1)
+                # OpenCV 画几何图形
+                color_bgr = (0, 140, 255)
+                cv2.line(annotated, (px - 30, py), (px + 30, py), color_bgr, 3)
+                cv2.line(annotated, (px, py - 30), (px, py + 30), color_bgr, 3)
+                cv2.circle(annotated, (px, py), 8, color_bgr, -1)
                 cv2.circle(annotated, (px, py), 10, (255, 255, 255), 2)
-                # 同心圆
-                cv2.circle(annotated, (px, py), 24, (0, 102, 255), 2)
-                # 坐标标注
-                label = f"[{result['point'][0]:.3f}, {result['point'][1]:.3f}]"
-                cv2.putText(annotated, label, (px + 20, py - 10),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 102, 255), 2)
-                # 地标名称
-                cv2.putText(annotated, f"Landmark: {landmark_name}", (10, 30),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+                cv2.circle(annotated, (px, py), 24, color_bgr, 2)
+
+            # PIL 绘制中文文字
+            img_rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
+            pil_img = PILImage.fromarray(img_rgb)
+            draw = PILDraw.Draw(pil_img)
+
+            font_paths = [
+                "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+                "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+                "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            ]
+            font_large = font_small = None
+            for fp in font_paths:
+                if os.path.exists(fp):
+                    font_large = PILFont.truetype(fp, 22)
+                    font_small = PILFont.truetype(fp, 16)
+                    break
+            if font_large is None:
+                font_large = PILFont.load_default()
+                font_small = PILFont.load_default()
+
+            color_rgb = (255, 140, 0)
+
+            if result.get('success') and result.get('point'):
+                px, py = result['point_pixel']
+                coord_label = f"[{result['point'][0]:.3f}, {result['point'][1]:.3f}]"
+                draw.text((px + 15, py - 20), coord_label, fill=color_rgb, font=font_small)
+                label = f"Qwen3.5: {landmark_name}"
+                bbox_t = draw.textbbox((0, 0), label, font=font_large)
+                text_w = bbox_t[2] - bbox_t[0] + 20
+                draw.rectangle([(0, 0), (text_w, 32)], fill=(0, 0, 0))
+                draw.text((10, 4), label, fill=color_rgb, font=font_large)
             else:
-                cv2.putText(annotated, f"FAILED: {landmark_name}", (30, 50),
-                           cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
+                label = f"打点失败: {landmark_name}"
+                draw.text((30, 30), label, fill=(255, 50, 50), font=font_large)
+
+            annotated = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
             # 限制输出尺寸
             max_dim = 800

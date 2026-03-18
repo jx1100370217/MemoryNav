@@ -1588,24 +1588,6 @@ HTML_TEMPLATE = '''
                             💡 <strong>Qwen3.5 打点</strong> 直接使用中文 landmark_name，不需要英文翻译或 "Go to the ..." 前缀。
                         </div>
 
-                        <div class="form-group">
-                            <label class="form-label">或从记忆库选择节点和边</label>
-                            <select id="gnd-node-select" onchange="onGndNodeChange()">
-                                <option value="">-- 选择节点 --</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <select id="gnd-edge-select" onchange="onGndEdgeChange()">
-                                <option value="">-- 选择边 (landmark) --</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <select id="gnd-camera-select">
-                                <option value="">-- 选择相机图 --</option>
-                            </select>
-                        </div>
-                        <button class="btn btn-secondary btn-block" onclick="loadGndFromMemory()" style="margin-bottom:12px">📥 从记忆库加载</button>
-
                         <div style="display:flex; gap:8px; margin-bottom:16px">
                             <button class="btn btn-primary" style="flex:1" onclick="runGrounding()">🎯 开始打点</button>
                             <button class="btn btn-secondary" style="flex:0 0 auto" onclick="clearGndInputs()">🗑️ 清除</button>
@@ -1613,18 +1595,6 @@ HTML_TEMPLATE = '''
 
                         <!-- 打点结果信息 -->
                         <div id="gnd-result-info"></div>
-
-                        <!-- 批量测试 -->
-                        <details style="margin-top:16px">
-                            <summary style="cursor:pointer; font-size:13px; color:var(--accent); font-weight:600">📊 批量测试 (全节点)</summary>
-                            <div style="margin-top:10px">
-                                <div style="font-size:12px; color:var(--text-dim); margin-bottom:8px">
-                                    对记忆库中所有边的 landmark_name 执行 Qwen3.5 打点，生成精度报告。
-                                </div>
-                                <button class="btn btn-primary btn-block" onclick="runBatchGrounding()">🚀 开始批量测试</button>
-                                <div id="gnd-batch-result" style="margin-top:12px"></div>
-                            </div>
-                        </details>
                     </div>
 
                     <!-- 右侧: 结果展示 -->
@@ -2774,113 +2744,12 @@ HTML_TEMPLATE = '''
                 </div>`;
         }
 
-        // 从记忆库加载节点列表到下拉框
-        async function loadGndNodes() {
-            try {
-                const res = await fetch('/api/graph');
-                const data = await res.json();
-                if (!data.success) return;
-                const sel = document.getElementById('gnd-node-select');
-                sel.innerHTML = '<option value="">-- 选择节点 --</option>';
-                data.data.nodes.forEach(n => {
-                    sel.innerHTML += `<option value="${n.id}">${n.node_name}${n.node_name_eng ? ' ('+n.node_name_eng+')' : ''} [${n.id}]</option>`;
-                });
-            } catch(e) { console.error(e); }
-        }
-
-        async function onGndNodeChange() {
-            const nodeId = document.getElementById('gnd-node-select').value;
-            const edgeSel = document.getElementById('gnd-edge-select');
-            const camSel = document.getElementById('gnd-camera-select');
-            edgeSel.innerHTML = '<option value="">-- 选择边 (landmark) --</option>';
-            camSel.innerHTML = '<option value="">-- 选择相机图 --</option>';
-            if (!nodeId) return;
-
-            try {
-                const res = await fetch('/api/node/' + nodeId);
-                const data = await res.json();
-                if (!data.success) return;
-                const node = data.node;
-
-                // 填充边下拉
-                if (node.neighbors) {
-                    node.neighbors.forEach(nb => {
-                        edgeSel.innerHTML += `<option value="${JSON.stringify(nb).replace(/"/g, '&quot;')}">${nb.camera_name} → ${nb.name}: ${nb.landmark_name}</option>`;
-                    });
-                }
-
-                // 填充相机图下拉
-                if (node.camera_images) {
-                    Object.keys(node.camera_images).sort().forEach(cam => {
-                        camSel.innerHTML += `<option value="${cam}" data-path="${node.camera_images[cam]}">${cam}</option>`;
-                    });
-                }
-            } catch(e) { console.error(e); }
-        }
-
-        function onGndEdgeChange() {
-            const edgeSel = document.getElementById('gnd-edge-select');
-            if (!edgeSel.value) return;
-            try {
-                const nb = JSON.parse(edgeSel.value);
-                // 自动填充 landmark_name
-                document.getElementById('gnd-landmark').value = nb.landmark_name || '';
-                // 自动选择对应相机
-                const camSel = document.getElementById('gnd-camera-select');
-                for (let opt of camSel.options) {
-                    if (opt.value === nb.camera_name) {
-                        camSel.value = nb.camera_name;
-                        break;
-                    }
-                }
-            } catch(e) { console.error(e); }
-        }
-
-        async function loadGndFromMemory() {
-            const camSel = document.getElementById('gnd-camera-select');
-            const selectedOpt = camSel.options[camSel.selectedIndex];
-            if (!selectedOpt || !selectedOpt.dataset.path) {
-                showToast('请先选择节点和相机', 'error');
-                return;
-            }
-            const imgPath = selectedOpt.dataset.path;
-            
-            // 从服务器加载图片到上传区
-            try {
-                const res = await fetch('/api/image?path=' + encodeURIComponent(imgPath));
-                const blob = await res.blob();
-                
-                // 设置预览
-                const area = document.getElementById('gnd-img-area');
-                area.classList.add('has-image');
-                let preview = area.querySelector('.sim-preview');
-                if (!preview) {
-                    area.querySelectorAll('.sim-upload-icon, .sim-upload-text').forEach(el => el.style.display = 'none');
-                    preview = document.createElement('img');
-                    preview.className = 'sim-preview';
-                    area.appendChild(preview);
-                }
-                preview.src = URL.createObjectURL(blob);
-                
-                // 存储路径供 API 调用
-                area.dataset.serverPath = imgPath;
-                
-                showToast('已从记忆库加载图片和地标', 'success');
-            } catch(e) {
-                showToast('加载失败: ' + e.message, 'error');
-            }
-        }
-
         async function runGrounding() {
             const imgInput = document.getElementById('gnd-img-file');
-            const imgArea = document.getElementById('gnd-img-area');
             const landmark = document.getElementById('gnd-landmark').value.trim();
-            
-            const hasUpload = imgInput.files && imgInput.files[0];
-            const hasServerPath = imgArea.dataset.serverPath;
 
-            if (!hasUpload && !hasServerPath) {
-                showToast('请上传图片或从记忆库加载', 'error');
+            if (!imgInput.files || !imgInput.files[0]) {
+                showToast('请上传图片', 'error');
                 return;
             }
             if (!landmark) {
@@ -2893,11 +2762,7 @@ HTML_TEMPLATE = '''
 
             try {
                 const fd = new FormData();
-                if (hasUpload) {
-                    fd.append('image', imgInput.files[0]);
-                } else {
-                    fd.append('image_path', hasServerPath);
-                }
+                fd.append('image', imgInput.files[0]);
                 fd.append('landmark_name', landmark);
 
                 const res = await fetch('/api/point_grounding', { method: 'POST', body: fd });
@@ -2929,7 +2794,6 @@ HTML_TEMPLATE = '''
                             ${r.raw_response ? `<div style="margin-top:8px; font-size:11px; color:var(--text-dim)">模型原始输出: ${r.raw_response.substring(0, 200)}</div>` : ''}
                         </div>`;
 
-                    // 显示标注后的图片
                     if (data.annotated_image) {
                         document.getElementById('gnd-result-display').innerHTML = `
                             <div class="sim-result-images">
@@ -2956,74 +2820,8 @@ HTML_TEMPLATE = '''
             }
         }
 
-        async function runBatchGrounding() {
-            const batchDiv = document.getElementById('gnd-batch-result');
-            batchDiv.innerHTML = '<div class="loading"><div class="spinner"></div>批量测试中，请稍候...</div>';
-
-            try {
-                const res = await fetch('/api/point_grounding/batch', { method: 'POST' });
-                const data = await res.json();
-
-                if (data.success) {
-                    const r = data;
-                    let html = `
-                        <div class="result-box result-success" style="margin-bottom:12px">
-                            <div class="result-title">📊 批量测试完成</div>
-                            <div class="sim-info-grid" style="grid-template-columns:repeat(4,1fr)">
-                                <div class="sim-info-item">
-                                    <div class="sim-info-value">${r.total}</div>
-                                    <div class="sim-info-label">总数</div>
-                                </div>
-                                <div class="sim-info-item">
-                                    <div class="sim-info-value" style="background:var(--success);-webkit-background-clip:text;-webkit-text-fill-color:transparent">${r.success_count}</div>
-                                    <div class="sim-info-label">成功</div>
-                                </div>
-                                <div class="sim-info-item">
-                                    <div class="sim-info-value" style="background:var(--danger);-webkit-background-clip:text;-webkit-text-fill-color:transparent">${r.fail_count}</div>
-                                    <div class="sim-info-label">失败</div>
-                                </div>
-                                <div class="sim-info-item">
-                                    <div class="sim-info-value">${(r.success_rate * 100).toFixed(1)}%</div>
-                                    <div class="sim-info-label">成功率</div>
-                                </div>
-                            </div>
-                            <div style="margin-top:8px; font-size:12px; color:var(--text-dim)">
-                                平均耗时: ${r.avg_latency.toFixed(2)}s | 总耗时: ${r.total_time.toFixed(1)}s
-                            </div>
-                        </div>`;
-                    
-                    // 详细结果表格
-                    if (r.details && r.details.length > 0) {
-                        html += `<div style="max-height:300px; overflow-y:auto; border:1px solid var(--border); border-radius:8px">
-                            <table class="db-table"><thead><tr>
-                                <th>节点</th><th>地标</th><th>相机</th><th>结果</th><th>耗时</th>
-                            </tr></thead><tbody>`;
-                        r.details.forEach(d => {
-                            const status = d.success ? '✅' : '❌';
-                            html += `<tr>
-                                <td>${d.node_name}</td>
-                                <td>${d.landmark_name}</td>
-                                <td>${d.camera_name}</td>
-                                <td>${status} ${d.success ? '['+d.point[0].toFixed(3)+','+d.point[1].toFixed(3)+']' : (d.error||'').substring(0,20)}</td>
-                                <td>${d.latency ? d.latency.toFixed(2)+'s' : '-'}</td>
-                            </tr>`;
-                        });
-                        html += '</tbody></table></div>';
-                    }
-                    batchDiv.innerHTML = html;
-                } else {
-                    batchDiv.innerHTML = `<div class="result-box result-error"><div class="result-title">❌ 错误</div><div>${data.error}</div></div>`;
-                }
-            } catch(e) {
-                batchDiv.innerHTML = `<div class="result-box result-error"><div class="result-title">❌ 请求错误</div><div>${e.message}</div></div>`;
-            }
-        }
-
         // 初始化
-        window.onload = function() {
-            refreshGraph();
-            loadGndNodes();
-        };
+        window.onload = refreshGraph;
     </script>
 </body>
 </html>
@@ -3475,87 +3273,6 @@ class MemoryNavServer:
                 'success': True,
                 'result': result,
                 'annotated_image': annotated_b64,
-            })
-
-        @self.app.route('/api/point_grounding/batch', methods=['POST'])
-        def point_grounding_batch():
-            """批量 Qwen3.5 打点测试"""
-            import cv2
-            import time as _time
-
-            if self.memory_graph is None:
-                return jsonify({'success': False, 'error': '记忆图未初始化'})
-
-            # 确保 Qwen3.5 已启动
-            if self.qwen35_grounder is None:
-                self.qwen35_grounder = Qwen35PointGrounder()
-            
-            if not self.qwen35_grounder.is_ready:
-                try:
-                    self.qwen35_grounder.start()
-                except Exception as e:
-                    return jsonify({'success': False, 'error': f'Qwen3.5 启动失败: {e}'})
-
-            details = []
-            total_time_start = _time.time()
-
-            for node_id, node in self.memory_graph.nodes.items():
-                for edge in node.edges:
-                    landmark_name = edge.landmark_name
-                    camera_name = edge.camera_name
-                    if not landmark_name or not camera_name:
-                        continue
-
-                    # 获取相机图像
-                    img_path = node.camera_images.get(camera_name, '')
-                    if not img_path:
-                        continue
-                    if not os.path.isabs(img_path):
-                        img_path = str(project_root / img_path)
-                    if not os.path.exists(img_path):
-                        continue
-
-                    image = cv2.imread(img_path)
-                    if image is None:
-                        continue
-
-                    result = self.qwen35_grounder.predict(image, landmark_name)
-                    details.append({
-                        'node_id': node_id,
-                        'node_name': node.node_name,
-                        'target_node': edge.target_node_name,
-                        'landmark_name': landmark_name,
-                        'camera_name': camera_name,
-                        'success': result.get('success', False),
-                        'point': result.get('point'),
-                        'point_pixel': result.get('point_pixel'),
-                        'confidence': result.get('confidence', 0),
-                        'latency': result.get('latency', 0),
-                        'error': result.get('error', ''),
-                    })
-
-            total_time = _time.time() - total_time_start
-            success_count = sum(1 for d in details if d['success'])
-            fail_count = len(details) - success_count
-            avg_latency = sum(d.get('latency', 0) for d in details) / max(len(details), 1)
-
-            return jsonify({
-                'success': True,
-                'total': len(details),
-                'success_count': success_count,
-                'fail_count': fail_count,
-                'success_rate': success_count / max(len(details), 1),
-                'avg_latency': avg_latency,
-                'total_time': total_time,
-                'details': details,
-            })
-
-        @self.app.route('/api/point_grounding/status')
-        def point_grounding_status():
-            """Qwen3.5 打点器状态"""
-            return jsonify({
-                'success': True,
-                'ready': self.qwen35_grounder is not None and self.qwen35_grounder.is_ready,
             })
 
                 # ========================================================================

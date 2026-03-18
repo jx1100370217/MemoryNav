@@ -6,7 +6,7 @@ InternNav WebSocket代理服务（带记忆导航）
 基于 ws_proxy.py，新增记忆导航能力：
 1. 记忆引导: 每步首次请求返回记忆的 angle + pixel_goal
 2. VPR持续验证: 每次请求用 camera_1~4 做 VPR 判断是否到达下一节点
-3. 模型兜底: VPR丢失时用 InternVLA 继续推理
+3. 模型兜底: VPR丢失时用 Qwen3.5 打点继续推理 (替代 InternVLA)
 
 端口: 9528
 """
@@ -39,7 +39,8 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(project_root / 'src/diffusion-policy'))
 
-from internnav.agent.internvla_n1_agent_realworld import InternVLAN1AsyncAgent
+# InternVLA 已替换为 Qwen3.5 打点方案
+# from internnav.agent.internvla_n1_agent_realworld import InternVLAN1AsyncAgent
 
 # 记忆导航模块
 from deploy.memory_nav import (
@@ -621,14 +622,14 @@ def build_memory_response(
         message = (f"记忆导航: {step.from_node_name} → {step.to_node_name} "
                    f"(步骤{nav_state.current_step_idx + 1}/{nav_state.plan.total_steps})")
 
-    # 当子图匹配失败且无缓存时，使用 InternVLN 兜底结果
+    # 当子图匹配失败且无缓存时，使用 Qwen3.5 兜底打点结果
     _use_fallback = (sub_image_match is None and task_status != "end"
                      and nav_state.fallback_action is not None)
     if _use_fallback:
         _action = nav_state.fallback_action
         _pixel = nav_state.fallback_pixel_target
         _fallback_inst = nav_state.fallback_instruction
-        logger.info(f"🤖 [Memory] 使用 InternVLN 兜底: instruction='{_fallback_inst}', "
+        logger.info(f"🤖 [Memory] 使用 Qwen3.5 兜底: landmark='{_fallback_inst}', "
                     f"action={_action[:3] if _action else None}..., pixel={_pixel}")
     else:
         _action = [[0.0, 0.0, 0.0]]  # 记忆模式下 action 不使用
@@ -917,12 +918,12 @@ async def process_inference_with_memory(message_data, session_state, agent,
     三层导航策略:
     1. 记忆引导: 每步首次请求返回记忆的 angle + pixel_goal
     2. VPR持续验证: 每次请求用 camera_1~4 做 VPR 判断是否到达下一节点
-    3. 模型兜底: VPR丢失时用 InternVLA 继续推理
+    3. 模型兜底: VPR丢失时用 Qwen3.5 打点继续推理
 
     Args:
         message_data: 消息数据
         session_state: 会话状态
-        agent: InternVLAN1AsyncAgent实例
+        agent: (deprecated, 保留接口兼容)
         navigator: MemoryNavigator实例
         nav_state: MemoryNavState 状态机
         memory_enabled: 是否启用记忆导航
@@ -1125,72 +1126,36 @@ async def process_inference_with_memory(message_data, session_state, agent,
             _sub_match = _cache_or_reuse_sub_match(nav_state, _sub_match, nav_state.last_query_features, _cache_cam_name)
             visualize_sub_image_match(camera_images, _sub_match, pts, cache_action=nav_state.last_cache_action)
 
-            # ---- InternVLN 兜底: 子图匹配失败且无缓存时 ----
+            # ---- Qwen3.5 兜底打点: 子图匹配失败且无缓存时 ----
             nav_state.fallback_action = None
             nav_state.fallback_pixel_target = None
             nav_state.fallback_instruction = None
             if _sub_match is None:
                 _fb_step = nav_state.get_current_step()
-                _fb_landmark_eng = getattr(_fb_step, 'landmark_name_eng', '') if _fb_step else ''
-                if _fb_landmark_eng:
-                    _fb_instruction = f"Go to the {_fb_landmark_eng}."
-                    nav_state.fallback_instruction = _fb_instruction
-                    logger.info(f"🤖 [Memory] 子图匹配无结果，启动 InternVLN 兜底: '{_fb_instruction}'")
+                _fb_landmark = getattr(_fb_step, 'landmark_name', '') if _fb_step else ''
+                if _fb_landmark and navigator:
+                    nav_state.fallback_instruction = _fb_landmark
+                    logger.info(f"🤖 [Memory] 子图匹配无结果，启动 Qwen3.5 兜底打点: '{_fb_landmark}'")
                     try:
-                        # 解码深度图
-                        if 'depth' in message_data and message_data['depth']:
-                            _fb_depth = decode_base64_depth(message_data['depth'])
-                            if _fb_depth is None:
-                                _fb_depth = np.zeros((rgb.shape[0], rgb.shape[1]), dtype=np.float32)
-                        else:
-                            _fb_depth = np.zeros((rgb.shape[0], rgb.shape[1]), dtype=np.float32)
-                        # 解析 pose
-                        if 'pose' in message_data and message_data['pose']:
-                            _fb_pose = np.array(message_data['pose'], dtype=np.float32)
-                        else:
-                            _fb_pose = np.eye(4, dtype=np.float32)
-                        # 解析 intrinsic
-                        if 'intrinsic' in message_data and message_data['intrinsic']:
-                            _fb_intrinsic = np.array(message_data['intrinsic'], dtype=np.float32)
-                        else:
-                            _fb_intrinsic = np.array([
-                                [386.5, 0.0, 328.9, 0.0],
-                                [0.0, 386.5, 244.0, 0.0],
-                                [0.0, 0.0, 1.0, 0.0],
-                                [0.0, 0.0, 0.0, 1.0]
-                            ], dtype=np.float32)
-                        _fb_look_down = message_data.get('look_down', False)
-
+                        _fb_target_camera = getattr(_fb_step, 'camera_name', None)
                         _fb_start = time.time()
-                        async with agent_lock:
-                            _fb_output = await asyncio.to_thread(
-                                agent.step,
-                                rgb, _fb_depth, _fb_pose, _fb_instruction, _fb_intrinsic, _fb_look_down
-                            )
+                        _fb_result = await asyncio.to_thread(
+                            navigator.fallback_point_grounding,
+                            camera_images, _fb_landmark, _fb_target_camera
+                        )
                         _fb_time = time.time() - _fb_start
-                        logger.info(f"🤖 [Memory] InternVLN 兜底推理完成: {_fb_time:.2f}s")
+                        logger.info(f"🤖 [Memory] Qwen3.5 兜底打点完成: {_fb_time:.2f}s")
 
-                        # 提取 action
-                        if _fb_output.output_action is not None:
-                            _fb_robot_action, _fb_task_status = convert_output_action_to_robot_action(_fb_output.output_action)
-                            nav_state.fallback_action = _fb_robot_action
-                            action_map = {0: 'STOP', 1: '↑前进', 2: '←左转', 3: '→右转', 5: '↓向下看'}
-                            _fb_action_str = ', '.join([f"{action_map.get(a, str(a))}" for a in _fb_output.output_action[:5]])
-                            logger.info(f"🤖 [Memory] InternVLN 兜底动作: {_fb_action_str}")
-                        elif _fb_output.output_trajectory is not None:
-                            _fb_robot_action = convert_trajectory_to_robot_action(_fb_output.output_trajectory.tolist())
-                            nav_state.fallback_action = _fb_robot_action
-                            logger.info(f"🤖 [Memory] InternVLN 兜底轨迹: {len(_fb_robot_action)} points")
-
-                        # 提取 pixel_target
-                        if _fb_output.output_pixel is not None:
-                            _fb_py = _fb_output.output_pixel[0] / 480.0
-                            _fb_px = _fb_output.output_pixel[1] / 640.0
-                            nav_state.fallback_pixel_target = [_fb_px, _fb_py]
-                            logger.info(f"🤖 [Memory] InternVLN 兜底像素: [{_fb_px:.4f}, {_fb_py:.4f}]")
+                        if _fb_result.get("success") and _fb_result.get("point"):
+                            nav_state.fallback_pixel_target = _fb_result["point"]
+                            nav_state.fallback_action = [[0.0, 0.0, 0.0]]  # 打点模式不输出 action
+                            logger.info(f"🤖 [Memory] Qwen3.5 兜底像素: {_fb_result['point']}, "
+                                       f"camera={_fb_result.get('camera_name')}")
+                        else:
+                            logger.info(f"🤖 [Memory] Qwen3.5 兜底打点失败: {_fb_result.get('error', 'unknown')}")
 
                     except Exception as e:
-                        logger.warning(f"🤖 [Memory] InternVLN 兜底推理异常: {e}", exc_info=True)
+                        logger.warning(f"🤖 [Memory] Qwen3.5 兜底推理异常: {e}", exc_info=True)
 
             step = nav_state.get_current_step()
             if step is None:

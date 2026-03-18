@@ -28,6 +28,7 @@ from .anyloc_extractor import AnyLocExtractor
 from .vpr_config_loader import load_vpr_config, get_threshold
 from .vpr_factory import create_vpr_extractor
 from .sub_image_matcher import SubImageMatcher, SubImageMatchResult, list_strategies, STRATEGY_DISPLAY_NAMES
+from .qwen35_point_grounder import Qwen35PointGrounder
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,9 @@ class MemoryNavigator:
                  vpr_method: str = "selavpr",
                  anyloc_config: dict = None,
                  sub_image_method: str = "dinov3",
-                 preload_all_matchers: bool = False):
+                 preload_all_matchers: bool = False,
+                 qwen35_gpu: str = "1,2,3",
+                 preload_qwen35: bool = False):
         """
         初始化导航器
         
@@ -87,6 +90,14 @@ class MemoryNavigator:
                 self.sub_image_matcher.preload()  # 只加载默认方案
         except Exception as e:
             logger.warning(f"[MemoryNavigator] SubImageMatcher 预加载失败(不影响VPR定位): {e}")
+        
+        # Qwen3.5 打点器 (兜底模型)
+        self.qwen35_grounder = Qwen35PointGrounder(gpu=qwen35_gpu)
+        if preload_qwen35:
+            try:
+                self.qwen35_grounder.start()
+            except Exception as e:
+                logger.warning(f"[MemoryNavigator] Qwen3.5 打点器预加载失败: {e}")
         
         # 当前导航状态
         self.current_node_id: Optional[str] = None
@@ -539,6 +550,62 @@ class MemoryNavigator:
                        f"center=({best_result.center_x_pct:.1f}%, {best_result.center_y_pct:.1f}%)")
         else:
             logger.info(f"[MemoryNavigator] 子图匹配失败: landmark={step.landmark_name}")
+        
+        return result
+
+
+    def fallback_point_grounding(self, camera_images: Dict[str, np.ndarray],
+                                  landmark_name: str,
+                                  target_camera: str = None) -> Dict:
+        """
+        Qwen3.5 兜底打点
+        
+        当子图匹配失败时，使用 Qwen3.5 VLM 对 landmark_name 进行视觉打点定位。
+        与 InternVLA 不同：
+        - 使用中文 landmark_name（不需要 landmark_name_eng）
+        - 不需要 "Go to the ..." 前缀
+        - 直接输出归一化坐标
+        
+        Args:
+            camera_images: 环视相机图像
+            landmark_name: 地标名称（中文）
+            target_camera: 指定相机，None 则遍历所有
+            
+        Returns:
+            {
+                "success": bool,
+                "camera_name": str,
+                "point": [x_norm, y_norm],  # [0,1]
+                "point_pixel": [px, py],
+                "confidence": float,
+                ...
+            }
+        """
+        if not self.qwen35_grounder.is_ready:
+            try:
+                self.qwen35_grounder.start()
+            except Exception as e:
+                logger.error(f"[MemoryNavigator] Qwen3.5 启动失败: {e}")
+                return {
+                    "success": False,
+                    "error": str(e),
+                    "point": None,
+                    "point_pixel": None,
+                    "confidence": 0.0,
+                }
+        
+        result = self.qwen35_grounder.predict_on_camera(
+            camera_images, landmark_name, target_camera
+        )
+        
+        if result["success"]:
+            logger.info(f"[MemoryNavigator] Qwen3.5 兜底打点成功: "
+                       f"camera={result.get('camera_name')}, "
+                       f"landmark='{landmark_name}', "
+                       f"point={result['point']}")
+        else:
+            logger.info(f"[MemoryNavigator] Qwen3.5 兜底打点失败: "
+                       f"landmark='{landmark_name}', error={result.get('error')}")
         
         return result
 

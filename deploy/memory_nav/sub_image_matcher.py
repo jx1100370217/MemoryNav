@@ -1,22 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MemoryNav - 子图匹配模块
+MemoryNav - 子图匹配模块 (DINOv3 方案)
 
-基于 SuperPoint + LightGlue 的子图定位，用于在导航过程中
-在当前相机图中定位记忆中的注意力子图（crop）。
-
-包含 Homography 退化检测，避免输出垃圾 bbox。
-
-模型生命周期：启动时加载一次，后续复用。
+支持 DINOv3 密集特征匹配，成功匹配阈值: 0.6
 """
 
 import os
 import logging
 import time
 import math
-from dataclasses import dataclass
-from typing import Optional, Tuple, Dict
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from typing import Optional, Tuple, Dict, List
 
 import cv2
 import numpy as np
@@ -24,36 +20,9 @@ import torch
 
 logger = logging.getLogger(__name__)
 
-# ============================================================================
-# 全局模型缓存（启动时加载一次，后续匹配复用）
-# ============================================================================
-_device = "cuda" if torch.cuda.is_available() else "cpu"
-_extractor = None
-_matcher = None
-
-# 匹配分辨率（提取特征前 resize 到此分辨率，坐标映射回原图）
-_MATCH_W = 1280
-_MATCH_H = 960
-
-
-def _load_models():
-    """加载并缓存 SuperPoint + LightGlue 模型（仅首次调用时加载）。"""
-    global _extractor, _matcher
-    if _extractor is not None:
-        return _extractor, _matcher
-
-    from lightglue import LightGlue, SuperPoint
-
-    logger.info("[SubImageMatcher] 正在加载 SuperPoint ...")
-    _extractor = SuperPoint(max_num_keypoints=4096).eval().to(_device)
-    logger.info("[SubImageMatcher] 正在加载 LightGlue ...")
-    _matcher = LightGlue(features="superpoint").eval().to(_device)
-    logger.info(f"[SubImageMatcher] 模型加载完成 (device={_device})")
-    return _extractor, _matcher
-
 
 # ============================================================================
-# 子图匹配结果
+# 子图匹配结果 (统一输出格式)
 # ============================================================================
 
 @dataclass
@@ -122,275 +91,336 @@ class SubImageMatchResult:
 
 
 # ============================================================================
-# Homography 质量检测
+# 基类：子图匹配策略
 # ============================================================================
 
-def _is_homography_degenerate(H, img_shape, tpl_shape, projected_corners):
-    """
-    检测 Homography 是否退化。
+class BaseSubImageMatchStrategy(ABC):
+    """子图匹配策略基类"""
 
-    Args:
-        H: 3x3 Homography 矩阵
-        img_shape: 搜索图像 (H, W, ...)
-        tpl_shape: 模板图像 (H, W, ...)
-        projected_corners: 投影后的四角坐标 (4, 2)
+    @abstractmethod
+    def name(self) -> str:
+        """方案名称"""
+        ...
 
-    Returns:
-        True 表示退化（不可信）
-    """
-    # 1. 行列式检查
-    det = np.linalg.det(H[:2, :2])
-    if det < 0.05 or det > 20:
-        return True
-
-    # 2. 投影区域面积 vs 图像面积
-    img_h, img_w = img_shape[:2]
-    img_area = img_h * img_w
-    proj_area = cv2.contourArea(projected_corners.astype(np.float32))
-    area_ratio = proj_area / img_area
-    if area_ratio > 0.3:  # 占图超过 30% → 退化
-        return True
-    if area_ratio < 0.005:  # 占图不到 0.5% → 太小
-        return True
-    if proj_area < 100:  # 绝对面积太小
-        return True
-
-    # 2b. 投影面积 vs 模板面积的缩放比
-    tpl_h_local, tpl_w_local = tpl_shape[:2]
-    tpl_area = tpl_h_local * tpl_w_local
-    if tpl_area > 0:
-        scale_ratio = proj_area / tpl_area
-        if scale_ratio < 0.1 or scale_ratio > 10.0:  # 缩放超过10倍 → 退化
-            return True
-
-    # 3. 凸性检查：非凸说明 fold
-    if not cv2.isContourConvex(projected_corners.astype(np.int32)):
-        return True
-
-    # 4. 宽高比与模板偏差检查
-    tpl_h, tpl_w = tpl_shape[:2]
-    tpl_aspect = tpl_w / max(tpl_h, 1)
-    br = projected_corners.max(axis=0)
-    tl = projected_corners.min(axis=0)
-    proj_w = br[0] - tl[0]
-    proj_h = br[1] - tl[1]
-    proj_aspect = proj_w / max(proj_h, 1)
-    if tpl_aspect > 0:
-        aspect_ratio = proj_aspect / tpl_aspect
-        if aspect_ratio < 0.2 or aspect_ratio > 5.0:
-            return True
-
-    return False
-
-
-# ============================================================================
-# 底层特征匹配（源自 SubImageLocator/matchers/feature_matcher.py）
-# ============================================================================
-
-def _extract_features(extractor, image: np.ndarray) -> dict:
-    """提取 SuperPoint 特征。"""
-    from lightglue.utils import numpy_image_to_torch
-    if len(image.shape) == 3:
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    else:
-        gray = image
-    tensor = numpy_image_to_torch(gray).to(_device)
-    with torch.no_grad():
-        feats = extractor.extract(tensor)
-    return feats
-
-
-def _match_features(
-    image: np.ndarray,
-    template: np.ndarray,
-    min_matches: int = 8,
-    confidence_threshold: float = 0.55,
-) -> SubImageMatchResult:
-    """
-    使用 SuperPoint + LightGlue 在 image 中定位 template。
-
-    返回与 SubImageLocator WebUI 一致的百分比描述。
-    """
-    t0 = time.perf_counter()
-
-    extractor, matcher = _load_models()
-    orig_h, orig_w = image.shape[:2]
-    img_h, img_w = orig_h, orig_w  # 百分比计算基于原始尺寸
-
-    # Resize 到匹配分辨率以获取更多特征点
-    scale_x = orig_w / _MATCH_W
-    scale_y = orig_h / _MATCH_H
-    image_resized = cv2.resize(image, (_MATCH_W, _MATCH_H), interpolation=cv2.INTER_LINEAR)
-    # 模板按相同比例缩放（保持宽高比）
-    tpl_h_orig, tpl_w_orig = template.shape[:2]
-    tpl_w_resized = max(1, int(tpl_w_orig / scale_x))
-    tpl_h_resized = max(1, int(tpl_h_orig / scale_y))
-    template_resized = cv2.resize(template, (tpl_w_resized, tpl_h_resized), interpolation=cv2.INTER_LINEAR)
-
-    # 提取特征（在 resize 后的图像上）
-    feats0 = _extract_features(extractor, image_resized)
-    feats1 = _extract_features(extractor, template_resized)
-
-    # 匹配
-    with torch.no_grad():
-        matches_result = matcher({"image0": feats0, "image1": feats1})
-
-    kpts0 = feats0["keypoints"][0].cpu().numpy()
-    kpts1 = feats1["keypoints"][0].cpu().numpy()
-    matches0 = matches_result["matches0"][0].cpu().numpy()
-
-    valid = matches0 > -1
-    mkpts0 = kpts0[valid]
-    mkpts1 = kpts1[matches0[valid]]
-
-    # 将关键点坐标映射回原始分辨率
-    mkpts0[:, 0] *= scale_x
-    mkpts0[:, 1] *= scale_y
-    mkpts1[:, 0] *= scale_x
-    mkpts1[:, 1] *= scale_y
-
-    elapsed_ms = (time.perf_counter() - t0) * 1000
-    n_matches = len(mkpts0)
-
-    if n_matches < min_matches:
-        return SubImageMatchResult(
-            found=False, confidence=0.0,
-            elapsed_ms=round(elapsed_ms, 1),
-            method=f"SuperPoint+LightGlue ({n_matches} matches)",
-        )
-
-    # 用单应矩阵定位模板区域
-    H, mask = cv2.findHomography(mkpts1, mkpts0, cv2.USAC_MAGSAC, 5.0)
-
-    if H is None:
-        return SubImageMatchResult(
-            found=False, confidence=0.0,
-            elapsed_ms=round(elapsed_ms, 1),
-            method=f"SuperPoint+LightGlue ({n_matches} matches, H failed)",
-        )
-
-    tpl_h, tpl_w = tpl_h_orig, tpl_w_orig  # 使用原始模板尺寸
-    corners = np.float32([
-        [0, 0], [tpl_w, 0], [tpl_w, tpl_h], [0, tpl_h]
-    ]).reshape(-1, 1, 2)
-
-    projected = cv2.perspectiveTransform(corners, H).reshape(-1, 2)
-
-    inlier_ratio = mask.sum() / len(mask) if mask is not None else 0
-    n_inliers = int(mask.sum()) if mask is not None else 0
-    # confidence = sqrt(inlier_ratio * inlier_quality)
-    # inlier_quality 惩罚低 inlier 数量的情况（防止少量匹配点碰巧得高 ratio）
-    _MIN_INLIERS = 20
-    inlier_quality = min(1.0, n_inliers / _MIN_INLIERS)
-    confidence = float(math.sqrt(inlier_ratio * inlier_quality))
-
-    # Homography 退化检测
-    if _is_homography_degenerate(H, image.shape, template.shape, projected):
-        logger.debug(f"[SubImageMatcher] Homography 退化: "
-                     f"det={np.linalg.det(H[:2,:2]):.3f}, "
-                     f"inliers={int(inlier_ratio*100)}%")
-        return SubImageMatchResult(
-            found=False, confidence=round(confidence, 4),
-            elapsed_ms=round(elapsed_ms, 1),
-            method=f"SuperPoint+LightGlue ({n_matches} matches, "
-                   f"{n_inliers} inliers, {int(inlier_ratio*100)}%, H degenerate)",
-        )
-
-    x_min = max(0, int(projected[:, 0].min()))
-    y_min = max(0, int(projected[:, 1].min()))
-    x_max = min(img_w, int(projected[:, 0].max()))
-    y_max = min(img_h, int(projected[:, 1].max()))
-
-    found = confidence >= confidence_threshold
-
-    return SubImageMatchResult(
-        found=found,
-        confidence=round(confidence, 4),
-        x_min=x_min,
-        y_min=y_min,
-        x_max=x_max,
-        y_max=y_max,
-        # 百分比与 WebUI 一致：左上角 / 右下角
-        x_min_pct=round(x_min / img_w * 100, 2),
-        y_min_pct=round(y_min / img_h * 100, 2),
-        x_max_pct=round(x_max / img_w * 100, 2),
-        y_max_pct=round(y_max / img_h * 100, 2),
-        elapsed_ms=round(elapsed_ms, 1),
-        method=f"SuperPoint+LightGlue ({n_matches} matches, "
-               f"{n_inliers} inliers, {int(inlier_ratio*100)}%)",
-    )
-
-
-# ============================================================================
-# 子图匹配器（对外接口）
-# ============================================================================
-
-class SubImageMatcher:
-    """
-    子图匹配器
-
-    模型在首次调用 match() 或 preload() 时加载到 GPU，
-    后续所有匹配复用同一模型实例。
-
-    包含 Homography 退化检测，自动拦截退化的匹配结果
-    （投影面积过大、非凸、宽高比异常等）。
-    """
-
-    def __init__(self, device: str = "cuda:0",
-                 min_matches: int = 8,
-                 confidence_threshold: float = 0.55):
-        """
-        Args:
-            device: 推理设备（模型缓存为全局单例）
-            min_matches: 最小特征匹配数
-            confidence_threshold: 置信度阈值
-        """
-        global _device
-        _device = device if torch.cuda.is_available() else "cpu"
-        self.min_matches = min_matches
-        self.confidence_threshold = confidence_threshold
-
+    @abstractmethod
     def preload(self):
-        """预加载模型（可在启动时调用，避免首次匹配延迟）。"""
-        _load_models()
+        """预加载模型"""
+        ...
 
-    def match(self, camera_image: np.ndarray,
-              crop_image: np.ndarray) -> SubImageMatchResult:
+    @abstractmethod
+    def match(self, camera_image: np.ndarray, crop_image: np.ndarray,
+              min_matches: int = 50,
+              confidence_threshold: float = 0.6) -> SubImageMatchResult:
         """
         在相机图中定位子图。
 
         Args:
             camera_image: 当前相机图像 (BGR, H×W×3)
             crop_image: 记忆中的 crop 子图 (BGR, H×W×3)
+            min_matches: 最小特征匹配数 (仅部分方案使用)
+            confidence_threshold: 置信度阈值 (默认 0.6)
 
         Returns:
-            SubImageMatchResult（包含左上角/右下角百分比）
+            SubImageMatchResult
+        """
+        ...
+
+
+# ============================================================================
+# 方案: DINOv3 密集特征匹配
+# ============================================================================
+
+class DINOv3Strategy(BaseSubImageMatchStrategy):
+    """基于 DINOv3 密集 patch 特征的子图匹配 (通过 timm 加载)
+
+    原理：
+    1. 使用 DINOv3 (ViT-B/16) 提取两张图的 patch token 特征 (密集特征图)
+    2. 在相机图特征图上滑动窗口，计算与子图特征图的余弦相似度
+    3. 找到相似度最高的位置作为匹配结果
+
+    DINOv3 相比 DINOv2 在密集特征质量上有显著提升。
+    """
+
+    def __init__(self, device: str = "cuda:0",
+                 model_name: str = "vit_base_patch16_dinov3"):
+        self._device = device if torch.cuda.is_available() else "cpu"
+        self._model_name = model_name
+        self._model = None
+        self._patch_size = 16  # DINOv3 ViT-B/16
+        self._feature_dim = 768  # ViT-B
+
+    def name(self) -> str:
+        return "dinov3"
+
+    def preload(self):
+        if self._model is not None:
+            return
+        import timm
+        logger.info(f"[DINOv3] 正在通过 timm 加载 {self._model_name} ...")
+        self._model = timm.create_model(
+            self._model_name,
+            pretrained=True,
+            num_classes=0,  # 去掉分类头
+        )
+        self._model = self._model.eval().to(self._device)
+
+        # 获取 patch_size 和 feature_dim
+        if hasattr(self._model, 'patch_embed'):
+            ps = getattr(self._model.patch_embed, 'patch_size', None)
+            if ps is not None:
+                self._patch_size = ps[0] if isinstance(ps, (tuple, list)) else ps
+        if hasattr(self._model, 'embed_dim'):
+            self._feature_dim = self._model.embed_dim
+
+        logger.info(f"[DINOv3] 模型加载完成 (device={self._device}, "
+                     f"patch_size={self._patch_size}, dim={self._feature_dim})")
+
+    def _prepare_image(self, image: np.ndarray, target_size: int = 518):
+        """预处理图像，确保尺寸为 patch_size 的整数倍。
+
+        Returns:
+            (tensor [1,3,H,W], resized_h, resized_w)
+        """
+        if len(image.shape) == 2:
+            image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+        img_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+        h, w = img_rgb.shape[:2]
+        scale = target_size / max(h, w)
+        new_h = int(h * scale)
+        new_w = int(w * scale)
+
+        # 确保是 patch_size 的整数倍
+        new_h = max(self._patch_size, (new_h // self._patch_size) * self._patch_size)
+        new_w = max(self._patch_size, (new_w // self._patch_size) * self._patch_size)
+
+        img_resized = cv2.resize(img_rgb, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+
+        # ImageNet 标准化
+        mean = np.array([0.485, 0.456, 0.406])
+        std = np.array([0.229, 0.224, 0.225])
+        img_norm = (img_resized.astype(np.float32) / 255.0 - mean) / std
+
+        tensor = torch.from_numpy(img_norm).permute(2, 0, 1).unsqueeze(0).float().to(self._device)
+        return tensor, new_h, new_w
+
+    def _extract_patch_features(self, image: np.ndarray, target_size: int = 518):
+        """提取 DINOv3 patch 特征。
+
+        Returns:
+            (features [n_patches_h * n_patches_w, dim], n_patches_h, n_patches_w)
+        """
+        tensor, resized_h, resized_w = self._prepare_image(image, target_size)
+        n_patches_h = resized_h // self._patch_size
+        n_patches_w = resized_w // self._patch_size
+
+        with torch.no_grad():
+            features = self._model.forward_features(tensor)
+            # DINOv3 输出: [1, num_prefix_tokens + n_patches, dim]
+            # num_prefix_tokens = CLS (1) + register tokens (DINOv3 通常有4个)
+            n_patches = n_patches_h * n_patches_w
+            n_prefix = features.shape[1] - n_patches
+            if n_prefix > 0:
+                patch_tokens = features[:, n_prefix:, :]
+            else:
+                patch_tokens = features
+
+        return patch_tokens[0], n_patches_h, n_patches_w  # [n_patches, dim]
+
+    def match(self, camera_image: np.ndarray, crop_image: np.ndarray,
+              min_matches: int = 50,
+              confidence_threshold: float = 0.6) -> SubImageMatchResult:
+        t0 = time.perf_counter()
+        self.preload()
+
+        orig_h, orig_w = camera_image.shape[:2]
+
+        # 提取特征
+        cam_feats, cam_ph, cam_pw = self._extract_patch_features(camera_image, target_size=518)
+        crop_h, crop_w = crop_image.shape[:2]
+        crop_target = max(self._patch_size * 2,
+                         min(280, int(518 * max(crop_h, crop_w) / max(orig_h, orig_w))))
+        crop_target = max(crop_target, self._patch_size * 2)
+        crop_feats, crop_ph, crop_pw = self._extract_patch_features(crop_image, target_size=crop_target)
+
+        # reshape 为空间网格
+        dim = cam_feats.shape[-1]
+        cam_grid = cam_feats.reshape(cam_ph, cam_pw, dim)
+        crop_grid = crop_feats.reshape(crop_ph, crop_pw, dim)
+
+        # 归一化
+        cam_grid = torch.nn.functional.normalize(cam_grid, dim=-1)
+        crop_grid = torch.nn.functional.normalize(crop_grid, dim=-1)
+
+        # crop 网格比 cam 网格大，无法匹配
+        if crop_ph > cam_ph or crop_pw > cam_pw:
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            return SubImageMatchResult(
+                found=False, confidence=0.0,
+                elapsed_ms=round(elapsed_ms, 1),
+                method=f"DINOv3 (crop patches {crop_ph}x{crop_pw} > cam {cam_ph}x{cam_pw})",
+            )
+
+        # 滑动窗口匹配 (unfold 加速)
+        cam_grid_4d = cam_grid.permute(2, 0, 1).unsqueeze(0)  # [1, dim, cam_ph, cam_pw]
+        crop_flat = crop_grid.reshape(-1, dim)  # [crop_ph * crop_pw, dim]
+
+        out_h = cam_ph - crop_ph + 1
+        out_w = cam_pw - crop_pw + 1
+
+        windows = cam_grid_4d.unfold(2, crop_ph, 1).unfold(3, crop_pw, 1)
+        windows = windows[0].permute(1, 2, 3, 4, 0)  # [out_h, out_w, crop_ph, crop_pw, dim]
+        windows = windows.reshape(out_h, out_w, -1, dim)
+
+        crop_flat_expanded = crop_flat.unsqueeze(0).unsqueeze(0)
+        sim = (windows * crop_flat_expanded).sum(dim=-1).mean(dim=-1)  # [out_h, out_w]
+
+        sim_np = sim.cpu().numpy()
+        best_idx = np.unravel_index(sim_np.argmax(), sim_np.shape)
+        best_y, best_x = best_idx
+        best_score = float(sim_np[best_y, best_x])
+
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+
+        # patch 坐标 → 原图像素坐标
+        cam_resized_h = cam_ph * self._patch_size
+        cam_resized_w = cam_pw * self._patch_size
+        scale_back_x = orig_w / cam_resized_w
+        scale_back_y = orig_h / cam_resized_h
+
+        x_min_px = max(0, min(int(best_x * self._patch_size * scale_back_x), orig_w))
+        y_min_px = max(0, min(int(best_y * self._patch_size * scale_back_y), orig_h))
+        x_max_px = max(0, min(int((best_x + crop_pw) * self._patch_size * scale_back_x), orig_w))
+        y_max_px = max(0, min(int((best_y + crop_ph) * self._patch_size * scale_back_y), orig_h))
+
+        confidence = max(0.0, min(1.0, best_score))
+        found = confidence >= confidence_threshold
+
+        return SubImageMatchResult(
+            found=found,
+            confidence=round(confidence, 4),
+            x_min=x_min_px, y_min=y_min_px,
+            x_max=x_max_px, y_max=y_max_px,
+            x_min_pct=round(x_min_px / orig_w * 100, 2),
+            y_min_pct=round(y_min_px / orig_h * 100, 2),
+            x_max_pct=round(x_max_px / orig_w * 100, 2),
+            y_max_pct=round(y_max_px / orig_h * 100, 2),
+            elapsed_ms=round(elapsed_ms, 1),
+            method=f"DINOv3 (score={best_score:.4f}, grid={cam_ph}x{cam_pw}, "
+                   f"crop={crop_ph}x{crop_pw})",
+        )
+
+
+# ============================================================================
+# 方案注册表 (仅 DINOv3)
+# ============================================================================
+
+STRATEGY_REGISTRY: Dict[str, type] = {
+    "dinov3": DINOv3Strategy,
+}
+
+# 方案显示名称
+STRATEGY_DISPLAY_NAMES: Dict[str, str] = {
+    "dinov3": "DINOv3",
+}
+
+
+def list_strategies() -> List[str]:
+    """返回所有可用方案名称"""
+    return list(STRATEGY_REGISTRY.keys())
+
+
+# ============================================================================
+# 子图匹配器 (对外接口)
+# ============================================================================
+
+class SubImageMatcher:
+    """
+    子图匹配器 (DINOv3 方案)
+
+    成功匹配阈值: 0.6
+    """
+
+    def __init__(self, device: str = "cuda:0",
+                 min_matches: int = 50,
+                 confidence_threshold: float = 0.6,
+                 default_method: str = "dinov3"):
+        """
+        Args:
+            device: 推理设备
+            min_matches: 最小特征匹配数
+            confidence_threshold: 置信度阈值 (默认 0.6)
+            default_method: 默认匹配方案 (DINOv3)
+        """
+        self._device = device if torch.cuda.is_available() else "cpu"
+        self.min_matches = min_matches
+        self.confidence_threshold = confidence_threshold
+        self.default_method = default_method
+
+        # 策略实例缓存 (DINOv3)
+        self._strategies: Dict[str, BaseSubImageMatchStrategy] = {}
+
+    def _get_strategy(self, method: Optional[str] = None) -> BaseSubImageMatchStrategy:
+        """获取或创建策略实例"""
+        method = method or self.default_method
+        if method not in STRATEGY_REGISTRY:
+            raise ValueError(f"未知匹配方案: {method}, 可选: {list(STRATEGY_REGISTRY.keys())}")
+
+        if method not in self._strategies:
+            cls = STRATEGY_REGISTRY[method]
+            self._strategies[method] = cls(device=self._device)
+
+        return self._strategies[method]
+
+    def preload(self, method: Optional[str] = None):
+        """预加载 DINOv3 模型"""
+        strategy = self._get_strategy(method)
+        strategy.preload()
+
+    def preload_all(self):
+        """预加载所有方案的模型 (DINOv3)"""
+        for method_name in STRATEGY_REGISTRY:
+            try:
+                logger.info(f"[SubImageMatcher] 预加载方案: {method_name}")
+                strategy = self._get_strategy(method_name)
+                strategy.preload()
+                logger.info(f"[SubImageMatcher] 方案 {method_name} 加载完成")
+            except Exception as e:
+                logger.warning(f"[SubImageMatcher] 方案 {method_name} 预加载失败: {e}")
+
+    def match(self, camera_image: np.ndarray,
+              crop_image: np.ndarray,
+              method: Optional[str] = None) -> SubImageMatchResult:
+        """
+        在相机图中定位子图。
+
+        Args:
+            camera_image: 当前相机图像 (BGR, H×W×3)
+            crop_image: 记忆中的 crop 子图 (BGR, H×W×3)
+            method: 匹配方案 (使用 DINOv3)
+
+        Returns:
+            SubImageMatchResult
         """
         try:
-            return _match_features(
+            strategy = self._get_strategy(method)
+            return strategy.match(
                 camera_image, crop_image,
                 min_matches=self.min_matches,
                 confidence_threshold=self.confidence_threshold,
             )
         except Exception as e:
-            logger.error(f"[SubImageMatcher] 匹配异常: {e}")
+            method_name = method or self.default_method
+            logger.error(f"[SubImageMatcher] {method_name} 匹配异常: {e}")
             return SubImageMatchResult(
                 found=False, confidence=0.0,
-                method=f"SuperPoint+LightGlue (异常: {e})"
+                method=f"{STRATEGY_DISPLAY_NAMES.get(method_name, method_name)} (异常: {e})"
             )
 
     def match_from_path(self, camera_image: np.ndarray,
-                        crop_image_path: str) -> SubImageMatchResult:
-        """
-        从文件路径加载 crop 图后匹配。
-
-        Args:
-            camera_image: 当前相机图像 (BGR)
-            crop_image_path: crop 子图文件路径
-
-        Returns:
-            SubImageMatchResult
-        """
+                        crop_image_path: str,
+                        method: Optional[str] = None) -> SubImageMatchResult:
+        """从文件路径加载 crop 图后匹配"""
         if not os.path.exists(crop_image_path):
             logger.warning(f"[SubImageMatcher] crop 文件不存在: {crop_image_path}")
             return SubImageMatchResult(
@@ -406,4 +436,14 @@ class SubImageMatcher:
                 method=f"图像读取失败: {crop_image_path}"
             )
 
-        return self.match(camera_image, crop_image)
+        return self.match(camera_image, crop_image, method=method)
+
+    @staticmethod
+    def available_methods() -> List[str]:
+        """返回所有可用方案名称"""
+        return list_strategies()
+
+    @staticmethod
+    def method_display_names() -> Dict[str, str]:
+        """返回方案名 → 显示名映射"""
+        return dict(STRATEGY_DISPLAY_NAMES)

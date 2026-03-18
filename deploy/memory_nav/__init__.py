@@ -34,7 +34,7 @@ from .effovpr_extractor import EffoVPRExtractor
 from .selavpr_extractor import SelaVPRExtractor
 from .vpr_factory import create_vpr_extractor
 from .memory_navigator import MemoryNavigator
-from .sub_image_matcher import SubImageMatcher, SubImageMatchResult
+from .sub_image_matcher import SubImageMatcher, SubImageMatchResult, list_strategies, STRATEGY_DISPLAY_NAMES
 
 __version__ = "3.0.0"
 __all__ = [
@@ -58,4 +58,6 @@ __all__ = [
     # 子图匹配
     "SubImageMatcher",
     "SubImageMatchResult",
+    "list_strategies",
+    "STRATEGY_DISPLAY_NAMES",
 ]

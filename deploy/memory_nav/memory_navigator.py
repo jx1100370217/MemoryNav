@@ -27,7 +27,7 @@ from .memory_builder import MemoryBuilder
 from .anyloc_extractor import AnyLocExtractor
 from .vpr_config_loader import load_vpr_config, get_threshold
 from .vpr_factory import create_vpr_extractor
-from .sub_image_matcher import SubImageMatcher, SubImageMatchResult
+from .sub_image_matcher import SubImageMatcher, SubImageMatchResult, list_strategies, STRATEGY_DISPLAY_NAMES
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,9 @@ class MemoryNavigator:
                  feature_dim: int = 768,
                  device: str = "cuda:0",
                  vpr_method: str = "selavpr",
-                 anyloc_config: dict = None):
+                 anyloc_config: dict = None,
+                 sub_image_method: str = "dinov3",
+                 preload_all_matchers: bool = False):
         """
         初始化导航器
         
@@ -77,9 +79,12 @@ class MemoryNavigator:
                 vpr_method=vpr_method, device=device, config=anyloc_config)
         
         # 子图匹配器
-        self.sub_image_matcher = SubImageMatcher(device=device)
+        self.sub_image_matcher = SubImageMatcher(device=device, default_method=sub_image_method)
         try:
-            self.sub_image_matcher.preload()  # 启动时加载模型，后续复用
+            if preload_all_matchers:
+                self.sub_image_matcher.preload_all()  # 启动时加载所有方案模型
+            else:
+                self.sub_image_matcher.preload()  # 只加载默认方案
         except Exception as e:
             logger.warning(f"[MemoryNavigator] SubImageMatcher 预加载失败(不影响VPR定位): {e}")
         

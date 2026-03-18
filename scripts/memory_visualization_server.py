@@ -1507,6 +1507,7 @@ HTML_TEMPLATE = '''
                     <div class="sim-panel">
                         <div class="sim-panel-title">🔍 子图匹配验证</div>
                         
+
                         <div class="form-label">原图 (相机图像)</div>
                         <div class="sim-upload-area" id="sim-orig-area" onclick="document.getElementById('sim-orig-file').click()">
                             <input type="file" id="sim-orig-file" accept="image/*" onchange="onSimFileChange('orig', this)">
@@ -2692,7 +2693,7 @@ class MemoryNavServer:
 
         try:
             # 先创建 Navigator（内部创建 VPR extractor + SubImageMatcher）
-            self.memory_navigator = MemoryNavigator(vpr_method=VPR_METHOD, device=VPR_DEVICE)
+            self.memory_navigator = MemoryNavigator(vpr_method=VPR_METHOD, device=VPR_DEVICE, preload_all_matchers=False)
 
             # 用 Navigator 的 load_memory 加载数据，内部复用同一个 extractor
             self.memory_navigator.load_memory(
@@ -2956,6 +2957,7 @@ class MemoryNavServer:
             # 读取参数
             confidence_threshold = float(request.form.get('confidence_threshold', 0.3))
             min_matches = int(request.form.get('min_matches', 8))
+            method = request.form.get('method', None)  # None = 使用默认方案
 
             # 临时调整参数
             old_conf = self.memory_navigator.sub_image_matcher.confidence_threshold
@@ -2964,7 +2966,7 @@ class MemoryNavServer:
             self.memory_navigator.sub_image_matcher.min_matches = min_matches
 
             try:
-                result = self.memory_navigator.sub_image_matcher.match(orig_img, crop_img)
+                result = self.memory_navigator.sub_image_matcher.match(orig_img, crop_img, method=method)
             finally:
                 self.memory_navigator.sub_image_matcher.confidence_threshold = old_conf
                 self.memory_navigator.sub_image_matcher.min_matches = old_min
@@ -3001,6 +3003,25 @@ class MemoryNavServer:
             }
 
             return jsonify(resp)
+
+        @self.app.route('/api/sub_image_match_methods')
+        def sub_image_match_methods():
+            """获取可用的子图匹配方案列表"""
+            from deploy.memory_nav.sub_image_matcher import list_strategies, STRATEGY_DISPLAY_NAMES
+            methods = []
+            for key in list_strategies():
+                methods.append({
+                    'key': key,
+                    'name': STRATEGY_DISPLAY_NAMES.get(key, key),
+                })
+            default_method = 'superpoint_lightglue'
+            if self.memory_navigator:
+                default_method = self.memory_navigator.sub_image_matcher.default_method
+            return jsonify({
+                'success': True,
+                'methods': methods,
+                'default': default_method,
+            })
 
                 # ========================================================================
         # 数据库管理 API

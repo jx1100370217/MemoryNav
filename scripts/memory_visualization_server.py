@@ -3014,7 +3014,7 @@ class MemoryNavServer:
                     'key': key,
                     'name': STRATEGY_DISPLAY_NAMES.get(key, key),
                 })
-            default_method = 'superpoint_lightglue'
+            default_method = 'dinov3'
             if self.memory_navigator:
                 default_method = self.memory_navigator.sub_image_matcher.default_method
             return jsonify({

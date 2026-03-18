@@ -917,6 +917,74 @@ def visualize_sub_image_match(camera_images, sub_match_result, pts=None, cache_a
 
 
 
+
+
+def visualize_qwen35_grounding(camera_images, grounding_result, landmark_name, pts=None):
+    """
+    在对应的 camera 图上标注 Qwen3.5 兜底打点结果，保存到 deploy/logs/images/
+
+    橙色十字准星 + 同心圆 + 地标名称标注
+
+    Args:
+        camera_images: {'camera_1': ndarray(BGR), ...}
+        grounding_result: fallback_point_grounding 返回的字典
+        landmark_name: 地标名称
+        pts: 时间戳（用于文件名）
+    """
+    if not grounding_result or not grounding_result.get("success"):
+        return
+    
+    camera_name = grounding_result.get("camera_name", "")
+    point = grounding_result.get("point")  # [x_norm, y_norm] in [0,1]
+    if not camera_name or camera_name not in camera_images or not point:
+        return
+
+    try:
+        img = camera_images[camera_name].copy()
+        img_h, img_w = img.shape[:2]
+
+        images_dir = os.path.join(LOG_DIR, 'images')
+        os.makedirs(images_dir, exist_ok=True)
+        ts = f"{pts}" if pts is not None else f"{int(time.time() * 1000)}"
+
+        px = int(point[0] * img_w)
+        py = int(point[1] * img_h)
+
+        # 橙色十字准星
+        color = (0, 140, 255)  # BGR orange
+        cv2.line(img, (px - 30, py), (px + 30, py), color, 3)
+        cv2.line(img, (px, py - 30), (px, py + 30), color, 3)
+        # 实心圆
+        cv2.circle(img, (px, py), 8, color, -1)
+        cv2.circle(img, (px, py), 10, (255, 255, 255), 2)
+        # 同心圆
+        cv2.circle(img, (px, py), 24, color, 2)
+        cv2.circle(img, (px, py), 40, color, 1)
+
+        # 坐标标注
+        coord_label = f"[{point[0]:.3f}, {point[1]:.3f}]"
+        cv2.putText(img, coord_label, (px + 15, py - 15),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+        # 顶部标注: Qwen3.5 + landmark
+        label = f"Qwen3.5: {landmark_name}"
+        cv2.rectangle(img, (0, 0), (len(label) * 14 + 20, 35), (0, 0, 0), -1)
+        cv2.putText(img, label, (10, 25),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+
+        latency = grounding_result.get("latency", 0)
+        if latency:
+            lat_label = f"{latency:.2f}s"
+            cv2.putText(img, lat_label, (img_w - 80, 25),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+
+        save_path = os.path.join(images_dir, f"{ts}_{camera_name}_qwen35.jpg")
+        cv2.imwrite(save_path, img)
+        logger.debug(f"[Qwen35Vis] 打点可视化已保存: {save_path}")
+
+    except Exception as e:
+        logger.warning(f"[Qwen35Vis] 可视化保存失败: {e}", exc_info=True)
+
 # ============================================================================
 # 核心推理函数 (带记忆导航)
 # ============================================================================
@@ -1164,6 +1232,8 @@ async def process_inference_with_memory(message_data, session_state, agent,
                             nav_state.fallback_action = [[0.0, 0.0, 0.0]]  # 打点模式不输出 action
                             logger.info(f"🤖 [Memory] Qwen3.5 兜底像素: {_fb_result['point']}, "
                                        f"camera={_fb_result.get('camera_name')}")
+                            # 保存打点可视化
+                            visualize_qwen35_grounding(camera_images, _fb_result, _fb_landmark, pts)
                         else:
                             logger.info(f"🤖 [Memory] Qwen3.5 兜底打点失败: {_fb_result.get('error', 'unknown')}")
 

@@ -39,8 +39,13 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(project_root / 'src/diffusion-policy'))
 
-# InternVLA 已替换为 Qwen3.5 打点方案
-# from internnav.agent.internvla_n1_agent_realworld import InternVLAN1AsyncAgent
+# InternVLA 作为非记忆模式的推理模型 (可选)
+try:
+    from internnav.agent.internvla_n1_agent_realworld import InternVLAN1AsyncAgent
+    INTERNVLA_AVAILABLE = True
+except ImportError:
+    INTERNVLA_AVAILABLE = False
+    InternVLAN1AsyncAgent = None
 
 # 记忆导航模块
 from deploy.memory_nav import (
@@ -235,7 +240,11 @@ class Args:
 
 
 def init_agent(model_path=None, device=None):
-    """初始化InternVLAN1AsyncAgent"""
+    """初始化InternVLAN1AsyncAgent (可选，不可用时返回 None)"""
+    if not INTERNVLA_AVAILABLE:
+        logger.warning("⚠️ InternVLA 不可用 (import 失败)，跳过加载。兜底模型使用 Qwen3.5。")
+        return None
+
     args = Args()
     if model_path:
         args.model_path = model_path
@@ -247,17 +256,20 @@ def init_agent(model_path=None, device=None):
     logger.info(f"图像尺寸: {args.resize_w}x{args.resize_h}")
     logger.info(f"历史帧数: {args.num_history}")
 
-    agent = InternVLAN1AsyncAgent(args)
+    try:
+        agent = InternVLAN1AsyncAgent(args)
 
-    logger.info("正在预热模型...")
-    dummy_rgb = np.zeros((480, 640, 3), dtype=np.uint8)
-    dummy_depth = np.zeros((480, 640), dtype=np.float32)
-    dummy_pose = np.eye(4)
-    agent.reset()
-    agent.step(dummy_rgb, dummy_depth, dummy_pose, "test", intrinsic=args.camera_intrinsic)
-    logger.info("模型加载完成！")
-
-    return agent
+        logger.info("正在预热模型...")
+        dummy_rgb = np.zeros((480, 640, 3), dtype=np.uint8)
+        dummy_depth = np.zeros((480, 640), dtype=np.float32)
+        dummy_pose = np.eye(4)
+        agent.reset()
+        agent.step(dummy_rgb, dummy_depth, dummy_pose, "test", intrinsic=args.camera_intrinsic)
+        logger.info("模型加载完成！")
+        return agent
+    except Exception as e:
+        logger.warning(f"⚠️ InternVLA 加载失败: {e}。兜底模型使用 Qwen3.5。")
+        return None
 
 
 def init_memory_navigator(device: str = "cuda:0", vpr_method: str = "selavpr") -> Optional[MemoryNavigator]:
@@ -1926,14 +1938,17 @@ async def main():
     logger.info(f"📊 VPR 方法: {vpr_method}, 设备: {vpr_device}")
     memory_navigator = init_memory_navigator(device=vpr_device, vpr_method=vpr_method)
 
-    # 启动时加载 InternVLA 模型
+    # 启动时加载 InternVLA 模型 (可选)
     logger.info("正在加载 InternVLA 模型...")
     global_agent = init_agent()
-    logger.info("InternVLA 模型加载完成！")
+    if global_agent is not None:
+        logger.info("InternVLA 模型加载完成！")
+    else:
+        logger.info("InternVLA 未加载，兜底模型使用 Qwen3.5 打点方案")
     if memory_navigator is not None:
         logger.info("✅ 记忆导航模块已就绪")
     else:
-        logger.warning("⚠️ 记忆导航模块初始化失败，将仅使用 InternVLA 推理")
+        logger.warning("⚠️ 记忆导航模块初始化失败")
 
     server = await websockets.serve(
         handle_client,

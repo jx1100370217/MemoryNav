@@ -59,9 +59,8 @@ def build_prompt(landmark_name: str) -> str:
     """构建打点 prompt，直接使用中文 landmark_name"""
     return (
         f'Point to "{landmark_name}" in this image. '
-        f'Output ONLY JSON: {{"point": [x, y], "confidence": c}} '
-        f'where x and y are pixel coordinates normalized to [0, 1000] range, '
-        f'and c is your confidence between 0.0 and 1.0.'
+        f'Output ONLY JSON: {{"point": [x, y]}} '
+        f'where coordinates are in [0, 1000] range.'
     )
 
 
@@ -150,8 +149,14 @@ def predict(image_b64: str, landmark_name: str):
         px_norm = result["point"][0] / 1000.0
         py_norm = result["point"][1] / 1000.0
 
-        # 使用模型输出的置信度，fallback 0.5
-        confidence = float(result.get("confidence", 0.5))
+        # 置信度: 模型输出了就用，否则根据输出是否为干净 JSON 给分
+        if "confidence" in result:
+            confidence = float(result["confidence"])
+        else:
+            # 干净 JSON 解析 = 0.7，fallback 数字解析 = 0.4
+            clean = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL).strip()
+            has_json = bool(re.search(r'\{[^{}]*"point"', clean))
+            confidence = 0.7 if has_json else 0.4
         confidence = max(0.0, min(1.0, confidence))
 
         return {

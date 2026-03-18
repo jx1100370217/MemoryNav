@@ -1668,6 +1668,33 @@ async def process_inference_with_memory(message_data, session_state, agent,
 
         look_down = message_data.get('look_down', False)
 
+        # InternVLA agent 检查 (默认不加载，按需启动)
+        if agent is None:
+            logger.warning("⚠️ InternVLA agent 未加载，尝试按需启动...")
+            try:
+                agent = init_agent()
+                if agent is None:
+                    logger.error("❌ InternVLA 加载失败，无法执行非记忆模式推理")
+                    session_state['request_count'] += 1
+                    return {
+                        "status": "error",
+                        "id": robot_id,
+                        "pts": pts,
+                        "message": "InternVLA 模型不可用，且记忆导航未匹配到路径",
+                    }
+                # 更新全局引用
+                global global_agent
+                global_agent = agent
+            except Exception as e:
+                logger.error(f"❌ InternVLA 按需加载失败: {e}")
+                session_state['request_count'] += 1
+                return {
+                    "status": "error",
+                    "id": robot_id,
+                    "pts": pts,
+                    "message": f"InternVLA 加载失败: {e}",
+                }
+
         # Agent 状态
         max_history_frames = agent.num_history if hasattr(agent, 'num_history') else 8
         current_history_count = len(agent.rgb_list) if hasattr(agent, 'rgb_list') else 0

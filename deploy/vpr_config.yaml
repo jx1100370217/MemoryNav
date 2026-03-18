@@ -21,7 +21,7 @@ order_invariant:
 
 # VPR 相似度阈值 (各方案独立设置)
 similarity_threshold:
-  selavpr: 0.60
+  selavpr: 0.70
   megaloc: 0.60
   effovpr: 0.80
   anyloc: 0.70

@@ -101,6 +101,39 @@ def parse_coordinates(response: str):
     return None
 
 
+def compute_token_confidence(scores, generated_ids):
+    """
+    从 generate 输出的 scores 计算 token 级别置信度
+
+    Args:
+        scores: tuple of (num_tokens,) tensors, each shape (1, vocab_size) — logits
+        generated_ids: tensor of generated token ids, shape (num_tokens,)
+
+    Returns:
+        float: 平均 token 概率，范围 [0, 1]
+    """
+    import torch.nn.functional as F
+
+    if not scores or len(scores) == 0:
+        return 0.5
+
+    probs_list = []
+    for i, score in enumerate(scores):
+        if i >= len(generated_ids):
+            break
+        # score: (1, vocab_size) → softmax → 取对应 token 的概率
+        prob = F.softmax(score[0], dim=-1)
+        token_prob = prob[generated_ids[i]].item()
+        probs_list.append(token_prob)
+
+    if not probs_list:
+        return 0.5
+
+    # 平均概率作为置信度
+    avg_prob = sum(probs_list) / len(probs_list)
+    return round(avg_prob, 4)
+
+
 def predict(image_b64: str, landmark_name: str):
     """执行推理"""
     # 解码图像
@@ -131,15 +164,21 @@ def predict(image_b64: str, landmark_name: str):
 
     t0 = time.time()
     with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.bfloat16):
-        gen_ids = MODEL.generate(
+        gen_output = MODEL.generate(
             **inputs,
             max_new_tokens=64,
             do_sample=False,
             use_cache=True,
+            return_dict_in_generate=True,
+            output_scores=True,
         )
+    gen_ids = gen_output.sequences
     gen_trimmed = gen_ids[:, inputs.input_ids.shape[1]:]
     response = PROCESSOR.batch_decode(gen_trimmed, skip_special_tokens=True)[0]
     latency = time.time() - t0
+
+    # 计算 token 级别置信度 (softmax 概率的均值)
+    token_confidence = compute_token_confidence(gen_output.scores, gen_trimmed[0])
 
     # 解析坐标
     result = parse_coordinates(response)
@@ -149,20 +188,10 @@ def predict(image_b64: str, landmark_name: str):
         px_norm = result["point"][0] / 1000.0
         py_norm = result["point"][1] / 1000.0
 
-        # 置信度: 模型输出了就用，否则根据输出是否为干净 JSON 给分
-        if "confidence" in result:
-            confidence = float(result["confidence"])
-        else:
-            # 干净 JSON 解析 = 0.7，fallback 数字解析 = 0.4
-            clean = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL).strip()
-            has_json = bool(re.search(r'\{[^{}]*"point"', clean))
-            confidence = 0.7 if has_json else 0.4
-        confidence = max(0.0, min(1.0, confidence))
-
         return {
             "status": "ok",
             "point": [round(px_norm, 4), round(py_norm, 4)],
-            "confidence": round(confidence, 2),
+            "confidence": token_confidence,
             "raw_response": response,
             "latency": round(latency, 3),
         }

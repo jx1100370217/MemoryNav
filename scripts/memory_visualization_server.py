@@ -1569,23 +1569,7 @@ HTML_TEMPLATE = '''
                 <div class="sim-layout">
                     <!-- 左侧: 控制面板 -->
                     <div class="sim-panel">
-                        <div class="sim-panel-title">🎯 模型打点验证</div>
-
-                        <div class="form-group">
-                            <label class="form-label">打点模型</label>
-                            <select id="gnd-method" onchange="onGndMethodChange()" style="width:100%; padding:8px; border:1px solid var(--border); border-radius:6px; background:var(--bg-card); color:var(--text)">
-                                <option value="dinov3">🚀 DINOv3 (快速, ~20ms, 需要 crop 参考图)</option>
-                                <option value="qwen35">🧠 Qwen3.5 (语义理解, ~1.5s)</option>
-                            </select>
-                        </div>
-
-                        <div id="gnd-crop-section" class="form-group" style="margin-top:8px">
-                            <label class="form-label">crop 参考图路径 (DINOv3 必填)</label>
-                            <input type="text" id="gnd-crop-path" placeholder="如: merged_labeled_data/6/crops/xxx.jpg 或留空自动从记忆图查找">
-                            <div style="margin-top:6px; font-size:11px; color:var(--text-dim)">
-                                💡 留空时将根据地标名自动从记忆图中查找 crop 参考图
-                            </div>
-                        </div>
+                        <div class="sim-panel-title">🎯 模型打点验证 (Qwen3.5)</div>
                         
                         <div class="form-label">上传图片</div>
                         <div class="sim-upload-area" id="gnd-img-area" onclick="document.getElementById('gnd-img-file').click()">
@@ -2740,12 +2724,6 @@ HTML_TEMPLATE = '''
             }
         }
 
-        function onGndMethodChange() {
-            const method = document.getElementById('gnd-method').value;
-            const cropSection = document.getElementById('gnd-crop-section');
-            cropSection.style.display = method === 'dinov3' ? 'block' : 'none';
-        }
-
         function clearGndInputs() {
             const area = document.getElementById('gnd-img-area');
             area.classList.remove('has-image');
@@ -2775,18 +2753,13 @@ HTML_TEMPLATE = '''
                 return;
             }
 
-            const method = document.getElementById('gnd-method').value;
-            const methodLabel = method === 'dinov3' ? 'DINOv3' : 'Qwen3.5';
-            document.getElementById('gnd-result-info').innerHTML = '<div class="loading"><div class="spinner"></div>' + methodLabel + ' 打点推理中...</div>';
+            document.getElementById('gnd-result-info').innerHTML = '<div class="loading"><div class="spinner"></div>Qwen3.5 打点推理中...</div>';
             document.getElementById('gnd-result-display').innerHTML = '<div style="text-align:center; padding:40px"><div class="spinner"></div></div>';
 
             try {
                 const fd = new FormData();
                 fd.append('image', imgInput.files[0]);
                 fd.append('landmark_name', landmark);
-                fd.append('method', method);
-                const cropPath = document.getElementById('gnd-crop-path').value.trim();
-                if (cropPath) fd.append('crop_path', cropPath);
 
                 const res = await fetch('/api/point_grounding', { method: 'POST', body: fd });
                 const data = await res.json();
@@ -2821,7 +2794,7 @@ HTML_TEMPLATE = '''
                         document.getElementById('gnd-result-display').innerHTML = `
                             <div class="sim-result-images">
                                 <div>
-                                    <div style="font-size:13px; font-weight:600; margin-bottom:8px">🎯 ${methodLabel} 打点结果</div>
+                                    <div style="font-size:13px; font-weight:600; margin-bottom:8px">🎯 Qwen3.5 打点结果</div>
                                     <img src="data:image/jpeg;base64,${data.annotated_image}" class="sim-result-img">
                                 </div>
                             </div>`;
@@ -3217,15 +3190,13 @@ class MemoryNavServer:
 
         @self.app.route('/api/point_grounding', methods=['POST'])
         def point_grounding():
-            """模型打点 (DINOv3 / Qwen3.5)"""
+            """Qwen3.5 模型打点"""
             import cv2
             import base64
 
             landmark_name = request.form.get('landmark_name', '').strip()
             if not landmark_name:
                 return jsonify({'success': False, 'error': '请输入地标名称 (landmark_name)'})
-
-            method = request.form.get('method', 'dinov3').strip()
 
             # 获取图片: 上传文件 或 服务器路径
             image = None
@@ -3248,51 +3219,16 @@ class MemoryNavServer:
             if self.memory_navigator is None:
                 return jsonify({'success': False, 'error': 'memory_nav 未初始化'})
 
-            if method == 'dinov3':
-                # === DINOv3 打点 ===
-                grounder = self.memory_navigator.dinov3_grounder
-                if not grounder.is_ready:
-                    try:
-                        grounder.start()
-                    except Exception as e:
-                        return jsonify({'success': False, 'error': f'DINOv3 启动失败: {e}'})
+            # 使用 MemoryNavigator 中的 Qwen3.5 打点器 (模型在 ws_proxy 启动时加载)
+            grounder = self.memory_navigator.qwen35_grounder
+            if not grounder.is_ready:
+                try:
+                    grounder.start()
+                except Exception as e:
+                    return jsonify({'success': False, 'error': f'Qwen3.5 启动失败: {e}'})
 
-                # 获取 crop 参考图路径
-                crop_paths = {}
-                crop_path_input = request.form.get('crop_path', '').strip()
-                if crop_path_input:
-                    # 用户手动指定 crop 路径
-                    if not os.path.isabs(crop_path_input):
-                        crop_path_input = str(project_root / crop_path_input)
-                    if os.path.exists(crop_path_input):
-                        crop_paths = {'big': crop_path_input}
-                    else:
-                        return jsonify({'success': False, 'error': f'crop 图不存在: {crop_path_input}'})
-                else:
-                    # 自动从记忆图中查找匹配 landmark_name 的 crop
-                    if self.memory_graph:
-                        for node_id, node in self.memory_graph.nodes.items():
-                            for edge in node.edges:
-                                if edge.landmark_name == landmark_name and edge.crop_image_paths:
-                                    crop_paths = edge.crop_image_paths
-                                    break
-                            if crop_paths:
-                                break
-                    if not crop_paths:
-                        return jsonify({'success': False,
-                                       'error': f'未找到地标 "{landmark_name}" 的 crop 参考图，请手动指定路径'})
-
-                result = grounder.predict(image, landmark_name, crop_paths)
-            else:
-                # === Qwen3.5 打点 ===
-                grounder = self.memory_navigator.qwen35_grounder
-                if not grounder.is_ready:
-                    try:
-                        grounder.start()
-                    except Exception as e:
-                        return jsonify({'success': False, 'error': f'Qwen3.5 启动失败: {e}'})
-
-                result = grounder.predict(image, landmark_name)
+            # 执行打点
+            result = grounder.predict(image, landmark_name)
 
             # 绘制标注图 (PIL 绘制中文)
             from PIL import Image as PILImage, ImageDraw as PILDraw, ImageFont as PILFont
@@ -3337,7 +3273,7 @@ class MemoryNavServer:
                 px, py = result['point_pixel']
                 coord_label = f"[{result['point'][0]:.3f}, {result['point'][1]:.3f}]"
                 draw.text((px + 15, py - 20), coord_label, fill=color_rgb, font=font_small)
-                label = f"{'DINOv3' if method == 'dinov3' else 'Qwen3.5'}: {landmark_name}"
+                label = f"Qwen3.5: {landmark_name}"
                 bbox_t = draw.textbbox((0, 0), label, font=font_large)
                 text_w = bbox_t[2] - bbox_t[0] + 20
                 draw.rectangle([(0, 0), (text_w, 32)], fill=(0, 0, 0))

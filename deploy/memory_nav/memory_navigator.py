@@ -29,7 +29,6 @@ from .vpr_config_loader import load_vpr_config, get_threshold
 from .vpr_factory import create_vpr_extractor
 from .sub_image_matcher import SubImageMatcher, SubImageMatchResult, list_strategies, STRATEGY_DISPLAY_NAMES
 from .qwen35_point_grounder import Qwen35PointGrounder
-from .dinov3_point_grounder import DINOv3PointGrounder
 
 logger = logging.getLogger(__name__)
 
@@ -92,30 +91,13 @@ class MemoryNavigator:
         except Exception as e:
             logger.warning(f"[MemoryNavigator] SubImageMatcher 预加载失败(不影响VPR定位): {e}")
         
-        # Qwen3.5 打点器 (兜底模型 - 第二优先级)
+        # Qwen3.5 打点器 (兜底模型)
         self.qwen35_grounder = Qwen35PointGrounder(gpu=qwen35_gpu)
         if preload_qwen35:
             try:
                 self.qwen35_grounder.start()
             except Exception as e:
                 logger.warning(f"[MemoryNavigator] Qwen3.5 打点器预加载失败: {e}")
-
-        # DINOv3 兜底打点器 (第一优先级, 快速)
-        self.dinov3_grounder = DINOv3PointGrounder(device=device)
-        try:
-            # 尝试从 SubImageMatcher 共享 DINOv3 模型
-            dinov3_strategy = self.sub_image_matcher._strategies.get("dinov3")
-            if dinov3_strategy and dinov3_strategy._model is not None:
-                self.dinov3_grounder.share_model(
-                    dinov3_strategy._model,
-                    dinov3_strategy._patch_size,
-                    dinov3_strategy._feature_dim,
-                )
-                logger.info("[MemoryNavigator] DINOv3 兜底打点器: 共享 SubImageMatcher 模型")
-            else:
-                self.dinov3_grounder.start()
-        except Exception as e:
-            logger.warning(f"[MemoryNavigator] DINOv3 兜底打点器加载失败: {e}")
         
         # 当前导航状态
         self.current_node_id: Optional[str] = None
@@ -571,40 +553,6 @@ class MemoryNavigator:
         
         return result
 
-
-    def fallback_dinov3_grounding(self, camera_images, step, target_camera=None):
-        """
-        DINOv3 快速兜底打点
-
-        利用导航步骤中的 crop 参考图，通过 DINOv3 patch 特征在相机图中
-        定位最相似区域的中心点。比 Qwen3.5 快 20 倍。
-        """
-        if not self.dinov3_grounder.is_ready:
-            try:
-                self.dinov3_grounder.start()
-            except Exception as e:
-                logger.error(f"[MemoryNavigator] DINOv3 启动失败: {e}")
-                return {"success": False, "error": str(e), "point": None,
-                        "point_pixel": None, "confidence": 0.0, "method": "dinov3"}
-
-        crop_paths = step.crop_image_paths if step else {}
-        landmark_name = step.landmark_name if step else ""
-
-        result = self.dinov3_grounder.predict_on_camera(
-            camera_images, landmark_name, crop_paths, target_camera
-        )
-
-        if result["success"]:
-            logger.info(f"[MemoryNavigator] DINOv3 兜底打点成功: "
-                       f"camera={result.get('camera_name')}, "
-                       f"landmark=\'{landmark_name}\', "
-                       f"point={result['point']}, "
-                       f"conf={result['confidence']:.4f}")
-        else:
-            logger.info(f"[MemoryNavigator] DINOv3 兜底打点失败: "
-                       f"landmark=\'{landmark_name}\', error={result.get('error')}")
-
-        return result
 
     def fallback_point_grounding(self, camera_images: Dict[str, np.ndarray],
                                   landmark_name: str,

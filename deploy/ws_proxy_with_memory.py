@@ -280,8 +280,10 @@ def init_memory_navigator(device: str = "cuda:0", vpr_method: str = "selavpr") -
         MemoryNavigator 实例，初始化失败返回 None
     """
     try:
-        logger.info("="*80)
-        logger.info("[Memory] 开始初始化记忆导航模块...")
+        logger.info("")
+        logger.info("┌───────────────────────────────────────────────────────┐")
+        logger.info("│            🧠 记忆导航模块初始化                      │")
+        logger.info("└───────────────────────────────────────────────────────┘")
 
         # 创建 VPR 导航器 (支持: anyloc, megaloc, effovpr, selavpr)
         navigator = MemoryNavigator(
@@ -289,12 +291,12 @@ def init_memory_navigator(device: str = "cuda:0", vpr_method: str = "selavpr") -
             device=device,
             qwen35_gpu="1"
         )
-        logger.info(f"[Memory] {vpr_method.upper()} VPR 导航器已创建 (dim={navigator.feature_dim}, device={device})")
+        logger.info(f"  ├─ VPR 模型:    {vpr_method.upper()} (dim={navigator.feature_dim}, device={device})")
+        logger.info(f"  ├─ 子图匹配:    DINOv3 (device={device})")
+        logger.info(f"  ├─ 缓存路径:    {MEMORY_CACHE_PATH}")
+        logger.info(f"  ├─ 数据目录:    {MEMORY_DATA_DIR}")
 
-        # 尝试加载记忆数据
-        logger.info(f"[Memory] 记忆缓存路径: {MEMORY_CACHE_PATH}")
-        logger.info(f"[Memory] 记忆数据目录: {MEMORY_DATA_DIR}")
-
+        # 加载记忆数据
         navigator.load_memory(
             path=MEMORY_CACHE_PATH,
             data_dir=MEMORY_DATA_DIR
@@ -303,16 +305,17 @@ def init_memory_navigator(device: str = "cuda:0", vpr_method: str = "selavpr") -
         # 打印已加载的记忆信息
         if navigator.graph:
             stats = navigator.graph.get_stats()
-            logger.info(f"[Memory] 记忆图加载完成: {stats['total_nodes']} 节点, {stats['total_edges']} 边")
             all_dests = navigator.get_all_destinations()
-            logger.info(f"[Memory] 可用目的地 ({len(all_dests)}):")
-            for nid, nname in all_dests:
-                logger.info(f"  - {nid}: {nname}")
+            logger.info(f"  ├─ 记忆图:      {stats['total_nodes']} 个节点, {stats['total_edges']} 条边")
+            logger.info(f"  ├─ 可用目的地:  {len(all_dests)} 个")
+            dest_names = [nname for _, nname in all_dests]
+            for i in range(0, len(dest_names), 4):
+                batch = dest_names[i:i+4]
+                logger.info(f"  │                {', '.join(batch)}")
         else:
-            logger.warning("[Memory] 记忆图为空")
+            logger.warning("  ├─ 记忆图:      ⚠️ 为空")
 
-        logger.info("[Memory] 记忆导航模块初始化完成！")
-        logger.info("="*80)
+        logger.info("  └─ 状态:        ✅ 初始化完成")
         return navigator
 
     except Exception as e:
@@ -2055,71 +2058,86 @@ async def main():
 
     # 切换工作目录到项目根目录
     os.chdir(project_root)
-    logger.info("🚀 启动 InternNav WebSocket服务器 (带记忆导航)...")
-    logger.info(f"📂 工作目录: {os.getcwd()}")
+    logger.info("")
+    logger.info("╔═══════════════════════════════════════════════════════════╗")
+    logger.info("║         🚀 MemoryNav WebSocket 服务器启动中...           ║")
+    logger.info("╚═══════════════════════════════════════════════════════════╝")
+    logger.info(f"  📂 工作目录: {os.getcwd()}")
+    logger.info("")
 
-    # 初始化记忆导航模块 (从 deploy/vpr_config.yaml 统一配置)
+    # ── 1. 加载 VPR 配置 ──
     from deploy.memory_nav.vpr_config_loader import load_vpr_config
     _vpr_cfg = load_vpr_config()
     vpr_method = _vpr_cfg['vpr_method']
     vpr_device = _vpr_cfg['device']
-    logger.info(f"📊 VPR 方法: {vpr_method}, 设备: {vpr_device}")
+
+    # ── 2. 初始化记忆导航模块 ──
     memory_navigator = init_memory_navigator(device=vpr_device, vpr_method=vpr_method)
 
-    # InternVLA 默认不加载，需要时按需启动
-    global_agent = None
-    logger.info("InternVLA 模型默认不加载，需要时按需启动")
-    if memory_navigator is not None:
-        logger.info("✅ 记忆导航模块已就绪")
-        # 启动时预加载 Qwen3.5 打点模型
-        try:
-            logger.info("正在加载 Qwen3.5 打点模型...")
-            memory_navigator.qwen35_grounder.start()
-            logger.info("✅ Qwen3.5 打点模型加载完成！")
-        except Exception as e:
-            logger.warning(f"⚠️ Qwen3.5 打点模型加载失败 (将在首次使用时重试): {e}")
-    else:
-        logger.warning("⚠️ 记忆导航模块初始化失败")
+    # ── 3. 加载推理模型 ──
+    logger.info("")
+    logger.info("┌───────────────────────────────────────────────────────┐")
+    logger.info("│            📦 推理模型加载                            │")
+    logger.info("└───────────────────────────────────────────────────────┘")
 
+    global_agent = None
+    logger.info("  ├─ InternVLA:    按需加载 (默认不启动)")
+
+    qwen35_status = "❌ 未加载"
+    if memory_navigator is not None:
+        try:
+            memory_navigator.qwen35_grounder.start()
+            qwen35_gpu = getattr(memory_navigator.qwen35_grounder, 'gpu_id', '?')
+            qwen35_status = f"✅ 已加载 (GPU={qwen35_gpu})"
+        except Exception as e:
+            qwen35_status = f"⚠️ 加载失败，首次使用时重试 ({e})"
+    logger.info(f"  └─ Qwen3.5:      {qwen35_status}")
+
+    # ── 4. 启动 WebSocket 服务 ──
+    WS_PORT = 9528
     server = await websockets.serve(
         handle_client,
         "0.0.0.0",
-        9528,  # 端口 9528 (区别于 ws_proxy.py 的 9527)
+        WS_PORT,
         open_timeout=60,
         ping_interval=30,
         ping_timeout=10,
         max_size=50*1024*1024
     )
 
-    logger.info("=" * 80)
-    logger.info("✅ InternNav WebSocket服务器已启动 (带记忆导航)")
-    logger.info(f"   端口: 9528")
-    logger.info(f"   记忆导航: {'已启用' if memory_navigator else '未启用（初始化失败）'}")
-    logger.info("=" * 80)
-    logger.info("📚 输入格式:")
-    logger.info("    - id: 机器人ID")
-    logger.info("    - pts: 时间戳 (毫秒)")
-    logger.info("    - task: 导航指令 (如 '去前台')")
-    logger.info("    - images:")
-    logger.info("        - front_1: base64编码的前置图像 (必需)")
-    logger.info("        - camera_1~4: 环视相机图像 (记忆导航需要)")
-    logger.info("📚 输出格式:")
-    logger.info("    - status: 'success' / 'error'")
-    logger.info("    - id: 机器人ID")
-    logger.info("    - pts: 时间戳")
-    logger.info("    - task_status: 'executing' / 'end'")
-    logger.info("    - action: [[x, y, yaw], ...]")
-    logger.info("    - camera_name: 目标相机 (camera_1~4, 仅记忆导航模式)")
-    logger.info("    - landmark_name: 注意力目标地标 (仅记忆导航模式)")
-    logger.info("    - sub_image_match: 子图匹配结果 (仅记忆导航模式)")
-    logger.info("    - memory_active: bool")
-    logger.info("    - memory_info: {...} (仅记忆导航模式)")
-    logger.info("🔧 命令:")
-    logger.info("    - command: 'reset' (重置Agent + 记忆状态)")
-    logger.info("    - command: 'session_status' (查看会话状态)")
-    logger.info("    - command: 'toggle_memory' (切换记忆导航开关)")
-    logger.info("    - command: 'memory_status' (查看记忆导航详情)")
-    logger.info("    - command: 'reset_memory' (仅重置记忆状态)")
+    # ── 启动完成汇总 ──
+    memory_ok = "✅ 已启用" if memory_navigator else "❌ 初始化失败"
+    logger.info("")
+    logger.info("╔═══════════════════════════════════════════════════════════╗")
+    logger.info("║         ✅ MemoryNav 服务器启动完成                      ║")
+    logger.info("╠═══════════════════════════════════════════════════════════╣")
+    logger.info(f"║  🌐 监听端口:     ws://0.0.0.0:{WS_PORT}")
+    logger.info(f"║  🧠 记忆导航:     {memory_ok}")
+    logger.info(f"║  🤖 兜底打点:     Qwen3.5-9B  |  {qwen35_status}")
+    logger.info(f"║  🔍 子图匹配:     DINOv3 密集特征匹配")
+    logger.info(f"║  📊 VPR 方法:     {vpr_method.upper()} (device={vpr_device})")
+    logger.info("╠═══════════════════════════════════════════════════════════╣")
+    logger.info("║  📚 API 协议                                             ║")
+    logger.info("║  ┌─ 输入字段 ────────────────────────────────────────┐   ║")
+    logger.info("║  │  id        机器人ID                                │   ║")
+    logger.info("║  │  pts       时间戳 (ms)                             │   ║")
+    logger.info("║  │  task      导航指令 (如 '去前台')                   │   ║")
+    logger.info("║  │  images    front_1(必需) + camera_1~4(记忆导航)     │   ║")
+    logger.info("║  └────────────────────────────────────────────────────┘   ║")
+    logger.info("║  ┌─ 输出字段 ────────────────────────────────────────┐   ║")
+    logger.info("║  │  status / task_status / action / memory_active     │   ║")
+    logger.info("║  │  camera_name / landmark_name / sub_image_match     │   ║")
+    logger.info("║  │  memory_info                                       │   ║")
+    logger.info("║  └────────────────────────────────────────────────────┘   ║")
+    logger.info("║  ┌─ 控制命令 ────────────────────────────────────────┐   ║")
+    logger.info("║  │  reset           重置 Agent + 记忆状态             │   ║")
+    logger.info("║  │  session_status  查看会话状态                       │   ║")
+    logger.info("║  │  toggle_memory   切换记忆导航开关                   │   ║")
+    logger.info("║  │  memory_status   查看记忆导航详情                   │   ║")
+    logger.info("║  │  reset_memory    仅重置记忆状态                     │   ║")
+    logger.info("║  └────────────────────────────────────────────────────┘   ║")
+    logger.info("╚═══════════════════════════════════════════════════════════╝")
+    logger.info("")
 
     await server.wait_closed()
 

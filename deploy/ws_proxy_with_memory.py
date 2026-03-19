@@ -1237,7 +1237,8 @@ async def process_inference_with_memory(message_data, session_state, agent,
             _sub_match = _cache_or_reuse_sub_match(nav_state, _sub_match, nav_state.last_query_features, _cache_cam_name)
             visualize_sub_image_match(camera_images, _sub_match, pts, cache_action=nav_state.last_cache_action)
 
-            # ---- Qwen3.5 兜底打点: 子图匹配失败且无缓存时 ----
+            # ---- 兜底打点: 子图匹配失败且无缓存时 ----
+            # 优先级: DINOv3 (快, ~50ms) → Qwen3.5 (慢, ~1.5s)
             nav_state.fallback_action = None
             nav_state.fallback_pixel_target = None
             nav_state.fallback_instruction = None
@@ -1246,29 +1247,49 @@ async def process_inference_with_memory(message_data, session_state, agent,
                 _fb_landmark = getattr(_fb_step, 'landmark_name', '') if _fb_step else ''
                 if _fb_landmark and navigator:
                     nav_state.fallback_instruction = _fb_landmark
-                    logger.info(f"🤖 [Memory] 子图匹配无结果，启动 Qwen3.5 兜底打点: '{_fb_landmark}'")
-                    try:
-                        _fb_target_camera = getattr(_fb_step, 'camera_name', None)
-                        _fb_start = time.time()
-                        _fb_result = await asyncio.to_thread(
-                            navigator.fallback_point_grounding,
-                            camera_images, _fb_landmark, _fb_target_camera
-                        )
-                        _fb_time = time.time() - _fb_start
-                        logger.info(f"🤖 [Memory] Qwen3.5 兜底打点完成: {_fb_time:.2f}s")
+                    _fb_target_camera = getattr(_fb_step, 'camera_name', None)
+                    _fb_result = None
 
-                        if _fb_result.get("success") and _fb_result.get("point"):
-                            nav_state.fallback_pixel_target = _fb_result["point"]
-                            nav_state.fallback_action = [[0.0, 0.0, 0.0]]  # 打点模式不输出 action
-                            logger.info(f"🤖 [Memory] Qwen3.5 兜底像素: {_fb_result['point']}, "
-                                       f"camera={_fb_result.get('camera_name')}")
-                            # 保存打点可视化
-                            visualize_qwen35_grounding(camera_images, _fb_result, _fb_landmark, pts)
-                        else:
-                            logger.info(f"🤖 [Memory] Qwen3.5 兜底打点失败: {_fb_result.get('error', 'unknown')}")
+                    # === 第一优先级: DINOv3 兜底 (快速, 基于 crop 参考图) ===
+                    if _fb_step and _fb_step.crop_image_paths:
+                        try:
+                            logger.info(f"🤖 [Memory] 子图匹配无结果，启动 DINOv3 兜底打点: '{_fb_landmark}'")
+                            _fb_start = time.time()
+                            _fb_result = await asyncio.to_thread(
+                                navigator.fallback_dinov3_grounding,
+                                camera_images, _fb_step, _fb_target_camera
+                            )
+                            _fb_time = time.time() - _fb_start
+                            logger.info(f"🤖 [Memory] DINOv3 兜底打点完成: {_fb_time:.3f}s, "
+                                       f"success={_fb_result.get('success')}")
+                        except Exception as e:
+                            logger.warning(f"🤖 [Memory] DINOv3 兜底推理异常: {e}", exc_info=True)
+                            _fb_result = None
 
-                    except Exception as e:
-                        logger.warning(f"🤖 [Memory] Qwen3.5 兜底推理异常: {e}", exc_info=True)
+                    # === 第二优先级: Qwen3.5 兜底 (DINOv3 失败时) ===
+                    if not (_fb_result and _fb_result.get("success")):
+                        try:
+                            logger.info(f"🤖 [Memory] DINOv3 未命中，启动 Qwen3.5 兜底打点: '{_fb_landmark}'")
+                            _fb_start = time.time()
+                            _fb_result = await asyncio.to_thread(
+                                navigator.fallback_point_grounding,
+                                camera_images, _fb_landmark, _fb_target_camera
+                            )
+                            _fb_time = time.time() - _fb_start
+                            logger.info(f"🤖 [Memory] Qwen3.5 兜底打点完成: {_fb_time:.2f}s")
+                        except Exception as e:
+                            logger.warning(f"🤖 [Memory] Qwen3.5 兜底推理异常: {e}", exc_info=True)
+
+                    # === 处理结果 ===
+                    if _fb_result and _fb_result.get("success") and _fb_result.get("point"):
+                        _fb_method = _fb_result.get("method", "unknown")
+                        nav_state.fallback_pixel_target = _fb_result["point"]
+                        nav_state.fallback_action = [[0.0, 0.0, 0.0]]
+                        logger.info(f"🤖 [Memory] 兜底打点成功 ({_fb_method}): "
+                                   f"pixel={_fb_result['point']}, camera={_fb_result.get('camera_name')}")
+                        visualize_qwen35_grounding(camera_images, _fb_result, _fb_landmark, pts)
+                    elif _fb_result:
+                        logger.info(f"🤖 [Memory] 兜底打点全部失败: {_fb_result.get('error', 'unknown')}")
 
             step = nav_state.get_current_step()
             if step is None:

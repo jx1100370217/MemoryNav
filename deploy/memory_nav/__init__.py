@@ -36,6 +36,7 @@ from .vpr_factory import create_vpr_extractor
 from .memory_navigator import MemoryNavigator
 from .sub_image_matcher import SubImageMatcher, SubImageMatchResult, list_strategies, STRATEGY_DISPLAY_NAMES
 from .qwen35_point_grounder import Qwen35PointGrounder
+from .dinov3_point_grounder import DINOv3PointGrounder
 
 __version__ = "3.0.0"
 __all__ = [

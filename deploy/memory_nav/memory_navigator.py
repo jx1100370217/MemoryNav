@@ -54,7 +54,7 @@ class MemoryNavigator:
                  anyloc_config: dict = None,
                  sub_image_method: str = "dinov3",
                  preload_all_matchers: bool = False,
-                 qwen35_gpu: str = "1,2,3",
+                 qwen35_gpu: str = "1",
                  preload_qwen35: bool = False):
         """
         初始化导航器

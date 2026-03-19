@@ -2854,7 +2854,7 @@ class MemoryNavServer:
 
         try:
             # 先创建 Navigator（内部创建 VPR extractor + SubImageMatcher）
-            self.memory_navigator = MemoryNavigator(vpr_method=VPR_METHOD, device=VPR_DEVICE, preload_all_matchers=False, qwen35_gpu="0")
+            self.memory_navigator = MemoryNavigator(vpr_method=VPR_METHOD, device=VPR_DEVICE, preload_all_matchers=False, qwen35_gpu="1")
 
             # 用 Navigator 的 load_memory 加载数据，内部复用同一个 extractor
             self.memory_navigator.load_memory(

@@ -34,7 +34,7 @@ _SERVER_SCRIPT = os.path.join(_SCRIPT_DIR, "qwen35_grounding_server.py")
 CONDA_ENV = "qwen3"
 
 # 默认 GPU (供子进程使用)
-DEFAULT_GPU = "0"
+DEFAULT_GPU = "1"
 
 
 class Qwen35PointGrounder:

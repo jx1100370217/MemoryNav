@@ -287,7 +287,7 @@ def init_memory_navigator(device: str = "cuda:0", vpr_method: str = "selavpr") -
         navigator = MemoryNavigator(
             vpr_method=vpr_method,
             device=device,
-            qwen35_gpu="0"
+            qwen35_gpu="1"
         )
         logger.info(f"[Memory] {vpr_method.upper()} VPR 导航器已创建 (dim={navigator.feature_dim}, device={device})")
 

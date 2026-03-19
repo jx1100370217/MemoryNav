@@ -236,25 +236,39 @@ class Qwen35PointGrounder:
                 ...
             }
         """
-        cameras_to_try = [target_camera] if target_camera else sorted(camera_images.keys())
+        if target_camera:
+            # 优先尝试指定相机，失败后尝试其余相机
+            cameras_to_try = [target_camera] + [c for c in sorted(camera_images.keys()) if c != target_camera]
+        else:
+            cameras_to_try = sorted(camera_images.keys())
 
         best_result = None
         best_confidence = -1.0
 
+        tried_cameras = []
         for cam_name in cameras_to_try:
             if cam_name not in camera_images:
                 continue
 
+            tried_cameras.append(cam_name)
             result = self.predict(camera_images[cam_name], landmark_name)
             result["camera_name"] = cam_name
 
             if result["success"] and result["confidence"] > best_confidence:
                 best_result = result
                 best_confidence = result["confidence"]
+                # 找到高置信度结果，提前退出（兜底场景不需要遍历所有相机）
+                if best_confidence >= 0.5:
+                    break
 
         if best_result:
+            logger.info(f"[Qwen35] predict_on_camera 成功: camera={best_result['camera_name']}, "
+                       f"landmark='{landmark_name}', conf={best_confidence:.4f}, "
+                       f"tried={tried_cameras}")
             return best_result
 
+        logger.warning(f"[Qwen35] predict_on_camera 全部失败: landmark='{landmark_name}', "
+                      f"tried={tried_cameras}, target_camera={target_camera}")
         return {
             "success": False,
             "camera_name": cameras_to_try[0] if cameras_to_try else "",

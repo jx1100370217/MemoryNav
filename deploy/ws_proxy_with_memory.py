@@ -736,7 +736,7 @@ def build_memory_response(
         "pts": pts,
         "task_status": task_status,
         "action": _action,
-        "pixel_target": _pixel,
+        "pixel_target": None,
         "camera_name": sub_image_match.get('camera_name') if sub_image_match else None,
         "landmark_name": step.landmark_name,
         "landmark_name_eng": getattr(step, 'landmark_name_eng', ''),
@@ -1571,7 +1571,7 @@ async def process_inference_with_memory(message_data, session_state, agent,
                             "pts": pts,
                             "task_status": "executing",
                             "action": _trend_action,
-                            "pixel_target": _trend_pixel,
+                            "pixel_target": None,
                             "camera_name": step.camera_name if step else None,
                             "landmark_name": step.landmark_name if step else None,
                             "sub_image_match": _sub_match,
@@ -1930,7 +1930,8 @@ async def process_inference_with_memory(message_data, session_state, agent,
         if dual_sys_output.output_pixel is not None:
             pixel_y_normalized = dual_sys_output.output_pixel[0] / 480.0
             pixel_x_normalized = dual_sys_output.output_pixel[1] / 640.0
-            response["pixel_target"] = [pixel_x_normalized, pixel_y_normalized]
+            # pixel_target 不输出（统一置 None，action 计算不受影响）
+            # response["pixel_target"] = [pixel_x_normalized, pixel_y_normalized]
             logger.info(f"  └─ 像素目标: [y={dual_sys_output.output_pixel[0]}, x={dual_sys_output.output_pixel[1]}]")
             logger.info(f"     归一化: [x={pixel_x_normalized:.4f}, y={pixel_y_normalized:.4f}]")
 
@@ -2181,7 +2182,7 @@ async def main():
     logger.info(f"  └─ Qwen3.5:      {qwen35_status}")
 
     # ── 4. 启动 WebSocket 服务 ──
-    WS_PORT = 9528
+    WS_PORT = 9527
     server = await websockets.serve(
         handle_client,
         "0.0.0.0",

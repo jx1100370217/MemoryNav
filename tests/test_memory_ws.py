@@ -32,7 +32,7 @@ import base64
 import time
 from collections import defaultdict
 
-WS_URL = "ws://127.0.0.1:9528"
+WS_URL = "ws://127.0.0.1:9527"
 PROJECT_ROOT = "/home/ubuntu/Disk/codes/jianxiong/MemoryNav"
 DATA_DIR = os.path.join(PROJECT_ROOT, "memory_test_data")
 TASK = "前往C8前台"

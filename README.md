@@ -11,7 +11,7 @@
 
 基于视觉位置识别（VPR）和拓扑地图的机器人记忆导航系统
 
-[English](README_EN.md) | **中文**
+[English](README_EN.md) | [日本語](README_JA.md) | [한국어](README_KO.md) | **中文**
 
 </div>
 

@@ -11,7 +11,7 @@
 
 A robot memory navigation system based on Visual Place Recognition (VPR) and topological maps
 
-**中文** | [Chinese](README.md)
+[Chinese](README.md) | [日本語](README_JA.md) | [한국어](README_KO.md) | **English**
 
 </div>
 

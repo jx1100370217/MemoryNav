@@ -54,6 +54,17 @@ from deploy.memory_nav import (
     NavigationPlan, NavigationStep, VPRResult
 )
 
+# 鱼眼去畸变 + 坐标变换
+from deploy.memory_nav.fisheye_undistort import FisheyeUndistorter
+from deploy.memory_nav.coord_transform import (
+    pixel_target_to_action,
+    pixel_norm_to_angle,
+    estimate_distance_from_ynorm,
+    get_camera_azimuth,
+    DEFAULT_FOV, DEFAULT_WIDTH, DEFAULT_HEIGHT,
+    DEFAULT_CAMERA_HEIGHT, DEFAULT_PITCH_UP,
+)
+
 
 # ============================================================================
 # 日志配置
@@ -111,6 +122,9 @@ agent_lock = asyncio.Lock()
 
 # 记忆导航全局实例
 memory_navigator: Optional[MemoryNavigator] = None
+
+# 鱼眼去畸变全局实例
+fisheye_undistorter: Optional[FisheyeUndistorter] = None
 
 # 记忆数据路径
 MEMORY_DATA_DIR = "merged_labeled_data"
@@ -316,6 +330,20 @@ def init_memory_navigator(device: str = "cuda:0", vpr_method: str = "selavpr") -
             logger.warning("  ├─ 记忆图:      ⚠️ 为空")
 
         logger.info("  └─ 状态:        ✅ 初始化完成")
+
+        # 初始化鱼眼去畸变
+        global fisheye_undistorter
+        try:
+            fisheye_undistorter = FisheyeUndistorter.from_yaml()
+            if fisheye_undistorter.is_ready:
+                logger.info(f"  📷 鱼眼去畸变:  ✅ 已加载 ({len(fisheye_undistorter.cameras)} 个相机)")
+            else:
+                logger.warning("  📷 鱼眼去畸变:  ⚠️ 参数文件缺失，跳过去畸变")
+                fisheye_undistorter = None
+        except Exception as e:
+            logger.warning(f"  📷 鱼眼去畸变:  ⚠️ 初始化失败: {e}")
+            fisheye_undistorter = None
+
         return navigator
 
     except Exception as e:
@@ -566,6 +594,42 @@ def decode_camera_images(message_data: dict) -> Optional[Dict[str, np.ndarray]]:
 
 
 
+def _pixel_target_to_robot_action(x_norm, y_norm, camera_id,
+                                  fov=DEFAULT_FOV, width=DEFAULT_WIDTH,
+                                  height=DEFAULT_HEIGHT,
+                                  camera_height=DEFAULT_CAMERA_HEIGHT,
+                                  pitch_up=DEFAULT_PITCH_UP):
+    """
+    将归一化像素目标 (x_norm, y_norm) + camera_id 转换为机器人运动坐标 [x, y, 0.0]
+
+    复用 coord_transform.pixel_target_to_action 的完整管线：
+      1. x_norm → 柱面水平角 → 加相机方位角 → 全局 yaw
+      2. y_norm → 柱面垂直角 → 俯仰角 → 距离估算
+      3. yaw + distance → (x_forward, y_lateral)
+
+    Returns:
+        action: [x_forward, y_lateral, 0.0]
+        debug: 调试信息字典
+    """
+    try:
+        x_fwd, y_lat, debug = pixel_target_to_action(
+            x_norm, y_norm, camera_id,
+            camera_height=camera_height, pitch_up=pitch_up,
+            fov=fov, width=width, height=height,
+        )
+        action = [round(x_fwd, 3), round(y_lat, 3), 0.0]
+        dist = debug.get('distance', '?')
+        dep = debug.get('depression_deg', '?')
+        yaw_g = debug.get('yaw_global_deg', '?')
+        t_ms = debug.get('elapsed_ms', '?')
+        logger.info(f"🎯 [CoordTransform] camera={camera_id}, pixel=({x_norm:.3f}, {y_norm:.3f}) "
+                    f"→ action={action}, dist={dist}m, dep={dep}°, yaw={yaw_g}°, t={t_ms}ms")
+        return action, debug
+    except Exception as e:
+        logger.warning(f"[CoordTransform] 转换失败: {e}, 返回默认前进")
+        return [1.0, 0.0, 0.0], {"error": str(e)}
+
+
 def build_memory_response(
     robot_id, pts, nav_state: MemoryNavState,
     vpr_result: Optional[VPRResult],
@@ -642,15 +706,29 @@ def build_memory_response(
     _use_fallback = (sub_image_match is None and task_status != "end"
                      and nav_state.fallback_action is not None)
     if _use_fallback:
-        _action = nav_state.fallback_action
         _pixel = nav_state.fallback_pixel_target
         _fallback_inst = nav_state.fallback_instruction
+        # ---- 像素→机器人坐标转换 (Qwen3.5 兜底) ----
+        _fb_cam = step.camera_name if step else None
+        if _pixel and _fb_cam and len(_pixel) >= 2:
+            _action_vec, _coord_debug = _pixel_target_to_robot_action(_pixel[0], _pixel[1], _fb_cam)
+            _action = [_action_vec]
+            memory_info["coord_transform"] = _coord_debug
+        else:
+            _action = nav_state.fallback_action or [[0.0, 0.0, 0.0]]
         logger.info(f"🤖 [Memory] 使用 Qwen3.5 兜底: landmark='{_fallback_inst}', "
                     f"action={_action[:3] if _action else None}..., pixel={_pixel}")
     else:
-        _action = [[0.0, 0.0, 0.0]]  # 记忆模式下 action 不使用
         _pixel = _extract_pixel_target(sub_image_match)
         _fallback_inst = None
+        # ---- 像素→机器人坐标转换 (子图匹配) ----
+        _match_cam = sub_image_match.get("camera_name") if sub_image_match else None
+        if _pixel and _match_cam and len(_pixel) >= 2:
+            _action_vec, _coord_debug = _pixel_target_to_robot_action(_pixel[0], _pixel[1], _match_cam)
+            _action = [_action_vec]
+            memory_info["coord_transform"] = _coord_debug
+        else:
+            _action = [[0.0, 0.0, 0.0]]
 
     response = {
         "status": "success",
@@ -1206,6 +1284,10 @@ async def process_inference_with_memory(message_data, session_state, agent,
         if memory_enabled and navigator is not None:
             camera_images = decode_camera_images(message_data)
             if camera_images and len(camera_images) == 4:
+                # 鱼眼去畸变（如果可用）
+                if fisheye_undistorter is not None:
+                    camera_images = fisheye_undistorter.undistort_batch(camera_images)
+                    logger.info("📷 [Undistort] 鱼眼去畸变完成")
                 logger.info(f"🧠 [Memory] 开始 VPR 定位 (4相机图就绪)")
                 try:
                     vpr_result, query_features = await asyncio.to_thread(
@@ -1475,9 +1557,14 @@ async def process_inference_with_memory(message_data, session_state, agent,
                         session_state['request_count'] += 1
                         session_state['last_instruction'] = instruction
                         session_state['last_task'] = current_task
-                        # 趋势正确时优先用 InternVLN 兜底的 action（如果有），否则直行 1m
-                        _trend_action = nav_state.fallback_action if (nav_state.fallback_action and _sub_match is None) else [[1.0, 0.0, 0.0]]
+                        # 趋势正确时优先用像素目标做坐标转换，否则直行 1m
                         _trend_pixel = nav_state.fallback_pixel_target if (nav_state.fallback_pixel_target and _sub_match is None) else _extract_pixel_target(_sub_match)
+                        _trend_cam = step.camera_name if step else None
+                        if _trend_pixel and _trend_cam and len(_trend_pixel) >= 2:
+                            _trend_vec, _trend_debug = _pixel_target_to_robot_action(_trend_pixel[0], _trend_pixel[1], _trend_cam)
+                            _trend_action = [_trend_vec]
+                        else:
+                            _trend_action = nav_state.fallback_action if (nav_state.fallback_action and _sub_match is None) else [[1.0, 0.0, 0.0]]
                         resp = {
                             "status": "success",
                             "id": robot_id,
@@ -2106,6 +2193,7 @@ async def main():
     )
 
     # ── 启动完成汇总 ──
+    undist_ok = "✅ 已启用" if fisheye_undistorter else "❌ 未加载"
     memory_ok = "✅ 已启用" if memory_navigator else "❌ 初始化失败"
     logger.info("")
     logger.info("╔═══════════════════════════════════════════════════════════╗")
@@ -2115,6 +2203,8 @@ async def main():
     logger.info(f"║  🧠 记忆导航:     {memory_ok}")
     logger.info(f"║  🤖 兜底打点:     Qwen3.5-9B  |  {qwen35_status}")
     logger.info(f"║  🔍 子图匹配:     DINOv3 密集特征匹配")
+    logger.info(f"║  📷 鱼眼去畸变:   {undist_ok}")
+    logger.info(f"║  🎯 坐标转换:     pixel→robot_xy (coord_transform)")
     logger.info(f"║  📊 VPR 方法:     {vpr_method.upper()} (device={vpr_device})")
     logger.info("╠═══════════════════════════════════════════════════════════╣")
     logger.info("║  📚 API 协议                                             ║")

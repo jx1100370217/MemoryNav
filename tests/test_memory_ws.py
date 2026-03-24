@@ -4,7 +4,6 @@
 test_memory_ws.py - 记忆导航 WebSocket 集成测试
 
 使用 memory_test_data/ 真实轨迹数据，完整回放帧序列，
-验证从 C8打印区(1) 经 C8微波炉区域(3) 到达 C8前台区(8) 的完整记忆导航过程。
 
 导航策略:
   Layer 1: 记忆引导 - 每步返回 camera_name + landmark_name + pixel_target (子图匹配)
@@ -37,6 +36,7 @@ WS_URL = "ws://127.0.0.1:9528"
 PROJECT_ROOT = "/home/ubuntu/Disk/codes/jianxiong/MemoryNav"
 DATA_DIR = os.path.join(PROJECT_ROOT, "memory_test_data")
 TASK = "前往C8前台"
+# TASK = "前往蓝山"
 SAMPLE_STEP = 1  # 每 N 帧采样一次
 
 # ANSI 颜色
@@ -289,6 +289,10 @@ async def run_test():
         task_status = resp.get('task_status', '')
         message = resp.get('message', '')
 
+        # action + coord_transform 调试信息
+        action = resp.get('action', [[0.0, 0.0, 0.0]])
+        coord_debug = mi.get('coord_transform', None)
+
         # 帧间相似度 & 缓存复用信息（从 memory_info 提取，先于子图统计）
         frame_sim = mi.get('frame_similarity', None)
         cache_action = mi.get('cache_action', None)  # 'reused' / 'cleared' / 'no_cache' / 'accepted'
@@ -372,10 +376,21 @@ async def run_test():
         miss_str = f"{consecutive_misses}" if consecutive_misses > 0 else f"{C_DIM}0{C_RESET}"
         nav_str = f"{from_node} → {to_node}" if from_node else "─"
 
+        # 格式化 action
+        if action and len(action) > 0 and len(action[0]) >= 2:
+            a0 = action[0]
+            ax, ay = a0[0], a0[1]
+            if abs(ax) < 0.001 and abs(ay) < 0.001:
+                action_str = f"{C_DIM}{'─':>14s}{C_RESET}"
+            else:
+                action_str = f"({ax:+.2f},{ay:+.2f})"
+        else:
+            action_str = f"{C_DIM}{'─':>14s}{C_RESET}"
+
         print(f"{frame_idx:5d} │ {step_str:>4s} │ {fmt_phase(phase)} │ {fmt_decision(decision):>14s} │ "
               f"{matched_display:>20s} │ {fmt_similarity(vpr_sim):>8s} │ {fmt_similarity(vpr_conf):>8s} │ "
               f"{nav_str:^30s} │ {camera_str:>10s} │ {sub_conf_str:>8s} │ "
-              f"{pixel_str:>14s} │ {miss_str:>6s}")
+              f"{pixel_str:>14s} │ {action_str:>14s} │ {miss_str:>6s}")
 
         # 关键事件详细信息
         if decision in ('advance', 'skip_advance'):

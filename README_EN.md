@@ -7,11 +7,11 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-1.7.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v1.7.0)
+[![Version](https://img.shields.io/badge/Version-1.8.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v1.8.0)
 
-A robot memory navigation system based on Visual Place Recognition (VPR) and topological mapping
+A robot memory navigation system based on Visual Place Recognition (VPR) and topological maps
 
-**English** | [中文](README.md)
+**中文** | [Chinese](README.md)
 
 </div>
 
@@ -19,19 +19,21 @@ A robot memory navigation system based on Visual Place Recognition (VPR) and top
 
 ## 📖 Introduction
 
-MemoryNav is a visual memory navigation system for mobile robots. It captures images from 4 surround-view fisheye cameras, localizes the robot within a pre-built topological memory graph using VPR, and generates fallback point grounding via Qwen3.5-9B vision-language model — enabling "remember where you've been, navigate there again" capability.
+MemoryNav is a visual memory navigation system for mobile robots. It collects images via 4 omnidirectional fisheye cameras, uses VPR to localize within a pre-built topological memory graph, and falls back to Qwen3.5-9B visual-language model for grounding — enabling "remember where you've been, walk it again" navigation.
 
-### Key Features
+### Key Capabilities
 
-- **🔍 Multi-Method VPR**: 4 state-of-the-art VPR backends, switchable via a single config file
-- **🗺️ Topological Memory Graph**: Auto-built from labeled data with shortest-path planning
-- **🔄 Cyclic Shift Matching**: 4-camera cyclic shift algorithm for orientation-invariant localization
-- **🎯 DINOv3 Sub-Image Matching**: Dense patch feature matching using DINOv3, with sliding window cosine similarity for real-time target localization in camera feeds
-- **💾 Sub-Image Match Caching**: Automatically reuses last successful match when current match fails, improving navigation continuity
-- **📤 Unified Output Format**: Consistent output format regardless of memory mode, always provides `pixel_target`
-- **🤖 Qwen3.5 Fallback**: Automatic fallback to Qwen3.5-9B VLM for point grounding when VPR/sub-image matching fails, using Chinese landmark names directly
-- **🌐 WebSocket Service**: Real-time image streaming and navigation command output
-- **⚙️ Unified Configuration**: All VPR parameters in `deploy/vpr_config.yaml`, one change applies everywhere
+- **🔍 Multi-scheme VPR Localization**: Supports 4 SOTA VPR methods, switchable via a single config file
+- **🗺️ Topological Memory Graph**: Automatically builds a node-edge topology from annotated data; supports shortest-path planning (BFS/Dijkstra)
+- **🔄 Cyclic-shift Matching**: 4-camera cyclic-shift algorithm for orientation-agnostic localization and heading estimation
+- **🎯 DINOv3 Sub-image Matching**: Dense patch feature matching with sliding-window cosine similarity to localize navigation targets in real-time camera frames
+- **💾 Match Caching**: Automatically reuses the last successful match when confidence drops, ensuring navigation continuity
+- **📤 Unified Output Format**: Consistent response schema regardless of memory mode — always provides `pixel_target`
+- **🤖 Qwen3.5 Fallback Grounding**: Falls back to Qwen3.5-9B VLM when VPR/sub-image matching fails, using Chinese landmark names directly
+- **📷 Fisheye Undistortion**: Loads camera intrinsics from `cam/params.yaml` at startup; applies cylindrical-projection undistortion to all input images before VPR and sub-image matching
+- **🧭 Pixel→Robot Coordinate Transform**: Converts normalized `pixel_target` to robot motion coordinates `[x_forward, y_lateral, 0.0]` via a full cylindrical-angle + camera-azimuth + depression-angle pipeline
+- **🌐 WebSocket Service**: Real-time streaming of images and navigation commands
+- **⚙️ Unified Config**: All VPR parameters centralized in `deploy/vpr_config.yaml`
 
 ---
 
@@ -39,46 +41,129 @@ MemoryNav is a visual memory navigation system for mobile robots. It captures im
 
 ```
 MemoryNav/
-├── deploy/                         # Deployment
+├── cam/                            # Multi-eye fisheye camera ROS2 node
+│   ├── params.yaml                 # Camera intrinsics, extrinsics (T_ic), distortion coeffs
+│   ├── fisheye_undist.h            # GPU-accelerated fisheye undistortion (CUDA)
+│   ├── main.cc / main.h            # ROS2 node main program
+│   ├── video.h                     # V4L2 video capture
+│   └── tools/                      # Standalone tools (no ROS2/CUDA required)
+│       ├── fisheye_undist_cpu.h    # CPU undistortion (numpy/cv2 port basis)
+│       ├── fisheye_to_cylindrical.cpp  # Fisheye-to-cylindrical CLI tool
+│       └── batch_undistort.py      # Batch undistortion script
+├── deploy/                         # Deployment module
 │   ├── vpr_config.yaml             # Unified VPR config
 │   ├── memory_nav/                 # Core memory navigation package
-│   │   ├── vpr_config_loader.py    # Unified config loader
+│   │   ├── vpr_config_loader.py    # Config loader
 │   │   ├── memory_models.py        # Data models (Node, Edge, Plan, VPRResult)
-│   │   ├── memory_graph.py         # Topological graph (BFS/Dijkstra planning)
-│   │   ├── memory_vpr.py           # VPR matching engine (cyclic shift + order-invariant)
-│   │   ├── memory_builder.py       # Memory builder (build graph from labeled data)
+│   │   ├── memory_graph.py         # Topology graph (BFS/Dijkstra)
+│   │   ├── memory_vpr.py           # VPR matching engine (cyclic-shift + order-invariant)
+│   │   ├── memory_builder.py       # Memory builder (topology from annotated data)
 │   │   ├── memory_navigator.py     # Navigator main interface
-│   │   ├── sub_image_matcher.py    # Sub-image matcher (DINOv3 dense feature matching)
+│   │   ├── sub_image_matcher.py    # Sub-image matcher (DINOv3 dense features)
+│   │   ├── fisheye_undistort.py    # 🆕 Fisheye undistortion (ported from cam/tools/fisheye_undist_cpu.h)
+│   │   ├── coord_transform.py      # 🆕 Pixel→robot coordinate transform (full cylindrical pipeline)
+│   │   ├── qwen35_point_grounder.py # Qwen3.5 grounding wrapper (fallback model)
+│   │   ├── qwen35_grounding_server.py # Qwen3.5 subprocess inference server
 │   │   ├── vpr_factory.py          # VPR extractor factory
 │   │   ├── anyloc_extractor.py     # AnyLoc (DINOv2 + VLAD)
 │   │   ├── megaloc_extractor.py    # MegaLoc (DINOv2 + OT aggregation)
-│   │   ├── effovpr_extractor.py    # EffoVPR (DINOv2 multi-layer CLS token)
+│   │   ├── effovpr_extractor.py    # EffoVPR (DINOv2 multi-layer CLS)
 │   │   └── selavpr_extractor.py    # SelaVPR++ (DINOv2 + MultiConv)
 │   ├── ws_proxy_with_memory.py     # WebSocket proxy service (main entry)
 │   └── build_memory.sh             # Memory build script
-├── internnav/                      # InternNav framework
-├── scripts/                        # Utility scripts
-│   └── memory_visualization_server.py  # Memory visualization (sub-image match + point grounding)
-├── tests/                          # Tests
-│   ├── test_memory_nav.py          # Unit tests
-│   └── test_memory_ws.py           # WebSocket integration test (detailed logging)
-└── docs/                           # Documentation
+├── internnav/                      # InternNav navigation framework
+├── scripts/
+│   └── memory_visualization_server.py  # Memory graph visualization (sub-image + model grounding)
+├── tests/
+│   ├── test_memory_nav.py          # Memory module unit tests
+│   └── test_memory_ws.py           # WebSocket integration tests (detailed logging)
+└── docs/
 ```
 
 ---
 
-## 🎯 Sub-Image Matching Navigation
+## 📷 Fisheye Undistortion
 
-Navigation based on **DINOv3** dense patch feature matching:
+The system automatically undistorts all 4 fisheye camera images before VPR matching and sub-image matching:
 
 ### How It Works
 
-1. **During memory building**: Each edge is annotated with `camera_name` (which camera sees the target) and `crop_image` (attention crop)
-2. **During navigation**: The crop image from memory is matched against the live camera feed using dense feature matching
-3. **Target localization**: DINOv3 ViT-B/16 extracts dense patch tokens → sliding window + unfold acceleration → cosine similarity peak → output as `pixel_target`
-4. **Match threshold**: Confidence ≥ 0.6 is considered a successful match
-5. **Caching mechanism**: Automatically reuses the last successful match result on failure; cache is cleared on step advance
-6. **Fallback**: When matching fails with no cache available, uses the stored `pixel_box` from memory as an estimate
+1. At startup, loads per-camera intrinsics (`xi, fx, fy, cx, cy`) and distortion coefficients (`k1, k2, p1, p2`) from `cam/params.yaml`
+2. Pre-computes a cylindrical-projection remap table once per camera (with optional `pitch_up` offset)
+3. Before each inference frame, applies `cv2.remap` for near-zero-cost undistortion
+4. Gracefully skips undistortion if `cam/params.yaml` is missing — service continues normally
+
+```python
+from deploy.memory_nav.fisheye_undistort import FisheyeUndistorter
+
+undistorter = FisheyeUndistorter.from_yaml("cam/params.yaml")
+# Batch undistort all 4 camera images
+perspective_images = undistorter.undistort_batch(camera_images)
+```
+
+---
+
+## 🧭 Pixel → Robot Coordinate Transform
+
+Converts normalized `pixel_target: [x_norm, y_norm]` to robot motion coordinates `[x_forward, y_lateral, 0.0]` via a full physical pipeline:
+
+### Pipeline
+
+```
+x_norm → cylindrical horizontal angle → + camera azimuth → global yaw
+y_norm → cylindrical vertical angle → depression angle → distance estimate (camera height + pitch_up)
+yaw + distance → (x_forward, y_lateral)
+```
+
+### Parameters (`coord_transform.py`)
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `DEFAULT_FOV` | 180° | Cylindrical image field of view |
+| `DEFAULT_WIDTH` | 1920 | Cylindrical image width |
+| `DEFAULT_HEIGHT` | 1536 | Cylindrical image height |
+| `DEFAULT_CAMERA_HEIGHT` | 1.0 m | Camera height above ground |
+| `DEFAULT_PITCH_UP` | 15° | Undistortion pitch_up offset |
+| `MIN_DISTANCE` / `MAX_DISTANCE` | 0.3 m / 30.0 m | Distance estimation range |
+
+### Camera Azimuths (hardcoded, derived from `cam/params.yaml` T_ic)
+
+| Camera | Azimuth |
+|--------|---------|
+| camera_1 | +39.42° |
+| camera_2 | −35.84° |
+| camera_3 | −142.04° |
+| camera_4 | +143.52° |
+
+### New Response Field
+
+Coordinate transform results are appended to `memory_info.coord_transform`:
+
+```json
+"memory_info": {
+    "coord_transform": {
+        "yaw_global_deg": -12.3,
+        "depression_deg": 8.5,
+        "distance": 2.4,
+        "elapsed_ms": 0.3
+    }
+}
+```
+
+---
+
+## 🎯 Sub-image Matching Navigation
+
+Dense patch feature sub-image matching using **DINOv3**:
+
+### How It Works
+
+1. **Memory Build**: Each edge is annotated with `camera_name` (target camera) and `crop_image` (attention crop)
+2. **Navigation**: The crop sub-image is retrieved from memory and matched against the real-time camera frame
+3. **Target Localization**: DINOv3 ViT-B/16 extracts dense patch tokens → sliding window + unfold acceleration → cosine similarity argmax → output as `pixel_target`
+4. **Match Threshold**: Confidence ≥ 0.6 counts as a successful match
+5. **Cache**: On low-confidence frames, the last successful result is reused; cache clears on step transitions
+6. **Fallback**: If no cache, uses `pixel_box` from memory as an estimate
 
 ### Edge Data Structure
 
@@ -86,39 +171,39 @@ Navigation based on **DINOv3** dense patch feature matching:
 edge:
   camera_name: "camera_2"              # Target camera
   landmark_name: "Elevator"            # Landmark name
-  pixel_box: [120, 80, 200, 160]       # (x, y, w, h) bounding box
-  crop_image_path: "crop_elevator.jpg"  # Attention crop image
+  pixel_box: [120, 80, 200, 160]       # (x, y, w, h) pixel box
+  crop_image_path: "crop_elevator.jpg" # Attention crop
 ```
 
 ### Output Format
 
-All responses include a unified `pixel_target: [x, y]` (normalized 0~1):
+All responses always include `pixel_target: [x, y]` (normalized 0–1) and robot `action`:
 
-| Scenario | pixel_target Source | memory_active |
-|----------|-------------------|---------------|
-| Memory OFF + InternVLA | `output_pixel / image_size` | Not included |
-| Memory ON + Match Success | `sub_image_match.match.center_pct` | `true` |
-| Memory ON + Match Fail | Cached from last good frame | `true` |
-| Memory ON + VLA Fallback | `output_pixel / image_size` | `true` |
-
----
-
-## ✨ VPR Methods
-
-MemoryNav supports **4 VPR methods**, configurable via `deploy/vpr_config.yaml`:
-
-| Method | Parameter | Venue | Feature Dim | Backbone | Highlights |
-|--------|-----------|-------|-------------|----------|------------|
-| **SelaVPR++** ⭐ | `selavpr` | T-PAMI 2025 | 4096D | DINOv2-L + MultiConv | **Recommended**, hashing+rerank, official best config |
-| **MegaLoc** | `megaloc` | CVPR 2025 | 8448D | DINOv2-B + OT | Best overall, SOTA on most benchmarks |
-| **EffoVPR** | `effovpr` | arXiv 2024 | 3072D | DINOv2-B multi-layer CLS | Lightweight, real-time friendly |
-| **AnyLoc** | `anyloc` | RA-L 2023 | Configurable | DINOv2-B + VLAD | Classic and stable, tunable clusters |
+| Scenario | pixel_target Source | action Source | memory_active |
+|----------|---------------------|---------------|---------------|
+| Memory off + InternVLA | `output_pixel / image_size` | InternVLA | not present |
+| Memory on + sub-match hit | `sub_image_match.match.center_pct` | coord_transform | `true` |
+| Memory on + cache reuse | last successful match | coord_transform | `true` |
+| Memory on + Qwen3.5 fallback | Qwen3.5 grounding coords | coord_transform | `true` |
 
 ---
 
-## ⚙️ Unified Configuration
+## ✨ VPR Method Comparison
 
-All VPR parameters are managed in `deploy/vpr_config.yaml`. Changes take effect after restarting the service:
+MemoryNav supports **4 VPR methods**, switchable via `deploy/vpr_config.yaml`:
+
+| Method | Key | Venue | Feature Dim | Backbone | Notes |
+|--------|-----|-------|------------|----------|-------|
+| **SelaVPR++** ⭐ | `selavpr` | T-PAMI 2025 | 4096D | DINOv2-L + MultiConv | **Recommended**, hashing+reranking |
+| **MegaLoc** | `megaloc` | CVPR 2025 | 8448D | DINOv2-B + OT | Best overall, multi-dataset SOTA |
+| **EffoVPR** | `effovpr` | arXiv 2024 | 3072D | DINOv2-B multi-CLS | Lightweight, real-time friendly |
+| **AnyLoc** | `anyloc` | RA-L 2023 | configurable | DINOv2-B + VLAD | Classic, stable |
+
+---
+
+## ⚙️ Unified Config
+
+All VPR parameters are managed in `deploy/vpr_config.yaml`:
 
 ```yaml
 # VPR method: selavpr | megaloc | effovpr | anyloc
@@ -127,21 +212,21 @@ vpr_method: selavpr
 # GPU device
 device: "cuda:0"
 
-# Similarity thresholds (per-method)
+# Per-method similarity thresholds
 similarity_threshold:
   selavpr: 0.60
   megaloc: 0.60
   effovpr: 0.80
   anyloc: 0.70
 
-# SelaVPR++ specific config
+# SelaVPR++ specific
 selavpr:
-  backbone: dinov2-large      # dinov2-base (2048D) or dinov2-large (4096D)
-  aggregation: gem            # gem, boq, salad
-  use_hashing: true           # Enable deep hashing
-  use_rerank: true            # Enable re-ranking (requires use_hashing=true)
+  backbone: dinov2-large
+  aggregation: gem
+  use_hashing: true
+  use_rerank: true
 
-# AnyLoc specific config
+# AnyLoc specific
 anyloc:
   dino_model: dinov2_vitb14
   agg_mode: vlad
@@ -149,12 +234,6 @@ anyloc:
   domain: indoor
   max_img_size: 630
 ```
-
-**To switch VPR methods, just change the `vpr_method` line.** All modules read from this config:
-- `ws_proxy_with_memory.py` — WebSocket navigation service
-- `memory_visualization_server.py` — Visualization service
-- `memory_builder.py` / `memory_navigator.py` — Core modules
-- `build_memory.sh` — Build script
 
 > ⚠️ After switching VPR methods, rebuild the memory cache: `bash deploy/build_memory.sh`
 
@@ -171,24 +250,25 @@ pip install -r requirements/base.txt
 pip install -e .
 ```
 
+### Camera Setup (Optional)
+
+Place your calibration file at `cam/params.yaml`. The service will automatically load fisheye undistortion on startup.
+
 ### Configure VPR Method
 
-Edit `deploy/vpr_config.yaml` to select your VPR method and parameters.
+Edit `deploy/vpr_config.yaml` to select the VPR method and parameters.
 
-### Build Memory Graph
+### Build Memory
 
 ```bash
-# Automatically reads VPR method from vpr_config.yaml
 bash deploy/build_memory.sh
-
-# Or override with command-line args
+# Override parameters
 bash deploy/build_memory.sh --method megaloc --gpu 0
 ```
 
-### Launch Navigation Service
+### Start Navigation Service
 
 ```bash
-# Automatically reads config from vpr_config.yaml
 python deploy/ws_proxy_with_memory.py
 ```
 
@@ -197,26 +277,19 @@ python deploy/ws_proxy_with_memory.py
 ```python
 from deploy.memory_nav import MemoryNavigator
 
-# Uses config from vpr_config.yaml
 navigator = MemoryNavigator(vpr_method='selavpr', device='cuda:0')
 navigator.load_memory(path='memory_cache.pkl', data_dir='merged_labeled_data')
 
-# VPR localization
 images = {'camera_1': img1, 'camera_2': img2, 'camera_3': img3, 'camera_4': img4}
 features = {cam: navigator.extractor.extract(img) for cam, img in images.items()}
 result = navigator.vpr.locate(features)
-print(f"Located: {result.matched_node_name}, similarity: {result.similarity:.4f}")
+print(f"Localized: {result.matched_node_name}, similarity: {result.similarity:.4f}")
 
-# Plan navigation
 plan = navigator.navigate_to("Reception", camera_images=images)
-for step in plan['plan']['steps']:
-    print(f"  → {step['to_node']['name']}, camera={step['camera_name']}, landmark={step['landmark_name']}")
-
-# Sub-image matching (during navigation execution)
 match = navigator.match_current_step(images)
 if match and match['match']['found']:
     center = match['match']['center_pct']
-    print(f"Target located: ({center['x']:.3f}, {center['y']:.3f})")
+    print(f"Target: ({center['x']:.3f}, {center['y']:.3f})")
 ```
 
 ---
@@ -247,7 +320,7 @@ if match and match['match']['found']:
     "status": "success",
     "id": "robot_01",
     "task_status": "executing",
-    "action": [[0.5, 0.0, 0.1]],
+    "action": [[0.5, -0.1, 0.0]],
     "pixel_target": [0.485, 0.521],
     "memory_active": true,
     "camera_name": "camera_2",
@@ -256,23 +329,12 @@ if match and match['match']['found']:
         "phase": "verifying",
         "current_step": 1,
         "total_steps": 3,
-        "from_node": "Lobby",
-        "to_node": "Reception",
         "vpr_similarity": 0.85,
-        "vpr_confidence": 0.85,
-        "vpr_matched_node": "node_5",
-        "heading_offset": -37.5,
-        "consecutive_misses": 0
-    },
-    "sub_image_match": {
-        "camera_name": "camera_2",
-        "landmark_name": "Elevator",
-        "match": {
-            "found": true,
-            "confidence": 0.92,
-            "center_pct": {"x": 0.485, "y": 0.521},
-            "top_left_pct": {"x": 0.302, "y": 0.358},
-            "bottom_right_pct": {"x": 0.668, "y": 0.684}
+        "coord_transform": {
+            "yaw_global_deg": -12.3,
+            "depression_deg": 8.5,
+            "distance": 2.4,
+            "elapsed_ms": 0.3
         }
     }
 }
@@ -284,27 +346,27 @@ if match and match['match']['found']:
 |---------|-------------|
 | `reset` | Reset agent and memory state |
 | `toggle_memory` | Toggle memory navigation on/off |
-| `memory_status` | View memory navigation details |
+| `memory_status` | Show memory navigation details |
 | `reset_memory` | Reset memory state only |
-| `session_status` | View session status |
+| `session_status` | Show session status |
 
 ---
 
 ## 📐 Camera Layout
 
-The system uses 4 fisheye cameras (equidistant projection, HFOV=190°):
+4 fisheye cameras (equiangular projection, HFOV=190°):
 
 ```
-             Front (0°)
-               ↑
+           Front (0°)
+              ↑
      cam_1 (-37.5°)  cam_2 (+37.5°)
-               │
+              │
      cam_4 (-142.5°) cam_3 (+142.5°)
-               ↓
-             Rear (180°)
+              ↓
+           Back (180°)
 ```
 
-Cyclic shift matching supports 4 heading offsets: `0°`, `-75°`, `180°`, `+105°`
+Cyclic-shift matching supports 4 heading offsets: `0°`, `-75°`, `180°`, `+105°`
 
 ---
 
@@ -314,88 +376,79 @@ Cyclic shift matching supports 4 heading offsets: `0°`, `-75°`, `180°`, `+105
 # Unit tests
 python -m pytest tests/test_memory_nav.py -v
 
-# WebSocket integration test (with per-frame decision logs + stats + trend chart)
+# WebSocket integration test (per-frame logs + stats + similarity trend chart)
 python tests/test_memory_ws.py
 ```
-
-Test output includes:
-- 📊 Per-frame details (VPR matching, sub-image match confidence, camera, pixel_target, decision type)
-- 📈 VPR similarity trend ASCII chart
-- 📋 Statistics report (VPR match rate, sub-image match rate, node distribution, decision distribution, phase distribution)
 
 ---
 
 ## 📋 Changelog
 
+### v1.8.0
+
+- **🆕 Fisheye Undistortion**: Added `deploy/memory_nav/fisheye_undistort.py`, ported from `cam/tools/fisheye_undist_cpu.h`
+  - Loads 4-camera intrinsics at startup; pre-computes cylindrical remap tables
+  - Automatically undistorts input images before each inference frame
+  - Gracefully skips if `cam/params.yaml` is missing
+- **🆕 Pixel→Robot Coordinate Transform**: Added `deploy/memory_nav/coord_transform.py`
+  - Full pipeline: cylindrical angle → camera azimuth → global yaw + depression angle → distance → `[x_forward, y_lateral, 0.0]`
+  - Applied to all three navigation decision paths (sub-match, cache, Qwen3.5 fallback)
+  - Debug fields (yaw, depression, distance, latency) included in response
+- **🆕 cam/ Directory**: Added multi-eye fisheye camera ROS2 node source and `params.yaml`
+  - `cam/tools/`: Standalone fisheye-to-cylindrical CLI (no ROS2/CUDA dependency)
+- **Startup Log**: Added fisheye undistortion status and coord-transform module status
+
 ### v1.7.0
 
-- **Qwen3.5 Fallback Point Grounding**: Replaced InternVLA with Qwen3.5-9B VLM for fallback grounding
-  - Uses Chinese `landmark_name` directly (no English translation or "Go to the ..." prefix needed)
-  - Runs as subprocess (qwen3 conda env) to avoid transformers version conflicts
-  - Supports single-image and multi-camera point grounding
-- **InternVLA Lazy Loading**: InternVLA model no longer loaded at startup, initialized on-demand to save GPU memory
-- **Visualization: Model Grounding Tab**: New 🎯 Model Grounding tab in visualization server for interactive grounding verification
-- **Model Loading Optimization**: Qwen3.5 loaded once at ws_proxy startup, shared across visualization server
+- **Qwen3.5 Fallback Grounding**: Replaces InternVLA fallback with Qwen3.5-9B VLM
+  - Uses Chinese `landmark_name` directly; subprocess mode avoids transformers conflicts
+- **InternVLA On-demand Loading**: Not loaded by default; loaded on demand to save GPU memory
+- **Visualization**: Added model grounding tab in `memory_visualization_server.py`
 
 ### v1.6.0
 
-- **Sub-image matching streamlined**: Removed SuperPoint+LightGlue and Qwen3.5, kept only **DINOv3** dense feature matching
-- **Unified match threshold**: Confidence threshold adjusted from 0.55 to **0.6**
-- **DINOv3 matching**: Loads DINOv3 ViT-B/16 via timm, extracts dense patch tokens, sliding window + unfold accelerated cosine similarity matching
-- **Frame similarity upgrade**: Replaced SSIM with DINOv2 inter-frame similarity, threshold 0.70
-- **Sub-image matching enhancement**: Feature point limit raised to 4096, matching resolution up to 1280×960
-- **Three-level crop cascade**: small/mid/big crop scales with full-camera traversal for improved matching robustness
-- **Visualization improvements**: Full result saving, yellow-box annotation for cache reuse, save only on valid bbox
-- **VPR config fix**: `order_invariant` unified via `vpr_config.yaml`, fixed SelaVPR++ misusing order-invariant matching
+- **Sub-image Matching Simplified**: Removed SuperPoint+LightGlue, kept DINOv3 dense matching only
+- **Unified Threshold**: Confidence threshold set to 0.6
+- **Frame Similarity Upgrade**: SSIM replaced by DINOv2 inter-frame similarity (threshold 0.70)
+- **3-scale Cascade Matching**: small/mid/big crops + full-camera sweep for robustness
 
 ### v1.5.0
 
-- **Unified output format**: Memory-OFF output identical to `ws_proxy.py`, always includes `pixel_target`, no `memory_active` extra fields
-- **Unified pixel_target**: Memory-ON maps `sub_image_match.match.center_pct` to `pixel_target: [x, y]`
-- **Sub-image match caching**: Reuses last successful result when confidence < 0.45; cache cleared on step advance or task reset
-- **Test modernization**: Removed legacy `angle` references, added `camera_name`, `sub_conf`, `pixel_target` columns and sub-image match statistics
+- **Unified Output Format**: Memory-off response matches `ws_proxy.py` exactly; always includes `pixel_target`
+- **Sub-image Match Cache**: Reuses last successful result on low-confidence frames
 
 ### v1.4.0
 
-- **Sub-image matching navigation**: Upgraded from angle-based to SuperPoint + LightGlue sub-image matching
-- **Edge model refactor**: From `angle + pixel_position` to `camera_name + crop_image + pixel_box`
-- **Sub-image match visualization**: New verification page
+- **Sub-image Matching Navigation**: Upgraded from angle-based to SuperPoint+LightGlue
+- **Edge Model Rework**: `angle + pixel_position` → `camera_name + crop_image + pixel_box`
 
 ### v1.3.0
 
-- **Unified config management**: All VPR parameters centralized in `deploy/vpr_config.yaml`
-- **Embedded model code**: SelaVPR++ and MegaLoc code embedded, removed external dependencies
+- **Unified Config**: All VPR parameters centralized in `deploy/vpr_config.yaml`
 
 ### v1.2.0
 
-- **Multi-VPR support**: Added SelaVPR++, MegaLoc, EffoVPR methods
-- **VPR factory pattern**: Unified extractor interface with one-click switching
+- **Multi-VPR Support**: Added SelaVPR++, MegaLoc, EffoVPR
+- **VPR Factory Pattern**: Unified extractor interface
 
 ### v1.1.0
 
-- **Memory navigation service**: WebSocket proxy + VPR localization + path planning
-- **Trend detection**: Similarity trend analysis for direction validation
+- **Memory Navigation Service**: WebSocket proxy + VPR localization + path planning
 
 ### v1.0.0
 
-- **Foundation**: Topological memory graph, AnyLoc VPR, InternVLA inference
-- **Cyclic shift matching**: Orientation-invariant 4-camera localization algorithm
+- **Base Framework**: Topological memory graph, AnyLoc VPR, InternVLA inference
 
 ---
 
 ## 📚 Citation
-
-If this project helps your research, please cite the relevant VPR papers:
 
 ```bibtex
 @article{selavprpp2025,
   title={SelaVPR++: Towards Seamless Adaptation of Foundation Models for Efficient Place Recognition},
   author={Lu, Feng and Jin, Tong and others},
   journal={IEEE T-PAMI},
-  year={2026},
-  volume={48},
-  number={3},
-  pages={2731-2748}
+  year={2026}
 }
 
 @inproceedings{megaloc2025,

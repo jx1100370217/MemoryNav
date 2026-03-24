@@ -1,0 +1,108 @@
+cameras:
+  - name: front_1
+    dev: 1
+    downscale: false
+    flip: false
+    filter: true # true: 10 fps, false: 30 fps
+  - name: camera_2
+    dev: 2
+    downscale: false
+    flip: true
+    filter: false # true: 10 fps, false: 30 fps
+    T_ic: # cam to imu
+      [-0.60020422, -0.20283763, 0.77370007, 0.08870934,
+      -0.79983264, 0.14645108, -0.58208232, -0.0775662,
+      0.00475899, -0.96819883, -0.25013671, -0.07164469,
+      0.0, 0.0, 0.0, 1.0]
+    distortion_coeffs: [1.8304733029405886, -1.883372504447297, -0.0012915452180406746, 0.0006809611037387541]
+    intrinsics: [2.014001763930061, 1334.1024467081654, 1333.0481871461564, 957.5953989381886, 767.3074215909552]
+    vcam:
+      # - type: "pinhole"
+      #   direction: "front"
+      #   fov: 100
+      #   width: 640
+      #   height: 480
+      # - type: "pinhole"
+      #   direction: "left"
+      #   fov: 100
+      #   width: 640
+      #   height: 480
+      - type: "cylindrical"
+        direction: "front"
+        fov: 180
+        width: 640
+        height: 480
+  - name: camera_3
+    dev: 3
+    downscale: false
+    flip: true
+    filter: false # true: 10 fps, false: 30 fps
+    distortion_coeffs: [1.8304733029405886, -1.883372504447297, -0.0012915452180406746, 0.0006809611037387541]
+    intrinsics: [2.014001763930061, 1334.1024467081654, 1333.0481871461564, 957.5953989381886, 767.3074215909552]
+    vcam:
+      # - type: "pinhole"
+      #   direction: "front"
+      #   fov: 100
+      #   width: 640
+      #   height: 480
+      # - type: "pinhole"
+      #   direction: "left"
+      #   fov: 100
+      #   width: 640
+      #   height: 480
+      - type: "cylindrical"
+        direction: "front"
+        fov: 180
+        width: 640
+        height: 480
+  - name: camera_1
+    dev: 6
+    downscale: false
+    flip: true
+    filter: false # true: 10 fps, false: 30 fps
+    T_ic: # cam to imu
+      [0.6061293, -0.20647868, 0.76809753, 0.08600586,
+      -0.79536293, -0.15461441, 0.58608208, 0.09754961,
+      -0.00225451, -0.96615782, -0.25794181, -0.07146548,
+      0.0, 0.0, 0.0, 1.0]
+    distortion_coeffs: [1.4358240755464207, -1.785045578504215, -0.0014122411820077696, 0.004967834506153189]
+    intrinsics: [1.7737469664111558, 1238.9204426934164, 1238.2404069766221, 962.6691827980312, 767.8845922011865]
+    vcam:
+      # - type: "pinhole"
+      #   direction: "front"
+      #   fov: 100
+      #   width: 640
+      #   height: 480
+      # - type: "pinhole"
+      #   direction: "left"
+      #   fov: 100
+      #   width: 640
+      #   height: 480
+      - type: "cylindrical"
+        direction: "front"
+        fov: 180
+        width: 640
+        height: 480
+  - name: camera_4
+    dev: 7
+    downscale: false
+    flip: true
+    filter: false # true: 10 fps, false: 30 fps
+    distortion_coeffs: [1.4358240755464207, -1.785045578504215, -0.0014122411820077696, 0.004967834506153189]
+    intrinsics: [1.7737469664111558, 1238.9204426934164, 1238.2404069766221, 962.6691827980312, 767.8845922011865]
+    vcam:
+      # - type: "pinhole"
+      #   direction: "front"
+      #   fov: 100
+      #   width: 640
+      #   height: 480
+      # - type: "pinhole"
+      #   direction: "left"
+      #   fov: 100
+      #   width: 640
+      #   height: 480
+      - type: "cylindrical"
+        direction: "front"
+        fov: 180
+        width: 640
+        height: 480

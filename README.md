@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-1.7.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v1.7.0)
+[![Version](https://img.shields.io/badge/Version-1.8.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v1.8.0)
 
 基于视觉位置识别（VPR）和拓扑地图的机器人记忆导航系统
 
@@ -30,6 +30,8 @@ MemoryNav 是一个面向移动机器人的视觉记忆导航系统。系统通�
 - **💾 子图匹配缓存**：匹配失败时自动延用上一帧的成功结果，提升导航连续性
 - **📤 统一输出格式**：记忆模式开关两种状态下输出格式一致，始终提供 `pixel_target`
 - **🤖 Qwen3.5 兜底打点**：VPR/子图匹配失败时自动切换 Qwen3.5-9B 视觉语言模型打点定位，直接使用中文地标名称
+- **📷 鱼眼去畸变**：自动从 `cam/params.yaml` 加载相机内参，对输入图像做柱面投影去畸变，提升 VPR 及子图匹配精度
+- **🧭 像素→机器人坐标转换**：将 `pixel_target` 归一化坐标经柱面角度、相机方位角、俯仰角估距完整管线，转换为机器人运动坐标 `[x_forward, y_lateral, 0.0]`
 - **🌐 WebSocket 服务**：实时流式接收图像、返回导航指令
 - **⚙️ 统一配置管理**：所有 VPR 参数集中在 `deploy/vpr_config.yaml`，一处修改全局生效
 
@@ -39,6 +41,15 @@ MemoryNav 是一个面向移动机器人的视觉记忆导航系统。系统通�
 
 ```
 MemoryNav/
+├── cam/                            # 多目鱼眼相机 ROS2 节点
+│   ├── params.yaml                 # 相机内参 & 外参配置 (T_ic, intrinsics, distortion)
+│   ├── fisheye_undist.h            # 鱼眼去畸变（GPU 版, CUDA）
+│   ├── main.cc / main.h            # ROS2 节点主程序
+│   ├── video.h                     # V4L2 视频采集
+│   └── tools/                      # 独立工具（无 ROS2/CUDA 依赖）
+│       ├── fisheye_undist_cpu.h    # CPU 版去畸变（numpy/cv2 移植基础）
+│       ├── fisheye_to_cylindrical.cpp  # 鱼眼转柱面命令行工具
+│       └── batch_undistort.py      # 批量去畸变脚本
 ├── deploy/                         # 部署模块
 │   ├── vpr_config.yaml             # VPR 统一配置文件
 │   ├── memory_nav/                 # 核心记忆导航包
@@ -49,6 +60,8 @@ MemoryNav/
 │   │   ├── memory_builder.py       # 记忆构建器 (从标注数据构建拓扑图)
 │   │   ├── memory_navigator.py     # 导航器主接口
 │   │   ├── sub_image_matcher.py    # 子图匹配器 (DINOv3 密集特征匹配)
+│   │   ├── fisheye_undistort.py    # 🆕 鱼眼去畸变 (移植自 cam/tools/fisheye_undist_cpu.h)
+│   │   ├── coord_transform.py      # 🆕 像素→机器人坐标转换 (柱面投影完整管线)
 │   │   ├── qwen35_point_grounder.py # Qwen3.5 打点封装 (兜底模型)
 │   │   ├── qwen35_grounding_server.py # Qwen3.5 子进程推理服务
 │   │   ├── vpr_factory.py          # VPR 提取器工厂
@@ -65,6 +78,76 @@ MemoryNav/
 │   ├── test_memory_nav.py          # 记忆模块单元测试
 │   └── test_memory_ws.py           # WebSocket 集成测试 (详细日志版)
 └── docs/                           # 文档
+```
+
+---
+
+## 📷 鱼眼去畸变
+
+系统在 VPR 匹配和子图匹配前，自动对 4 路鱼眼图像进行柱面投影去畸变：
+
+### 工作原理
+
+1. 启动时从 `cam/params.yaml` 加载各相机内参（`xi, fx, fy, cx, cy`）和畸变系数（`k1, k2, p1, p2`）
+2. 每个相机预计算一次 remap 查找表（柱面投影 + pitch_up 视角偏移）
+3. 每帧推理前调用 `cv2.remap` 完成去畸变，计算开销极低
+4. 若 `cam/params.yaml` 不存在，自动跳过去畸变，不影响服务启动
+
+```python
+from deploy.memory_nav.fisheye_undistort import FisheyeUndistorter
+
+undistorter = FisheyeUndistorter.from_yaml("cam/params.yaml")
+# 批量去畸变 4 路相机图像
+perspective_images = undistorter.undistort_batch(camera_images)
+```
+
+---
+
+## 🧭 像素→机器人坐标转换
+
+将 `pixel_target: [x_norm, y_norm]` 通过完整物理管线转换为机器人运动坐标 `[x_forward, y_lateral, 0.0]`：
+
+### 转换管线
+
+```
+x_norm → 柱面水平角 → + 相机方位角 → 全局 yaw
+y_norm → 柱面垂直角 → 俯仰角 → 距离估算（相机高度 + pitch_up）
+yaw + distance → (x_forward, y_lateral)
+```
+
+### 参数配置（`coord_transform.py`）
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `DEFAULT_FOV` | 180° | 柱面图视场角 |
+| `DEFAULT_WIDTH` | 1920 | 柱面图宽度 |
+| `DEFAULT_HEIGHT` | 1536 | 柱面图高度 |
+| `DEFAULT_CAMERA_HEIGHT` | 1.0m | 相机距地面高度 |
+| `DEFAULT_PITCH_UP` | 15° | 去畸变 pitch_up 偏移角 |
+| `MIN_DISTANCE` / `MAX_DISTANCE` | 0.3m / 30.0m | 距离估算范围 |
+
+### 相机方位角（硬编码，从 `cam/params.yaml` T_ic 计算）
+
+| 相机 | 方位角 |
+|------|--------|
+| camera_1 | +39.42° |
+| camera_2 | −35.84° |
+| camera_3 | −142.04° |
+| camera_4 | +143.52° |
+
+### 响应新增字段
+
+坐标转换结果附加在 `memory_info.coord_transform` 中：
+
+```json
+"memory_info": {
+    "coord_transform": {
+        "yaw_global_deg": -12.3,
+        "depression_deg": 8.5,
+        "distance": 2.4,
+        "elapsed_ms": 0.3
+    }
+}
 ```
 
 ---
@@ -94,14 +177,14 @@ edge:
 
 ### 输出格式
 
-所有响应统一包含 `pixel_target: [x, y]`（归一化 0~1）：
+所有响应统一包含 `pixel_target: [x, y]`（归一化 0~1）及机器人运动 `action`：
 
-| 场景 | pixel_target 来源 | memory_active |
-|------|-------------------|---------------|
-| 记忆关闭 + InternVLA 推理 | `output_pixel / 图像尺寸` | 不输出 |
-| 记忆开启 + 子图匹配成功 | `sub_image_match.match.center_pct` | `true` |
-| 记忆开启 + 子图匹配失败 | 延用上一帧缓存 | `true` |
-| 记忆开启 + Qwen3.5 兜底 | Qwen3.5 打点归一化坐标 | `true` |
+| 场景 | pixel_target 来源 | action 来源 | memory_active |
+|------|-------------------|-------------|---------------|
+| 记忆关闭 + InternVLA 推理 | `output_pixel / 图像尺寸` | InternVLA 输出 | 不输出 |
+| 记忆开启 + 子图匹配成功 | `sub_image_match.match.center_pct` | coord_transform | `true` |
+| 记忆开启 + 子图匹配失败 | 延用上一帧缓存 | coord_transform | `true` |
+| 记忆开启 + Qwen3.5 兜底 | Qwen3.5 打点归一化坐标 | coord_transform | `true` |
 
 ---
 
@@ -172,6 +255,10 @@ cd MemoryNav
 pip install -r requirements/base.txt
 pip install -e .
 ```
+
+### 配置相机参数（可选）
+
+如有实体相机，将标定文件放置为 `cam/params.yaml`，服务启动时自动加载鱼眼去畸变。
 
 ### 配置 VPR 方案
 
@@ -249,7 +336,7 @@ if match and match['match']['found']:
     "status": "success",
     "id": "robot_01",
     "task_status": "executing",
-    "action": [[0.5, 0.0, 0.1]],
+    "action": [[0.5, -0.1, 0.0]],
     "pixel_target": [0.485, 0.521],
     "memory_active": true,
     "camera_name": "camera_2",
@@ -264,7 +351,13 @@ if match and match['match']['found']:
         "vpr_confidence": 0.85,
         "vpr_matched_node": "node_5",
         "heading_offset": -37.5,
-        "consecutive_misses": 0
+        "consecutive_misses": 0,
+        "coord_transform": {
+            "yaw_global_deg": -12.3,
+            "depression_deg": 8.5,
+            "distance": 2.4,
+            "elapsed_ms": 0.3
+        }
     },
     "sub_image_match": {
         "camera_name": "camera_2",
@@ -321,13 +414,28 @@ python tests/test_memory_ws.py
 ```
 
 测试输出包含：
-- 📊 逐帧详情（VPR 匹配、子图匹配置信度、camera、pixel_target、决策类型）
+- 📊 逐帧详情（VPR 匹配、子图匹配置信度、camera、pixel_target、action、决策类型）
 - 📈 VPR 相似度变化趋势 ASCII 图
 - 📋 统计报告（VPR 匹配率、子图匹配率、节点分布、决策分布、Phase 分布）
 
 ---
 
 ## 📋 更新日志
+
+### v1.8.0
+
+- **🆕 鱼眼去畸变**：新增 `deploy/memory_nav/fisheye_undistort.py`，移植自 `cam/tools/fisheye_undist_cpu.h`
+  - 启动时自动从 `cam/params.yaml` 加载 4 路相机内参，预计算柱面投影 remap 表
+  - 每帧推理前自动对输入图像进行去畸变，提升 VPR 及子图匹配精度
+  - `params.yaml` 缺失时优雅降级，不影响服务正常运行
+- **🆕 像素→机器人坐标转换**：新增 `deploy/memory_nav/coord_transform.py`
+  - `pixel_target` 归一化坐标经柱面水平角、相机方位角、俯仰角估距完整管线，转换为 `[x_forward, y_lateral, 0.0]`
+  - 覆盖全部三种导航决策路径（子图匹配成功、帧间缓存、Qwen3.5 兜底）
+  - 转换调试信息（yaw、depression、distance、耗时）随响应返回
+- **🆕 cam/ 目录**：纳入多目鱼眼相机 ROS2 节点源码及相机参数配置
+  - `cam/params.yaml`：4 路相机完整内参、外参（T_ic）、畸变系数
+  - `cam/tools/`：独立鱼眼转柱面命令行工具（无 ROS2/CUDA 依赖）
+- **启动日志新增**：显示鱼眼去畸变状态（`✅ 已启用` / `❌ 未加载`）和坐标转换模块状态
 
 ### v1.7.0
 
@@ -343,25 +451,18 @@ python tests/test_memory_ws.py
 
 - **子图匹配精简**：移除 SuperPoint+LightGlue 和 Qwen3.5 方案，仅保留 **DINOv3** 密集特征匹配
 - **匹配阈值统一**：置信度阈值从 0.55 调整为 **0.6**
-- **DINOv3 匹配原理**：通过 timm 加载 DINOv3 ViT-B/16，提取密集 patch token，滑动窗口 + unfold 加速余弦相似度匹配
 - **帧间相似度升级**：SSIM 替换为 DINOv2 帧间相似度，阈值 0.70
-- **子图匹配增强**：特征点上限提升至 4096，匹配分辨率升至 1280×960
 - **三级 crop 级联匹配**：small/mid/big 三种裁剪尺度级联匹配 + 全相机遍历，提升匹配鲁棒性
-- **子图匹配可视化优化**：全量保存可视化结果，缓存复用用黄框标注，仅有效 bbox 时保存
-- **VPR 配置修复**：`order_invariant` 统一由 `vpr_config.yaml` 配置，修复 SelaVPR++ 误用无序匹配
 
 ### v1.5.0
 
 - **输出格式统一**：记忆关闭时输出与 `ws_proxy.py` 完全一致，始终包含 `pixel_target`，不输出 `memory_active` 等额外字段
-- **pixel_target 统一输出**：记忆开启时 `sub_image_match.match.center_pct` 自动映射为 `pixel_target: [x, y]`
 - **子图匹配缓存**：置信度低于 0.45 时自动延用上一帧成功结果，步骤切换或任务重置时清空
-- **测试脚本优化**：移除旧版 `angle` 引用，新增 `camera_name`、`sub_conf`、`pixel_target` 展示列和子图匹配统计
 
 ### v1.4.0
 
 - **子图匹配导航**：从角度导航升级到 SuperPoint + LightGlue 子图匹配
 - **边模型重构**：从 `angle + pixel_position` 改为 `camera_name + crop_image + pixel_box`
-- **子图匹配可视化**：新增可视化验证页面
 
 ### v1.3.0
 

@@ -141,10 +141,20 @@ class DINOv3Strategy(BaseSubImageMatchStrategy):
     DINOv3 相比 DINOv2 在密集特征质量上有显著提升。
     """
 
+    # 默认本地权重路径 (相对于本文件)
+    _DEFAULT_WEIGHTS_DIR = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "pretrained"
+    )
+
     def __init__(self, device: str = "cuda:0",
-                 model_name: str = "vit_base_patch16_dinov3"):
+                 model_name: str = "vit_base_patch16_dinov3",
+                 local_weights_path: str = None):
         self._device = device if torch.cuda.is_available() else "cpu"
         self._model_name = model_name
+        self._local_weights_path = local_weights_path or os.path.join(
+            self._DEFAULT_WEIGHTS_DIR, "dinov3_vitb16.safetensors"
+        )
         self._model = None
         self._patch_size = 16  # DINOv3 ViT-B/16
         self._feature_dim = 768  # ViT-B
@@ -156,12 +166,30 @@ class DINOv3Strategy(BaseSubImageMatchStrategy):
         if self._model is not None:
             return
         import timm
-        logger.info(f"[DINOv3] 正在通过 timm 加载 {self._model_name} ...")
-        self._model = timm.create_model(
-            self._model_name,
-            pretrained=True,
-            num_classes=0,  # 去掉分类头
-        )
+        from safetensors.torch import load_file as load_safetensors
+
+        # 优先从本地加载权重
+        if os.path.exists(self._local_weights_path):
+            logger.info(f"[DINOv3] 从本地加载 {self._local_weights_path} ...")
+            self._model = timm.create_model(
+                self._model_name,
+                pretrained=False,
+                num_classes=0,
+            )
+            state_dict = load_safetensors(self._local_weights_path)
+            # 过滤掉分类头权重 (head.*)
+            state_dict = {k: v for k, v in state_dict.items()
+                         if not k.startswith('head.')}
+            self._model.load_state_dict(state_dict, strict=False)
+            logger.info(f"[DINOv3] 本地权重加载完成")
+        else:
+            logger.warning(f"[DINOv3] 本地权重不存在: {self._local_weights_path}，回退到 timm 在线加载")
+            self._model = timm.create_model(
+                self._model_name,
+                pretrained=True,
+                num_classes=0,
+            )
+
         self._model = self._model.eval().to(self._device)
 
         # 获取 patch_size 和 feature_dim

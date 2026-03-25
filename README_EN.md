@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-1.8.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v1.8.0)
+[![Version](https://img.shields.io/badge/Version-1.9.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v1.9.0)
 
 A robot memory navigation system based on Visual Place Recognition (VPR) and topological maps
 
@@ -161,7 +161,7 @@ Dense patch feature sub-image matching using **DINOv3**:
 1. **Memory Build**: Each edge is annotated with `camera_name` (target camera) and `crop_image` (attention crop)
 2. **Navigation**: The crop sub-image is retrieved from memory and matched against the real-time camera frame
 3. **Target Localization**: DINOv3 ViT-B/16 extracts dense patch tokens → sliding window + unfold acceleration → cosine similarity argmax → output as `pixel_target`
-4. **Match Threshold**: Confidence ≥ 0.6 counts as a successful match
+4. **Match Threshold**: Confidence ≥ `SUB_MATCH_CONFIDENCE_THRESHOLD` (currently 0.65) counts as a successful match
 5. **Cache**: On low-confidence frames, the last successful result is reused; cache clears on step transitions
 6. **Fallback**: If no cache, uses `pixel_box` from memory as an estimate
 
@@ -384,6 +384,18 @@ python tests/test_memory_ws.py
 
 ## 📋 Changelog
 
+### v1.9.0
+
+- **🔭 Lookahead Dual Confirmation**: Step advance now requires both VPR match and next-step sub-image match
+  - Each frame performs sub-image matching for both current step and next step (lookahead bypasses cache logic)
+  - VPR match to target node requires next-step sub-image match success (`conf >= threshold`) to advance
+  - Last step advances directly without lookahead
+  - New `VPR HELD` state: VPR matched target but lookahead not confirmed, holds advance
+- **🎯 Unified Sub-image Match Threshold**: `SUB_MATCH_CONFIDENCE_THRESHOLD` as single source of truth
+  - Full pipeline: ws_proxy → MemoryNavigator → SubImageMatcher parameter passing
+  - Test imports constant directly; change once, propagates everywhere
+- **📊 Enhanced Test Logs**: New `la_conf` column, lookahead confirmation tags on advance, Lookahead statistics section
+
 ### v1.8.0
 
 - **🆕 Fisheye Undistortion**: Added `deploy/memory_nav/fisheye_undistort.py`, ported from `cam/tools/fisheye_undist_cpu.h`
@@ -408,7 +420,7 @@ python tests/test_memory_ws.py
 ### v1.6.0
 
 - **Sub-image Matching Simplified**: Removed SuperPoint+LightGlue, kept DINOv3 dense matching only
-- **Unified Threshold**: Confidence threshold set to 0.6
+- **Unified Threshold**: Confidence threshold unified as `SUB_MATCH_CONFIDENCE_THRESHOLD` (currently 0.65)
 - **Frame Similarity Upgrade**: SSIM replaced by DINOv2 inter-frame similarity (threshold 0.70)
 - **3-scale Cascade Matching**: small/mid/big crops + full-camera sweep for robustness
 

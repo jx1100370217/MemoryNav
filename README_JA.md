@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-1.8.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v1.8.0)
+[![Version](https://img.shields.io/badge/Version-1.9.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v1.9.0)
 
 VPR（視覚的場所認識）とトポロジカルマップに基づくロボット記憶ナビゲーションシステム
 
@@ -28,6 +28,7 @@ MemoryNavは移動ロボット向けの視覚記憶ナビゲーションシス�
 - **🔄 循環シフトマッチング**：4カメラ循環シフトアルゴリズムによる方向不変の自己位置推定と偏向角推定
 - **🎯 DINOv3サブ画像マッチング**：DINOv3高密度パッチ特徴量によるスライディングウィンドウコサイン類似度マッチング、リアルタイムでカメラ画像内のナビゲーション目標を測位
 - **💾 マッチングキャッシュ**：信頼度が低い場合は直前の成功結果を自動的に再利用し、ナビゲーションの継続性を向上
+- **🔭 Lookahead二重確認**：ステップ切替時にVPR定位と次ステップのサブ画像マッチングを同時検証し、早期advanceを防止
 - **📤 統一出力フォーマット**：記憶モードのオン/オフに関わらず一貫したレスポンス形式、常に`pixel_target`を提供
 - **🤖 Qwen3.5フォールバックグラウンディング**：VPR/サブ画像マッチング失敗時にQwen3.5-9B VLMへ自動切り替え、中国語のランドマーク名を直接使用
 - **📷 魚眼歪み補正**：起動時に`cam/params.yaml`からカメラ内部パラメータを読み込み、VPR・サブ画像マッチング前に入力画像へ円筒投影歪み補正を適用
@@ -134,7 +135,7 @@ yaw + distance → (x_forward, y_lateral)
 1. **記憶構築時**：各エッジに`camera_name`（目標カメラ）と`crop_image`（注意クロップ）をアノテーション
 2. **ナビゲーション実行時**：記憶からcropサブ画像を取得し、リアルタイムカメラ画像に対して高密度特徴量マッチングを実施
 3. **目標測位**：DINOv3 ViT-B/16で高密度パッチトークンを抽出 → スライディングウィンドウ + unfold加速 → コサイン類似度最大位置 → `pixel_target`として出力
-4. **マッチング閾値**：信頼度 ≥ 0.6 で成功
+4. **マッチング閾値**：信頼度 ≥ `SUB_MATCH_CONFIDENCE_THRESHOLD`（現在0.65）で成功
 5. **キャッシュ**：低信頼度フレームでは直前の成功結果を再利用、ステップ切り替え時にクリア
 6. **フォールバック**：キャッシュなしの場合、記憶内の`pixel_box`を推定値として使用
 
@@ -224,6 +225,15 @@ python deploy/ws_proxy_with_memory.py
 ---
 
 ## 📋 更新履歴
+
+### v1.9.0
+
+- **🔭 Lookahead二重確認**：ステップ切替条件をVPR + 次ステップサブ画像マッチングの二重確認に強化
+  - 毎フレーム現在のステップと次ステップを同時にサブ画像マッチング
+  - VPRが目標ノードに一致しても、次ステップの一致が成功しなければadvanceしない
+  - 最終ステップはlookahead不要で直接advance
+- **🎯 サブ画像マッチング閾値統一**：`SUB_MATCH_CONFIDENCE_THRESHOLD`を唯一の真実のソースとして全パイプラインに伝播
+- **📊 テストログ強化**：`la_conf`列追加、Lookahead統計セクション追加
 
 ### v1.8.0
 

@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-1.8.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v1.8.0)
+[![Version](https://img.shields.io/badge/Version-1.9.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v1.9.0)
 
 VPR(시각적 장소 인식)과 위상 지도 기반 로봇 기억 내비게이션 시스템
 
@@ -28,6 +28,7 @@ MemoryNav는 이동 로봇을 위한 시각적 기억 내비게이션 시스템�
 - **🔄 순환 시프트 매칭**：4카메라 순환 시프트 알고리즘으로 방향 불변 위치 추정 및 편향각 추정
 - **🎯 DINOv3 서브 이미지 매칭**：DINOv3 고밀도 패치 특징의 슬라이딩 윈도우 코사인 유사도 매칭, 실시간 카메라 프레임에서 내비게이션 목표 측위
 - **💾 매칭 캐시**：신뢰도가 낮을 경우 마지막 성공 결과를 자동 재사용하여 내비게이션 연속성 향상
+- **🔭 Lookahead 이중 확인**: 단계 전환 시 VPR 위치 확인과 다음 단계 서브이미지 매칭을 동시 검증하여 조기 advance 방지
 - **📤 통합 출력 형식**：기억 모드 온/오프에 관계없이 일관된 응답 형식, 항상 `pixel_target` 제공
 - **🤖 Qwen3.5 폴백 그라운딩**：VPR/서브 이미지 매칭 실패 시 Qwen3.5-9B VLM으로 자동 전환
 - **📷 어안 왜곡 보정**：시작 시 `cam/params.yaml`에서 카메라 내부 파라미터 로드, VPR 및 서브 이미지 매칭 전 원통형 투영 왜곡 보정 적용
@@ -134,7 +135,7 @@ yaw + distance → (x_forward, y_lateral)
 1. **기억 구축 시**：각 엣지에 `camera_name`(목표 카메라)과 `crop_image`(어텐션 크롭) 어노테이션
 2. **내비게이션 실행 시**：기억에서 crop 서브 이미지를 가져와 실시간 카메라 프레임에 대해 고밀도 특징 매칭 수행
 3. **목표 측위**：DINOv3 ViT-B/16으로 고밀도 패치 토큰 추출 → 슬라이딩 윈도우 + unfold 가속 → 코사인 유사도 최대 위치 → `pixel_target`으로 출력
-4. **매칭 임계값**：신뢰도 ≥ 0.6 시 성공
+4. **매칭 임계값**：신뢰도 ≥ `SUB_MATCH_CONFIDENCE_THRESHOLD` (현재 0.65) 시 성공
 5. **캐시**：낮은 신뢰도 프레임에서 마지막 성공 결과 재사용, 스텝 전환 시 초기화
 6. **폴백**：캐시 없을 경우 기억 내 `pixel_box`를 추정값으로 사용
 
@@ -224,6 +225,15 @@ python deploy/ws_proxy_with_memory.py
 ---
 
 ## 📋 업데이트 로그
+
+### v1.9.0
+
+- **🔭 Lookahead 이중 확인**: 단계 전환 조건을 VPR + 다음 단계 서브이미지 매칭 이중 확인으로 강화
+  - 매 프레임마다 현재 단계와 다음 단계를 동시에 서브이미지 매칭
+  - VPR이 목표 노드에 매칭되어도 다음 단계 매칭이 성공해야 advance
+  - 마지막 단계는 lookahead 없이 직접 advance
+- **🎯 서브이미지 매칭 임계값 통합**: `SUB_MATCH_CONFIDENCE_THRESHOLD`를 단일 소스로 전체 파이프라인에 전파
+- **📊 테스트 로그 강화**: `la_conf` 열 추가, Lookahead 통계 섹션 추가
 
 ### v1.8.0
 

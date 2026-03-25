@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-1.8.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v1.8.0)
+[![Version](https://img.shields.io/badge/Version-1.9.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v1.9.0)
 
 基于视觉位置识别（VPR）和拓扑地图的机器人记忆导航系统
 
@@ -28,6 +28,7 @@ MemoryNav 是一个面向移动机器人的视觉记忆导航系统。系统通�
 - **🔄 循环移位匹配**：4 相机循环移位算法，支持任意朝向下的定位与偏转角估计
 - **🎯 DINOv3 子图匹配**：基于 DINOv3 密集 patch 特征的子图定位，滑动窗口余弦相似度匹配，实时在相机图中定位导航目标
 - **💾 子图匹配缓存**：匹配失败时自动延用上一帧的成功结果，提升导航连续性
+- **🔭 Lookahead 双重确认**：步骤切换时同时验证 VPR 定位和下一步子图匹配，避免过早 advance
 - **📤 统一输出格式**：记忆模式开关两种状态下输出格式一致，始终提供 `pixel_target`
 - **🤖 Qwen3.5 兜底打点**：VPR/子图匹配失败时自动切换 Qwen3.5-9B 视觉语言模型打点定位，直接使用中文地标名称
 - **📷 鱼眼去畸变**：自动从 `cam/params.yaml` 加载相机内参，对输入图像做柱面投影去畸变，提升 VPR 及子图匹配精度
@@ -352,6 +353,8 @@ if match and match['match']['found']:
         "vpr_matched_node": "node_5",
         "heading_offset": -37.5,
         "consecutive_misses": 0,
+        "lookahead_conf": 0.68,
+        "lookahead_found": true,
         "coord_transform": {
             "yaw_global_deg": -12.3,
             "depression_deg": 8.5,
@@ -414,13 +417,30 @@ python tests/test_memory_ws.py
 ```
 
 测试输出包含：
-- 📊 逐帧详情（VPR 匹配、子图匹配置信度、camera、pixel_target、action、决策类型）
+- 📊 逐帧详情（VPR 匹配、子图匹配置信度、lookahead 置信度、camera、action、决策类型）
 - 📈 VPR 相似度变化趋势 ASCII 图
-- 📋 统计报告（VPR 匹配率、子图匹配率、节点分布、决策分布、Phase 分布）
+- 📋 统计报告（VPR 匹配率、子图匹配率、Lookahead 双重确认统计、节点分布、决策分布）
 
 ---
 
 ## 📋 更新日志
+
+### v1.9.0
+
+- **🔭 Lookahead 双重确认**：步骤切换条件从单一 VPR 匹配升级为 VPR + 下一步子图匹配双重确认
+  - 每帧对当前步骤和下一步同时做子图匹配（lookahead 不走缓存逻辑）
+  - VPR 匹配到目标节点时，需下一步子图匹配成功（`conf >= threshold`）才 advance
+  - 最后一步无需 lookahead，直接 advance
+  - 新增 `VPR HELD` 状态：VPR 到了但 lookahead 未确认，暂缓切换
+- **🎯 子图匹配阈值统一**：`SUB_MATCH_CONFIDENCE_THRESHOLD` 作为唯一真相源
+  - 服务端 → `MemoryNavigator` → `SubImageMatcher` 全链路传参
+  - 测试端通过 `from deploy.ws_proxy_with_memory import SUB_MATCH_CONFIDENCE_THRESHOLD` 引用
+  - 改一处，服务/匹配器/测试全部同步生效
+- **📊 测试日志增强**：
+  - 表头新增 `la_conf` 列（lookahead 子图匹配置信度）
+  - advance 事件标注 `🔭 lookahead确认`
+  - 统计报告新增【Lookahead 双重确认】小节（触发次数、暂缓次数、通过率）
+  - 修复 advance 日志中目标节点显示错误（之前显示的是 advance 后新步骤的目标）
 
 ### v1.8.0
 
@@ -450,14 +470,14 @@ python tests/test_memory_ws.py
 ### v1.6.0
 
 - **子图匹配精简**：移除 SuperPoint+LightGlue 和 Qwen3.5 方案，仅保留 **DINOv3** 密集特征匹配
-- **匹配阈值统一**：置信度阈值从 0.55 调整为 **0.6**
+- **匹配阈值统一**：置信度阈值统一为 `SUB_MATCH_CONFIDENCE_THRESHOLD`（当前 0.65）
 - **帧间相似度升级**：SSIM 替换为 DINOv2 帧间相似度，阈值 0.70
 - **三级 crop 级联匹配**：small/mid/big 三种裁剪尺度级联匹配 + 全相机遍历，提升匹配鲁棒性
 
 ### v1.5.0
 
 - **输出格式统一**：记忆关闭时输出与 `ws_proxy.py` 完全一致，始终包含 `pixel_target`，不输出 `memory_active` 等额外字段
-- **子图匹配缓存**：置信度低于 0.45 时自动延用上一帧成功结果，步骤切换或任务重置时清空
+- **子图匹配缓存**：置信度低于阈值时自动延用上一帧成功结果，步骤切换或任务重置时清空
 
 ### v1.4.0
 

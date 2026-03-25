@@ -32,12 +32,20 @@ import base64
 import time
 from collections import defaultdict
 
-WS_URL = "ws://127.0.0.1:9527"
+WS_URL = "ws://127.0.0.1:9528"
 PROJECT_ROOT = "/home/ubuntu/Disk/codes/jianxiong/MemoryNav"
 DATA_DIR = os.path.join(PROJECT_ROOT, "memory_test_data")
 TASK = "前往C8前台"
 # TASK = "前往蓝山"
 SAMPLE_STEP = 1  # 每 N 帧采样一次
+
+# 从服务端导入阈值常量，确保测试与服务使用同一套阈值
+try:
+    sys.path.insert(0, PROJECT_ROOT)
+    from deploy.ws_proxy_with_memory import SUB_MATCH_CONFIDENCE_THRESHOLD, FRAME_SIMILARITY_THRESHOLD
+except ImportError:
+    SUB_MATCH_CONFIDENCE_THRESHOLD = 0.35
+    FRAME_SIMILARITY_THRESHOLD = 0.70
 
 # ANSI 颜色
 C_RESET = "\033[0m"
@@ -94,7 +102,7 @@ async def send_command(ws, command):
     return json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
 
 
-def fmt_similarity(sim, threshold=0.70):
+def fmt_similarity(sim, threshold=FRAME_SIMILARITY_THRESHOLD):
     """格式化相似度值，带颜色标识"""
     if sim >= threshold:
         return f"{C_GREEN}{sim:.4f}{C_RESET}"
@@ -104,7 +112,7 @@ def fmt_similarity(sim, threshold=0.70):
         return f"{C_DIM}{sim:.4f}{C_RESET}"
 
 
-def fmt_confidence(conf, threshold=0.35):
+def fmt_confidence(conf, threshold=SUB_MATCH_CONFIDENCE_THRESHOLD):
     """格式化子图匹配置信度"""
     if conf >= threshold:
         return f"{C_GREEN}{conf:.3f}{C_RESET}"
@@ -140,6 +148,7 @@ def fmt_decision(decision):
         'completed': f"{C_BG_GREEN}{C_WHITE} COMPLETED {C_RESET}",
         'init': f"{C_DIM}INIT{C_RESET}",
         'fallback': f"{C_YELLOW}FALLBACK{C_RESET}",
+        'vpr_held': f"{C_YELLOW}VPR HELD{C_RESET}",
     }
     return colors.get(decision, decision)
 
@@ -228,7 +237,7 @@ async def run_test():
     print(f"\n{C_BOLD}{'帧':>5s} │ {'步骤':>4s} │ {'Phase':^18s} │ {'决策':^14s} │ "
           f"{'VPR匹配节点':^20s} │ {'VPR sim':>8s} │ {'VPR conf':>8s} │ "
           f"{'from → to':^30s} │ {'camera':>10s} │ {'sub_conf':>8s} │ "
-          f"{'pixel_target':>14s} │ {'misses':>6s}{C_RESET}")
+          f"{'la_conf':>8s} │ {'pixel_target':>14s}{C_RESET}")
     print_separator('─')
 
     sample_indices = list(range(0, total_frames, SAMPLE_STEP))
@@ -255,9 +264,15 @@ async def run_test():
     stat_cache_cleared = 0        # 场景变化清除缓存次数
     stat_cache_no_cache = 0       # 无缓存可用次数
     stat_frame_sims = []          # 帧间相似度历史 (frame_idx, sim, reused)
+    stat_lookahead_hits = 0       # lookahead 下一步子图匹配成功次数
+    stat_lookahead_misses = 0     # lookahead 下一步子图匹配失败次数
+    stat_lookahead_triggered_advance = 0  # lookahead 触发 advance 的次数
+    stat_vpr_held_by_lookahead = 0        # VPR 到了但 lookahead 未确认，暂缓 advance 的次数
 
     last_step = -1
     last_phase = None
+    last_to_node_id = None
+    last_to_node = None
 
     for seq, frame_idx in enumerate(sample_indices):
         ts = timestamps[frame_idx]
@@ -305,7 +320,7 @@ async def run_test():
             sub_conf = sub_match['match'].get('confidence', 0.0)
             sub_found = sub_match['match'].get('found', False)
             if cache_action != 'reused':
-                if sub_conf >= 0.35:
+                if sub_conf >= SUB_MATCH_CONFIDENCE_THRESHOLD:
                     stat_sub_match_hits += 1
                 else:
                     stat_sub_match_misses += 1
@@ -317,6 +332,10 @@ async def run_test():
             stat_cache_no_cache += 1
         if frame_sim is not None:
             stat_frame_sims.append((frame_idx, frame_sim, cache_action))
+
+        # lookahead 信息（从 memory_info 中解析）
+        # 服务端会在响应的 memory_info 中记录 lookahead 结果（如果有）
+        # 但由于响应结构未直接暴露 lookahead，我们通过 message 和 advance 决策间接统计
 
         # 统计
         stat_phases[phase] += 1
@@ -341,6 +360,9 @@ async def run_test():
                 decision = 'skip_advance'
             else:
                 decision = 'advance'
+                # lookahead 触发的 advance 会在 message 中包含 "下一步子图匹配成功"
+                if '下一步子图匹配成功' in message:
+                    stat_lookahead_triggered_advance += 1
             stat_steps_completed += 1
         elif vpr_matched is None and active:
             decision = 'miss'
@@ -352,6 +374,13 @@ async def run_test():
             decision = 'replan'
         elif phase == 'fallback':
             decision = 'fallback'
+
+        # 检测 VPR 到了目标但 lookahead 未确认（暂缓 advance）
+        if (vpr_matched == to_node_id and not step_changed
+                and phase == 'verifying' and active
+                and '暂不切换' in message):
+            decision = 'vpr_held'
+            stat_vpr_held_by_lookahead += 1
 
         stat_decisions[decision] += 1
 
@@ -373,7 +402,6 @@ async def run_test():
         camera_str = f"{camera_name}" if camera_name else f"{'─':>10s}"
         sub_conf_str = fmt_confidence(sub_conf)
         pixel_str = f"({pixel_target[0]:.3f},{pixel_target[1]:.3f})" if pixel_target else f"{'─':>14s}"
-        miss_str = f"{consecutive_misses}" if consecutive_misses > 0 else f"{C_DIM}0{C_RESET}"
         nav_str = f"{from_node} → {to_node}" if from_node else "─"
 
         # 格式化 action
@@ -387,15 +415,31 @@ async def run_test():
         else:
             action_str = f"{C_DIM}{'─':>14s}{C_RESET}"
 
+        # lookahead 子图匹配置信度
+        la_conf = mi.get('lookahead_conf', None)
+        la_found = mi.get('lookahead_found', None)
+        if la_conf is not None:
+            if la_found:
+                la_conf_str = f"{C_GREEN}{la_conf:.3f}{C_RESET}"
+            elif la_conf > 0:
+                la_conf_str = f"{C_RED}{la_conf:.3f}{C_RESET}"
+            else:
+                la_conf_str = f"{C_DIM}  ─  {C_RESET}"
+        else:
+            la_conf_str = f"{C_DIM}  ─  {C_RESET}"
+
         print(f"{frame_idx:5d} │ {step_str:>4s} │ {fmt_phase(phase)} │ {fmt_decision(decision):>14s} │ "
               f"{matched_display:>20s} │ {fmt_similarity(vpr_sim):>8s} │ {fmt_similarity(vpr_conf):>8s} │ "
               f"{nav_str:^30s} │ {camera_str:>10s} │ {sub_conf_str:>8s} │ "
-              f"{pixel_str:>14s} │ {action_str:>14s} │ {miss_str:>6s}")
+              f"{la_conf_str:>8s} │ {action_str:>14s}")
 
         # 关键事件详细信息
         if decision in ('advance', 'skip_advance'):
-            print(f"      {C_GREEN}│ ✅ 步骤前进! VPR匹配到目标节点 {to_node_id}, "
-                  f"sim={vpr_sim:.4f}, conf={vpr_conf:.4f}{C_RESET}")
+            _la_tag = f" + 🔭 lookahead确认" if '下一步子图匹配成功' in message else ""
+            _triggered_node = last_to_node_id or to_node_id  # advance 是由上一帧的目标节点触发的
+            _triggered_name = last_to_node or to_node
+            print(f"      {C_GREEN}│ ✅ 步骤前进! VPR匹配到目标节点 {_triggered_node} ({_triggered_name}), "
+                  f"sim={vpr_sim:.4f}, conf={vpr_conf:.4f}{_la_tag}{C_RESET}")
             if plan_path:
                 path_display = ' → '.join(plan_path)
                 progress = f"[{'█' * (step_idx+1)}{'░' * (total_steps - step_idx - 1)}]"
@@ -405,6 +449,9 @@ async def run_test():
         elif decision == 'replan':
             print(f"      {C_MAGENTA}│ 🔄 重新规划路径! 当前匹配: {vpr_matched}, "
                   f"新路径: {' → '.join(plan_path)}{C_RESET}")
+
+        elif decision == 'vpr_held':
+            print(f"      {C_YELLOW}│ ⏳ VPR匹配到目标节点 {to_node_id}，但下一步子图匹配未成功，暂不切换{C_RESET}")
 
         elif decision == 'miss' and consecutive_misses >= 3:
             print(f"      {C_RED}│ ⚠️ 连续VPR丢失 {consecutive_misses} 次!{C_RESET}")
@@ -421,24 +468,15 @@ async def run_test():
         # 子图匹配缓存复用详情
         if cache_action and cache_action != 'accepted':
             if cache_action == 'reused':
-                print(f"      {C_CYAN}│ 🔄 缓存复用: 帧间DINOv2相似度={frame_sim:.4f} >= 0.70, "
+                print(f"      {C_CYAN}│ 🔄 缓存复用: 帧间DINOv2相似度={frame_sim:.4f} >= {FRAME_SIMILARITY_THRESHOLD}, "
                       f"sub_conf={sub_conf:.3f} < threshold, 复用上次匹配结果{C_RESET}")
             elif cache_action == 'cleared':
-                print(f"      {C_RED}│ 🗑️ 缓存清除: 帧间DINOv2相似度={frame_sim:.4f} < 0.70, "
+                print(f"      {C_RED}│ 🗑️ 缓存清除: 帧间DINOv2相似度={frame_sim:.4f} < {FRAME_SIMILARITY_THRESHOLD}, "
                       f"场景变化大{C_RESET}")
             elif cache_action == 'no_cache':
                 print(f"      {C_DIM}│ ❌ 无缓存: sub_conf={sub_conf:.3f} < threshold, 无历史缓存可用{C_RESET}")
 
-        # 子图匹配缓存复用详情
-        if cache_action and cache_action != 'accepted':
-            if cache_action == 'reused':
-                print(f"      {C_CYAN}│ 🔄 缓存复用: 帧间DINOv2相似度={frame_sim:.4f} >= 0.85, "
-                      f"sub_conf={sub_conf:.3f} < threshold, 复用上次匹配结果{C_RESET}")
-            elif cache_action == 'cleared':
-                print(f"      {C_RED}│ 🗑️ 缓存清除: 帧间DINOv2相似度={frame_sim:.4f} < 0.85, "
-                      f"场景变化大{C_RESET}")
-            elif cache_action == 'no_cache':
-                print(f"      {C_DIM}│ ❌ 无缓存: sub_conf={sub_conf:.3f} < threshold, 无历史缓存可用{C_RESET}")
+
 
         # 重要消息
         if message and decision not in ('continue', 'miss', 'init', 'completed'):
@@ -447,6 +485,10 @@ async def run_test():
 
         last_step = step_idx
         last_phase = phase
+        if to_node_id:  # VPR MISS 帧的 memory_info 可能缺少 to_node_id，保留上次有效值
+            last_to_node_id = to_node_id
+        if to_node:
+            last_to_node = to_node
 
         if task_status == 'end':
             completed = True
@@ -497,16 +539,16 @@ async def run_test():
     if total_sub > 0:
         sub_hit_rate = stat_sub_match_hits / total_sub * 100
         print(f"\n  {C_BOLD}【子图匹配统计】{C_RESET}")
-        print(f"  {'匹配成功 (≥0.35)':>16s}: {stat_sub_match_hits} / {total_sub} ({sub_hit_rate:.1f}%)  (不含缓存复用)")
-        print(f"  {'匹配失败 (<0.35)':>16s}: {stat_sub_match_misses}")
+        print(f"  {f'匹配成功 (≥{SUB_MATCH_CONFIDENCE_THRESHOLD})':>16s}: {stat_sub_match_hits} / {total_sub} ({sub_hit_rate:.1f}%)  (不含缓存复用)")
+        print(f"  {f'匹配失败 (<{SUB_MATCH_CONFIDENCE_THRESHOLD})':>16s}: {stat_sub_match_misses}")
         print(f"  {'缓存复用 (不计入)':>16s}: {stat_cache_reused}")
 
     # 帧间相似度 & 缓存复用统计
     total_cache_events = stat_cache_reused + stat_cache_cleared + stat_cache_no_cache
     if total_cache_events > 0:
         print(f"\n  {C_BOLD}【帧间相似度 & 缓存复用】{C_RESET}")
-        print(f"  {'缓存复用次数':>16s}: {stat_cache_reused} ({C_GREEN}帧间DINOv2相似度 >= 0.70{C_RESET})")
-        print(f"  {'缓存清除次数':>16s}: {stat_cache_cleared} ({C_RED}帧间DINOv2相似度 < 0.70{C_RESET})")
+        print(f"  {'缓存复用次数':>16s}: {stat_cache_reused} ({C_GREEN}帧间DINOv2相似度 >= {FRAME_SIMILARITY_THRESHOLD}{C_RESET})")
+        print(f"  {'缓存清除次数':>16s}: {stat_cache_cleared} ({C_RED}帧间DINOv2相似度 < {FRAME_SIMILARITY_THRESHOLD}{C_RESET})")
         print(f"  {'无缓存可用':>16s}: {stat_cache_no_cache}")
         if stat_frame_sims:
             sims_only = [s[1] for s in stat_frame_sims]
@@ -517,35 +559,22 @@ async def run_test():
             print(f"  {'帧间相似度序列':>16s}: ", end="")
             for _, sim, action in stat_frame_sims:
                 if action == 'reused':
-                    print(f"{C_GREEN}{'█' if sim >= 0.70 else '▄'}{C_RESET}", end="")
+                    print(f"{C_GREEN}{'█' if sim >= FRAME_SIMILARITY_THRESHOLD else '▄'}{C_RESET}", end="")
                 elif action == 'cleared':
                     print(f"{C_RED}▁{C_RESET}", end="")
                 else:
                     print(f"{C_DIM}·{C_RESET}", end="")
             print(f"  {C_DIM}(█=复用 ▁=清除 ·=无缓存){C_RESET}")
 
-    # 帧间相似度 & 缓存复用统计
-    total_cache_events = stat_cache_reused + stat_cache_cleared + stat_cache_no_cache
-    if total_cache_events > 0:
-        print(f"\n  {C_BOLD}【帧间相似度 & 缓存复用】{C_RESET}")
-        print(f"  {'缓存复用次数':>16s}: {stat_cache_reused} ({C_GREEN}帧间DINOv2相似度 >= 0.85{C_RESET})")
-        print(f"  {'缓存清除次数':>16s}: {stat_cache_cleared} ({C_RED}帧间DINOv2相似度 < 0.85{C_RESET})")
-        print(f"  {'无缓存可用':>16s}: {stat_cache_no_cache}")
-        if stat_frame_sims:
-            sims_only = [s[1] for s in stat_frame_sims]
-            print(f"  {'帧间相似度':>16s}: min={min(sims_only):.4f}  avg={sum(sims_only)/len(sims_only):.4f}  max={max(sims_only):.4f}")
-
-        # 帧间相似度趋势迷你图
-        if len(stat_frame_sims) > 3:
-            print(f"  {'帧间相似度序列':>16s}: ", end="")
-            for _, sim, action in stat_frame_sims:
-                if action == 'reused':
-                    print(f"{C_GREEN}{'█' if sim >= 0.85 else '▄'}{C_RESET}", end="")
-                elif action == 'cleared':
-                    print(f"{C_RED}▁{C_RESET}", end="")
-                else:
-                    print(f"{C_DIM}·{C_RESET}", end="")
-            print(f"  {C_DIM}(█=复用 ▁=清除 ·=无缓存){C_RESET}")
+        # Lookahead 双重确认统计
+    if stat_lookahead_triggered_advance > 0 or stat_vpr_held_by_lookahead > 0:
+        print(f"\n  {C_BOLD}【Lookahead 双重确认】{C_RESET}")
+        print(f"  {'lookahead触发advance':>18s}: {stat_lookahead_triggered_advance} 次 (VPR匹配目标 + 下一步子图匹配成功)")
+        print(f"  {'VPR到了但暂缓切换':>18s}: {stat_vpr_held_by_lookahead} 次 (VPR匹配目标, 但下一步子图未成功)")
+        _total_vpr_at_target = stat_lookahead_triggered_advance + stat_vpr_held_by_lookahead
+        if _total_vpr_at_target > 0:
+            _la_rate = stat_lookahead_triggered_advance / _total_vpr_at_target * 100
+            print(f"  {'lookahead通过率':>18s}: {_la_rate:.1f}% ({stat_lookahead_triggered_advance}/{_total_vpr_at_target})")
 
     # VPR 匹配节点分布
     if stat_vpr_matches:

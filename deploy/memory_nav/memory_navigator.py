@@ -53,6 +53,7 @@ class MemoryNavigator:
                  vpr_method: str = "selavpr",
                  anyloc_config: dict = None,
                  sub_image_method: str = "dinov3",
+                 confidence_threshold: float = 0.65,
                  preload_all_matchers: bool = False,
                  qwen35_gpu: str = "1",
                  preload_qwen35: bool = False):
@@ -82,7 +83,7 @@ class MemoryNavigator:
                 vpr_method=vpr_method, device=device, config=anyloc_config)
         
         # 子图匹配器
-        self.sub_image_matcher = SubImageMatcher(device=device, default_method=sub_image_method)
+        self.sub_image_matcher = SubImageMatcher(device=device, default_method=sub_image_method, confidence_threshold=confidence_threshold)
         try:
             if preload_all_matchers:
                 self.sub_image_matcher.preload_all()  # 启动时加载所有方案模型

@@ -163,6 +163,7 @@ class MemoryNavState:
     fallback_action: Optional[list] = None        # InternVLN 兜底动作
     fallback_pixel_target: Optional[list] = None  # InternVLN 兜底像素目标
     fallback_instruction: Optional[str] = None    # InternVLN 兜底指令
+    next_step_sub_match: Optional[Dict] = None    # lookahead: 下一步的子图匹配结果
 
     def reset(self):
         """重置状态"""
@@ -182,6 +183,7 @@ class MemoryNavState:
         self.fallback_action = None
         self.fallback_pixel_target = None
         self.fallback_instruction = None
+        self.next_step_sub_match = None
         logger.info("[MemoryNavState] 状态已重置")
 
     def get_current_step(self) -> Optional[NavigationStep]:
@@ -207,6 +209,7 @@ class MemoryNavState:
         self.fallback_action = None
         self.fallback_pixel_target = None
         self.fallback_instruction = None
+        self.next_step_sub_match = None
         if self.current_step_idx >= len(self.plan.steps):
             self.phase = 'completed'
             logger.info(f"[MemoryNavState] 导航完成！已到达终点")
@@ -303,7 +306,8 @@ def init_memory_navigator(device: str = "cuda:0", vpr_method: str = "selavpr") -
         navigator = MemoryNavigator(
             vpr_method=vpr_method,
             device=device,
-            qwen35_gpu="1"
+            qwen35_gpu="1",
+            confidence_threshold=SUB_MATCH_CONFIDENCE_THRESHOLD,
         )
         logger.info(f"  ├─ VPR 模型:    {vpr_method.upper()} (dim={navigator.feature_dim}, device={device})")
         logger.info(f"  ├─ 子图匹配:    DINOv3 (device={device})")
@@ -696,6 +700,10 @@ def build_memory_response(
         "vpr_matched_node": vpr_result.matched_node_id if vpr_result else None,
         "phase": nav_state.phase,
         "consecutive_misses": nav_state.consecutive_misses,
+        "lookahead_conf": (nav_state.next_step_sub_match.get('match', {}).get('confidence', 0)
+                           if nav_state.next_step_sub_match else None),
+        "lookahead_found": (nav_state.next_step_sub_match.get('match', {}).get('found', False)
+                            if nav_state.next_step_sub_match else None),
     }
 
     if not message:
@@ -794,7 +802,7 @@ def _extract_pixel_target(sub_image_match=None):
     return [center['x'], center['y']]
 
 
-SUB_MATCH_CONFIDENCE_THRESHOLD = 0.35
+SUB_MATCH_CONFIDENCE_THRESHOLD = 0.60
 
 FRAME_SIMILARITY_THRESHOLD = 0.70  # 帧间 DINOv2 特征相似度阈值，高于此值认为场景几乎没变
 
@@ -842,8 +850,8 @@ def _cache_or_reuse_sub_match(nav_state: MemoryNavState, sub_match: dict,
     缓存成功的子图匹配结果，失败时基于帧间相似度决定是否复用。
 
     核心逻辑：
-    - 匹配成功 (conf >= 0.45): 采纳并更新缓存（保存当前帧用于下次相似度比较）
-    - 匹配失败 (conf < 0.45): 若前后帧相似度 > 0.95，复用上一帧匹配框；否则清除缓存
+    - 匹配成功 (conf >= SUB_MATCH_CONFIDENCE_THRESHOLD=0.65): 采纳并更新缓存（保存当前帧用于下次相似度比较）
+    - 匹配失败 (conf < 0.35): 若前后帧相似度 >= FRAME_SIMILARITY_THRESHOLD=0.70，复用上一帧匹配框；否则清除缓存
     - 无缓存可用: 返回 None，让上层走 InternVLN 兜底
     """
     if sub_match is None:
@@ -1322,6 +1330,27 @@ async def process_inference_with_memory(message_data, session_state, agent,
             _sub_match = _cache_or_reuse_sub_match(nav_state, _sub_match, nav_state.last_query_features, _cache_cam_name)
             visualize_sub_image_match(camera_images, _sub_match, pts, cache_action=nav_state.last_cache_action)
 
+            # ---- lookahead: 对下一步也做子图匹配 ----
+            _next_step_idx = nav_state.current_step_idx + 1
+            if _next_step_idx < len(nav_state.plan.steps) and camera_images:
+                _next_step = nav_state.plan.steps[_next_step_idx]
+                try:
+                    _next_sub_match = navigator.match_current_step(camera_images, step=_next_step)
+                    nav_state.next_step_sub_match = _next_sub_match
+                    _next_found = (_next_sub_match is not None
+                                   and _next_sub_match.get('match', {}).get('found', False)
+                                   and _next_sub_match.get('match', {}).get('confidence', 0) >= SUB_MATCH_CONFIDENCE_THRESHOLD)
+                    logger.info(f"🔭 [Lookahead] 下一步 {_next_step.from_node_name} → {_next_step.to_node_name} "
+                                f"子图匹配: {'✅ 成功' if _next_found else '❌ 未匹配'} "
+                                f"(conf={_next_sub_match.get('match', {}).get('confidence', 0):.4f})" if _next_sub_match else
+                                f"🔭 [Lookahead] 下一步 {_next_step.from_node_name} → {_next_step.to_node_name} "
+                                f"子图匹配: ❌ 无结果")
+                except Exception as e:
+                    nav_state.next_step_sub_match = None
+                    logger.warning(f"🔭 [Lookahead] 下一步子图匹配异常: {e}")
+            else:
+                nav_state.next_step_sub_match = None
+
             # ---- Qwen3.5 兜底打点: 子图匹配失败且无缓存时 ----
             nav_state.fallback_action = None
             nav_state.fallback_pixel_target = None
@@ -1394,49 +1423,75 @@ async def process_inference_with_memory(message_data, session_state, agent,
             if vpr_result is not None:
                 matched_id = vpr_result.matched_node_id
 
-                # ---- Case A: VPR 匹配到目标节点 → advance ----
+                # ---- Case A: VPR 匹配到目标节点 → lookahead 双重确认后 advance ----
                 if matched_id == target_node_id:
-                    logger.info(f"✅ [Memory] VPR 匹配到目标节点 {target_node_id}! 前进到下一步")
-                    has_next = nav_state.advance()
+                    is_last_step = (nav_state.current_step_idx + 1 >= len(nav_state.plan.steps))
 
-                    if has_next:
-                        nav_state.phase = 'step_init'
-                        session_state['request_count'] += 1
-                        session_state['last_instruction'] = instruction
-                        session_state['last_task'] = current_task
-                        resp = build_memory_response(robot_id, pts, nav_state, vpr_result, sub_image_match=_sub_match)
-                        logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
-                        return resp
+                    # lookahead: 检查下一步子图匹配是否成功
+                    _next_match_ok = False
+                    if nav_state.next_step_sub_match is not None:
+                        _nm = nav_state.next_step_sub_match.get('match', {})
+                        _next_match_ok = (_nm.get('found', False)
+                                          and _nm.get('confidence', 0) >= SUB_MATCH_CONFIDENCE_THRESHOLD)
+
+                    if is_last_step or _next_match_ok:
+                        # 双重确认通过（最后一步无需 lookahead / 下一步子图匹配成功）
+                        _reason = "最后一步" if is_last_step else f"下一步子图匹配成功(conf={nav_state.next_step_sub_match.get('match', {}).get('confidence', 0):.4f})"
+                        logger.info(f"✅ [Memory] VPR 匹配到目标节点 {target_node_id} + {_reason}! 前进到下一步")
+                        has_next = nav_state.advance()
+
+                        if has_next:
+                            nav_state.phase = 'step_init'
+                            session_state['request_count'] += 1
+                            session_state['last_instruction'] = instruction
+                            session_state['last_task'] = current_task
+                            _adv_msg = f"记忆导航: 步骤前进 ({_reason})"
+                            resp = build_memory_response(robot_id, pts, nav_state, vpr_result, sub_image_match=_sub_match, message=_adv_msg)
+                            logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
+                            return resp
+                        else:
+                            # 导航完成 — 不调用 build_memory_response (无当前步骤)
+                            nav_state.phase = 'completed'
+                            session_state['request_count'] += 1
+                            session_state['last_instruction'] = instruction
+                            session_state['last_task'] = current_task
+                            resp = {
+                                "status": "success",
+                                "id": robot_id,
+                                "pts": pts,
+                                "task_status": "end",
+                                "action": [[0.0, 0.0, 0.0]],
+                                "pixel_target": None,
+                                "camera_name": None,
+                                "landmark_name": None,
+                                "sub_image_match": None,
+                                "memory_active": True,
+                                "memory_info": {
+                                    "plan_path": nav_state.plan.path if nav_state.plan else [],
+                                    "current_step": nav_state.current_step_idx,
+                                    "total_steps": nav_state.plan.total_steps if nav_state.plan else 0,
+                                    "from_node": vpr_result.matched_node_name if vpr_result else "",
+                                    "from_node_eng": getattr(vpr_result, 'matched_node_name_eng', '') if vpr_result else "",
+                                    "to_node": nav_state.plan.goal_node_name if nav_state.plan else "",
+                                    "to_node_eng": getattr(nav_state.plan, 'goal_node_name_eng', '') if nav_state.plan else "",
+                                    "phase": "completed",
+                                    "vpr_confidence": vpr_result.confidence if vpr_result else 0.0,
+                                },
+                                "message": f"🎉 记忆导航完成！已到达 {nav_state.plan.goal_node_name}"
+                            }
+                            logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
+                            return resp
                     else:
-                        # 导航完成 — 不调用 build_memory_response (无当前步骤)
-                        nav_state.phase = 'completed'
+                        # VPR 到了目标节点，但下一步子图匹配未成功，暂不 advance
+                        logger.info(f"⏳ [Memory] VPR 匹配到目标节点 {target_node_id} ({step.to_node_name})，"
+                                    f"但下一步子图匹配未成功，暂不切换")
+                        nav_state.consecutive_misses = 0
+                        nav_state.phase = 'verifying'
                         session_state['request_count'] += 1
                         session_state['last_instruction'] = instruction
                         session_state['last_task'] = current_task
-                        resp = {
-                            "status": "success",
-                            "id": robot_id,
-                            "pts": pts,
-                            "task_status": "end",
-                            "action": [[0.0, 0.0, 0.0]],
-                            "pixel_target": None,
-                            "camera_name": None,
-                            "landmark_name": None,
-                            "sub_image_match": None,
-                            "memory_active": True,
-                            "memory_info": {
-                                "plan_path": nav_state.plan.path if nav_state.plan else [],
-                                "current_step": nav_state.current_step_idx,
-                                "total_steps": nav_state.plan.total_steps if nav_state.plan else 0,
-                                "from_node": vpr_result.matched_node_name if vpr_result else "",
-                                "from_node_eng": getattr(vpr_result, 'matched_node_name_eng', '') if vpr_result else "",
-                                "to_node": nav_state.plan.goal_node_name if nav_state.plan else "",
-                                "to_node_eng": getattr(nav_state.plan, 'goal_node_name_eng', '') if nav_state.plan else "",
-                                "phase": "completed",
-                                "vpr_confidence": vpr_result.confidence if vpr_result else 0.0,
-                            },
-                            "message": f"🎉 记忆导航完成！已到达 {nav_state.plan.goal_node_name}"
-                        }
+                        _held_msg = f"记忆导航: VPR匹配到{step.to_node_name}，但下一步子图匹配未成功，暂不切换"
+                        resp = build_memory_response(robot_id, pts, nav_state, vpr_result, sub_image_match=_sub_match, message=_held_msg)
                         logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
                         return resp
 
@@ -2182,7 +2237,7 @@ async def main():
     logger.info(f"  └─ Qwen3.5:      {qwen35_status}")
 
     # ── 4. 启动 WebSocket 服务 ──
-    WS_PORT = 9527
+    WS_PORT = 9528
     server = await websockets.serve(
         handle_client,
         "0.0.0.0",

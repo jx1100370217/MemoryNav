@@ -7,7 +7,7 @@ VPR 统一配置加载器
 确保 vpr_method、device、similarity_threshold 等参数全局一致。
 
 用法:
-    from deploy.memory_nav.vpr_config_loader import load_vpr_config
+    from memory_nav.vpr_config_loader import load_vpr_config
     cfg = load_vpr_config()
     # cfg['vpr_method']            -> 'selavpr'
     # cfg['device']                -> 'cuda:0'

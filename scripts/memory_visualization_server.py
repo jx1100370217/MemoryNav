@@ -28,7 +28,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 # ===== 加载 VPR 统一配置 =====
-from deploy.memory_nav.vpr_config_loader import load_vpr_config, get_threshold
+from memory_nav.vpr_config_loader import load_vpr_config, get_threshold
 _vpr_cfg = load_vpr_config()
 VPR_METHOD = _vpr_cfg['vpr_method']
 VPR_DEVICE = _vpr_cfg['device']
@@ -47,7 +47,7 @@ except ImportError:
 
 # 导入 memory_nav 模块
 try:
-    from deploy.memory_nav import (
+    from memory_nav import (
         MemoryNavigator, MemoryBuilder, MemoryGraph, MemoryVPR,
         MemoryNode, MemoryEdge, NavigationPlan, VPRResult,
     )
@@ -3047,7 +3047,7 @@ class MemoryNavServer:
     def __init__(self, port: int = 9530, data_dir: str = None):
         self.port = port
         self.data_dir = data_dir or str(project_root / "merged_labeled_data")
-        self.cache_path = str(project_root / "deploy/memory_nav/memory_cache")
+        self.cache_path = str(project_root / "memory_nav/memory_cache")
         
         # memory_nav 组件
         self.memory_graph: Optional[MemoryGraph] = None
@@ -3091,7 +3091,7 @@ class MemoryNavServer:
 
     def _save_graph(self):
         """保存图数据到缓存 (使用 MemoryGraph.save() 确保格式兼容)"""
-        cache_path = str(project_root / "deploy/memory_nav/memory_cache_graph.pkl")
+        cache_path = str(project_root / "memory_nav/memory_cache_graph.pkl")
         self.memory_graph.save(cache_path)
         logger.info(f"图数据已保存: {len(self.memory_graph.nodes)} 节点")
     
@@ -3385,7 +3385,7 @@ class MemoryNavServer:
         @self.app.route('/api/sub_image_match_methods')
         def sub_image_match_methods():
             """获取可用的子图匹配方案列表"""
-            from deploy.memory_nav.sub_image_matcher import list_strategies, STRATEGY_DISPLAY_NAMES
+            from memory_nav.sub_image_matcher import list_strategies, STRATEGY_DISPLAY_NAMES
             methods = []
             for key in list_strategies():
                 methods.append({
@@ -3540,7 +3540,7 @@ class MemoryNavServer:
 
                 # 延迟初始化遮挡检测器
                 if not hasattr(self, '_occlusion_detector') or self._occlusion_detector is None:
-                    from deploy.memory_nav.occlusion_detector import OcclusionDetector
+                    from memory_nav.occlusion_detector import OcclusionDetector
                     occ_device = getattr(self, '_occ_device', 'cuda:0')
                     self._occlusion_detector = OcclusionDetector(
                         device=occ_device,

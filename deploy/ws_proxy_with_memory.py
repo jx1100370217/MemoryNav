@@ -41,16 +41,16 @@ sys.path.insert(0, str(project_root))
 # InternVLA 已移除，统一使用 Qwen3.5 打点兜底
 
 # 记忆导航模块
-from deploy.memory_nav import (
+from memory_nav import (
     MemoryNavigator, MemoryBuilder,
     MemoryGraph, MemoryVPR,
     NavigationPlan, NavigationStep, VPRResult
 )
 
 # 鱼眼去畸变 + 坐标变换
-from deploy.memory_nav.fisheye_undistort import FisheyeUndistorter
-from deploy.memory_nav.occlusion_detector import OcclusionDetector
-from deploy.memory_nav.coord_transform import (
+from memory_nav.fisheye_undistort import FisheyeUndistorter
+from memory_nav.occlusion_detector import OcclusionDetector
+from memory_nav.coord_transform import (
     pixel_target_to_action,
     pixel_norm_to_angle,
     estimate_distance_from_ynorm,
@@ -121,7 +121,7 @@ fisheye_undistorter: Optional[FisheyeUndistorter] = None
 
 # 记忆数据路径
 MEMORY_DATA_DIR = "merged_labeled_data"
-MEMORY_CACHE_PATH = "deploy/memory_nav/memory_cache"
+MEMORY_CACHE_PATH = "memory_nav/memory_cache"
 
 
 
@@ -1888,7 +1888,7 @@ async def main():
     logger.info("")
 
     # ── 1. 加载 VPR 配置 ──
-    from deploy.memory_nav.vpr_config_loader import load_vpr_config
+    from memory_nav.vpr_config_loader import load_vpr_config
     _vpr_cfg = load_vpr_config()
     vpr_method = _vpr_cfg['vpr_method']
     vpr_device = _vpr_cfg['device']

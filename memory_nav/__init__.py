@@ -4,7 +4,7 @@
 MemoryNav v2.0 - 视觉记忆导航模块
 
 使用示例:
-    from deploy.memory_nav import MemoryNavigator, MemoryBuilder
+    from memory_nav import MemoryNavigator, MemoryBuilder
     
     # 构建记忆
     builder = MemoryBuilder()

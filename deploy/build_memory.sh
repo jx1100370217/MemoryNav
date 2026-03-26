@@ -23,7 +23,7 @@ fi
 
 # 默认参数 (配置文件优先，命令行参数可覆盖)
 DATA_DIR="${PROJECT_DIR}/merged_labeled_data"
-SAVE_PATH="${SCRIPT_DIR}/memory_nav/memory_cache"
+SAVE_PATH="${PROJECT_DIR}/memory_nav/memory_cache"
 VPR_METHOD="${_VPR_FROM_CFG:-selavpr}"
 DINO_MODEL="dinov2_vitb14"
 AGG_MODE="vlad"
@@ -98,8 +98,8 @@ echo "============================================================"
 python3 -c "
 import sys, time, os
 sys.path.insert(0, '${PROJECT_DIR}')
-from deploy.memory_nav import MemoryBuilder
-from deploy.memory_nav.vpr_config_loader import load_vpr_config, get_anyloc_config
+from memory_nav import MemoryBuilder
+from memory_nav.vpr_config_loader import load_vpr_config, get_anyloc_config
 
 # 命令行参数通过环境变量传入
 os.environ['VPR_METHOD'] = '${VPR_METHOD}'

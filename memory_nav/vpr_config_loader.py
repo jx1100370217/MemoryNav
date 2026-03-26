@@ -3,7 +3,7 @@
 """
 VPR 统一配置加载器
 
-所有 VPR 相关模块通过此加载器读取 deploy/vpr_config.yaml，
+所有 VPR 相关模块通过此加载器读取 deploy/vpr_config.yaml,
 确保 vpr_method、device、similarity_threshold 等参数全局一致。
 
 用法:
@@ -71,9 +71,9 @@ def load_vpr_config(config_path: str = None, force_reload: bool = False) -> dict
     
     # 查找配置文件
     if config_path is None:
-        # 从当前文件位置推导: memory_nav/ -> deploy/ -> vpr_config.yaml
+        # 从当前文件位置推导: memory_nav/ -> 项目根 -> deploy/vpr_config.yaml
         this_dir = os.path.dirname(os.path.abspath(__file__))
-        config_path = os.path.join(os.path.dirname(this_dir), 'vpr_config.yaml')
+        config_path = os.path.join(os.path.dirname(this_dir), 'deploy', 'vpr_config.yaml')
     
     cfg = dict(defaults)
     

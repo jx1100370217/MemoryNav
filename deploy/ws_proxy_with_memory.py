@@ -162,6 +162,7 @@ class MemoryNavState:
     fallback_action: Optional[list] = None        # InternVLN 兜底动作
     fallback_pixel_target: Optional[list] = None  # InternVLN 兜底像素目标
     fallback_instruction: Optional[str] = None    # InternVLN 兜底指令
+    fallback_camera_name: Optional[str] = None    # Qwen3.5 兜底打点相机
     next_step_sub_match: Optional[Dict] = None    # lookahead: 下一步的子图匹配结果
 
     def reset(self):
@@ -181,6 +182,7 @@ class MemoryNavState:
         self.fallback_action = None
         self.fallback_pixel_target = None
         self.fallback_instruction = None
+        self.fallback_camera_name = None
         self.next_step_sub_match = None
         logger.info("[MemoryNavState] 状态已重置")
 
@@ -206,6 +208,7 @@ class MemoryNavState:
         self.fallback_action = None
         self.fallback_pixel_target = None
         self.fallback_instruction = None
+        self.fallback_camera_name = None
         self.next_step_sub_match = None
         if self.current_step_idx >= len(self.plan.steps):
             self.phase = 'completed'
@@ -716,8 +719,12 @@ def build_memory_response(
         _pixel = nav_state.fallback_pixel_target
         _fallback_inst = nav_state.fallback_instruction
         # ---- 像素→机器人坐标转换 (Qwen3.5 兜底) ----
-        _fb_cam = step.camera_name if step else None
-        if _pixel and _fb_cam and len(_pixel) >= 2:
+        _fb_cam = nav_state.fallback_camera_name or (step.camera_name if step else None)
+        if _fb_cam in ('camera_3', 'camera_4'):
+            # 侧面相机 → 原地旋转 45°
+            _action = [[0.0, 0.0, 0.785]]
+            logger.info(f"🔄 [Memory] Qwen3.5 兜底侧面相机 {_fb_cam}，输出旋转动作 [0,0,0.785]")
+        elif _pixel and _fb_cam and len(_pixel) >= 2:
             _action_vec, _coord_debug = _pixel_target_to_robot_action(_pixel[0], _pixel[1], _fb_cam)
             _action = [_action_vec]
             memory_info["coord_transform"] = _coord_debug
@@ -730,7 +737,11 @@ def build_memory_response(
         _fallback_inst = None
         # ---- 像素→机器人坐标转换 (子图匹配) ----
         _match_cam = sub_image_match.get("camera_name") if sub_image_match else None
-        if _pixel and _match_cam and len(_pixel) >= 2:
+        if _match_cam in ('camera_3', 'camera_4'):
+            # 侧面相机匹配成功 → 原地旋转 45° 让目标转到前方相机
+            _action = [[0.0, 0.0, 0.785]]
+            logger.info(f"🔄 [Memory] 侧面相机 {_match_cam} 匹配成功，输出旋转动作 [0,0,0.785]")
+        elif _pixel and _match_cam and len(_pixel) >= 2:
             _action_vec, _coord_debug = _pixel_target_to_robot_action(_pixel[0], _pixel[1], _match_cam)
             _action = [_action_vec]
             memory_info["coord_transform"] = _coord_debug
@@ -1354,6 +1365,7 @@ async def process_inference_with_memory(message_data, session_state, agent,
             nav_state.fallback_action = None
             nav_state.fallback_pixel_target = None
             nav_state.fallback_instruction = None
+            nav_state.fallback_camera_name = None
             if _sub_match is None:
                 _fb_step = nav_state.get_current_step()
                 _fb_landmark = getattr(_fb_step, 'landmark_name', '') if _fb_step else ''
@@ -1372,6 +1384,7 @@ async def process_inference_with_memory(message_data, session_state, agent,
 
                         if _fb_result.get("success") and _fb_result.get("point"):
                             nav_state.fallback_pixel_target = _fb_result["point"]
+                            nav_state.fallback_camera_name = _fb_result.get("camera_name")
                             nav_state.fallback_action = [[0.0, 0.0, 0.0]]  # 打点模式不输出 action
                             logger.info(f"🤖 [Memory] Qwen3.5 兜底像素: {_fb_result['point']}, "
                                        f"camera={_fb_result.get('camera_name')}")
@@ -2132,7 +2145,7 @@ async def main():
     logger.info(f"  └─ Qwen3.5:      {qwen35_status}")
 
     # ── 4. 启动 WebSocket 服务 ──
-    WS_PORT = 9528
+    WS_PORT = 9527
     server = await websockets.serve(
         handle_client,
         "0.0.0.0",

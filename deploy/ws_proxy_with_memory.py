@@ -6,7 +6,7 @@ InternNav WebSocket代理服务（带记忆导航）
 基于 ws_proxy.py，新增记忆导航能力：
 1. 记忆引导: 每步首次请求返回记忆的 angle + pixel_goal
 2. VPR持续验证: 每次请求用 camera_1~4 做 VPR 判断是否到达下一节点
-3. 模型兜底: VPR丢失时用 Qwen3.5 打点继续推理 (替代 InternVLA)
+3. 模型兜底: VPR丢失时用 Qwen3.5 打点继续推理
 
 端口: 9528
 """
@@ -39,13 +39,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(project_root / 'src/diffusion-policy'))
 
-# InternVLA 作为非记忆模式的推理模型 (可选)
-try:
-    from internnav.agent.internvla_n1_agent_realworld import InternVLAN1AsyncAgent
-    INTERNVLA_AVAILABLE = True
-except ImportError:
-    INTERNVLA_AVAILABLE = False
-    InternVLAN1AsyncAgent = None
+# InternVLA 已移除，统一使用 Qwen3.5 打点兜底
 
 # 记忆导航模块
 from deploy.memory_nav import (
@@ -118,8 +112,6 @@ logger = setup_logging()
 # ============================================================================
 
 connected_clients = {}
-global_agent = None
-agent_lock = asyncio.Lock()
 
 # 记忆导航全局实例
 memory_navigator: Optional[MemoryNavigator] = None
@@ -233,61 +225,6 @@ class MemoryNavState:
             'plan_path': self.plan.path if self.plan else [],
             'last_task': self.last_task,
         }
-
-
-# ============================================================================
-# InternVLA Agent 参数与初始化
-# ============================================================================
-
-class Args:
-    """InternVLAN1AsyncAgent初始化参数"""
-    def __init__(self):
-        self.device = "cuda:0"
-        self.model_path = str(project_root / "checkpoints/InternRobotics/InternVLA-N1-DualVLN")
-        self.resize_w = 384
-        self.resize_h = 384
-        self.num_history = 8
-        self.camera_intrinsic = np.array([
-            [386.5, 0.0, 328.9, 0.0],
-            [0.0, 386.5, 244.0, 0.0],
-            [0.0, 0.0, 1.0, 0.0],
-            [0.0, 0.0, 0.0, 1.0]
-        ])
-        self.plan_step_gap = 8
-
-
-def init_agent(model_path=None, device=None):
-    """初始化InternVLAN1AsyncAgent (可选，不可用时返回 None)"""
-    if not INTERNVLA_AVAILABLE:
-        logger.warning("⚠️ InternVLA 不可用 (import 失败)，跳过加载。兜底模型使用 Qwen3.5。")
-        return None
-
-    args = Args()
-    if model_path:
-        args.model_path = model_path
-    if device:
-        args.device = device
-
-    logger.info(f"正在加载模型: {args.model_path}")
-    logger.info(f"使用设备: {args.device}")
-    logger.info(f"图像尺寸: {args.resize_w}x{args.resize_h}")
-    logger.info(f"历史帧数: {args.num_history}")
-
-    try:
-        agent = InternVLAN1AsyncAgent(args)
-
-        logger.info("正在预热模型...")
-        dummy_rgb = np.zeros((480, 640, 3), dtype=np.uint8)
-        dummy_depth = np.zeros((480, 640), dtype=np.float32)
-        dummy_pose = np.eye(4)
-        agent.reset()
-        agent.step(dummy_rgb, dummy_depth, dummy_pose, "test", intrinsic=args.camera_intrinsic)
-        logger.info("模型加载完成！")
-        return agent
-    except Exception as e:
-        logger.warning(f"⚠️ InternVLA 加载失败: {e}。兜底模型使用 Qwen3.5。")
-        return None
-
 
 def init_memory_navigator(device: str = "cuda:0", vpr_method: str = "selavpr") -> Optional[MemoryNavigator]:
     """
@@ -1118,7 +1055,7 @@ def visualize_qwen35_grounding(camera_images, grounding_result, landmark_name, p
 # 核心推理函数 (带记忆导航)
 # ============================================================================
 
-async def process_inference_with_memory(message_data, session_state, agent,
+async def process_inference_with_memory(message_data, session_state,
                                          navigator: Optional[MemoryNavigator],
                                          nav_state: MemoryNavState,
                                          memory_enabled: bool):
@@ -1133,7 +1070,6 @@ async def process_inference_with_memory(message_data, session_state, agent,
     Args:
         message_data: 消息数据
         session_state: 会话状态
-        agent: (deprecated, 保留接口兼容)
         navigator: MemoryNavigator实例
         nav_state: MemoryNavState 状态机
         memory_enabled: 是否启用记忆导航
@@ -1247,9 +1183,7 @@ async def process_inference_with_memory(message_data, session_state, agent,
 
         if previous_task is not None and current_task != previous_task:
             logger.info(f"🔄 task 变化: '{previous_task}' → '{current_task}'")
-            logger.info(f"🧹 清空 agent 历史 + 重置记忆导航状态")
-            async with agent_lock:
-                agent.reset()
+            logger.info(f"🧹 重置记忆导航状态")
             nav_state.reset()
 
         # ================================================================
@@ -1707,120 +1641,12 @@ async def process_inference_with_memory(message_data, session_state, agent,
                 logger.error(f"🧠 [Memory] 目的地匹配/规划异常: {e}", exc_info=True)
 
         # ================================================================
-        # 5. 走普通 InternVLA 推理 (兜底路径)
+        # 5. Qwen3.5 打点兜底 (记忆导航未匹配到路径时)
         # ================================================================
-        logger.info(f"🤖 [InternVLA] 走模型推理 (phase={nav_state.phase})")
+        logger.info(f"🤖 [Qwen3.5] 记忆导航未匹配，走 Qwen3.5 打点兜底 (phase={nav_state.phase})")
 
-        # 解码深度图
-        if 'depth' in message_data and message_data['depth']:
-            depth = decode_base64_depth(message_data['depth'])
-            if depth is None:
-                logger.warning("深度图解码失败，使用全零深度图")
-                depth = np.zeros((rgb.shape[0], rgb.shape[1]), dtype=np.float32)
-            else:
-                logger.info(f"📏 深度图: shape={depth.shape}, range=[{depth.min():.2f}, {depth.max():.2f}]")
-        else:
-            depth = np.zeros((rgb.shape[0], rgb.shape[1]), dtype=np.float32)
-            logger.info("未提供深度图，使用全零")
-
-        # 解析 pose
-        if 'pose' in message_data and message_data['pose']:
-            pose = np.array(message_data['pose'], dtype=np.float32)
-        else:
-            pose = np.eye(4, dtype=np.float32)
-
-        # 解析 intrinsic
-        if 'intrinsic' in message_data and message_data['intrinsic']:
-            intrinsic = np.array(message_data['intrinsic'], dtype=np.float32)
-        else:
-            intrinsic = np.array([
-                [386.5, 0.0, 328.9, 0.0],
-                [0.0, 386.5, 244.0, 0.0],
-                [0.0, 0.0, 1.0, 0.0],
-                [0.0, 0.0, 0.0, 1.0]
-            ], dtype=np.float32)
-
-        look_down = message_data.get('look_down', False)
-
-        # InternVLA agent 检查 (默认不加载，按需启动)
-        if agent is None:
-            logger.warning("⚠️ InternVLA agent 未加载，尝试按需启动...")
-            try:
-                agent = init_agent()
-                if agent is None:
-                    logger.error("❌ InternVLA 加载失败，无法执行非记忆模式推理")
-                    session_state['request_count'] += 1
-                    return {
-                        "status": "error",
-                        "id": robot_id,
-                        "pts": pts,
-                        "message": "InternVLA 模型不可用，且记忆导航未匹配到路径",
-                    }
-                # 更新全局引用
-                global global_agent
-                global_agent = agent
-            except Exception as e:
-                logger.error(f"❌ InternVLA 按需加载失败: {e}")
-                session_state['request_count'] += 1
-                return {
-                    "status": "error",
-                    "id": robot_id,
-                    "pts": pts,
-                    "message": f"InternVLA 加载失败: {e}",
-                }
-
-        # Agent 状态
-        max_history_frames = agent.num_history if hasattr(agent, 'num_history') else 8
-        current_history_count = len(agent.rgb_list) if hasattr(agent, 'rgb_list') else 0
-        current_episode_idx = agent.episode_idx if hasattr(agent, 'episode_idx') else 0
-
-        if current_episode_idx == 0 or not look_down:
-            if current_episode_idx == 0:
-                sampled_history_ids = []
-            else:
-                sampled_history_ids = np.unique(
-                    np.linspace(0, current_episode_idx - 1, max_history_frames, dtype=np.int32)
-                ).tolist()
-        else:
-            sampled_history_ids = "使用上次采样"
-
-        resize_h = agent.resize_h if hasattr(agent, 'resize_h') else 384
-        resize_w = agent.resize_w if hasattr(agent, 'resize_w') else 384
-
-        logger.info(f"🎯 推理参数:")
-        logger.info(f"  ├─ 指令: '{instruction}'")
-        logger.info(f"  ├─ RGB={rgb.shape}, Depth={depth.shape}")
-        logger.info(f"  ├─ 目标尺寸={resize_h}x{resize_w}, 最大历史帧={max_history_frames}")
-        logger.info(f"  ├─ 已累积={current_history_count}帧, 采样={sampled_history_ids}")
-        logger.info(f"  └─ look_down={look_down}, episode_idx={current_episode_idx}")
-
-        start_time = time.time()
-
-        async with agent_lock:
-            dual_sys_output = await asyncio.to_thread(
-                agent.step,
-                rgb, depth, pose, instruction, intrinsic, look_down
-            )
-
-        # 检测动作5 (向下看)
-        if (dual_sys_output.output_action is not None and
-            len(dual_sys_output.output_action) > 0 and
-            dual_sys_output.output_action[0] == 5):
-            logger.info(f"🔍 检测到动作5（向下看），重新推理 look_down=True")
-            async with agent_lock:
-                dual_sys_output = await asyncio.to_thread(
-                    agent.step,
-                    rgb, depth, pose, instruction, intrinsic, look_down=True
-                )
-
-        inference_time = time.time() - start_time
-        history_count_after = len(agent.rgb_list) if hasattr(agent, 'rgb_list') else 0
-        episode_idx_after = agent.episode_idx if hasattr(agent, 'episode_idx') else 0
-        logger.info(f"✅ 推理完成: {inference_time:.2f}秒, 历史帧={history_count_after}, "
-                    f"episode_idx={episode_idx_after}")
-
-        # 构建响应
-        response = {
+        # 尝试用 Qwen3.5 对 task 进行打点
+        qwen_response = {
             "status": "success",
             "id": robot_id,
             "pts": pts,
@@ -1830,100 +1656,58 @@ async def process_inference_with_memory(message_data, session_state, agent,
             "message": ""
         }
 
-        # 如果有记忆 fallback 状态，标记（仅记忆启用时）
-        if memory_enabled and nav_state.phase == 'fallback' and nav_state.plan is not None:
-            response["memory_active"] = True
-            step = nav_state.get_current_step()
-            if step:
-                response["memory_info"] = {
-                    "plan_path": nav_state.plan.path,
-                    "current_step": nav_state.current_step_idx,
-                    "total_steps": nav_state.plan.total_steps,
-                    "from_node": step.from_node_name,
-                    "from_node_eng": getattr(step, 'from_node_name_eng', ''),
-                    "to_node": step.to_node_name,
-                    "to_node_eng": getattr(step, 'to_node_name_eng', ''),
-                    "phase": "fallback",
-                    "consecutive_misses": nav_state.consecutive_misses,
-                }
+        if navigator and camera_images:
+            try:
+                _fb_landmark = current_task  # 直接用 task 作为 landmark
+                logger.info(f"🤖 [Qwen3.5] 启动打点: '{_fb_landmark}'")
+                _fb_start = time.time()
+                _fb_result = await asyncio.to_thread(
+                    navigator.fallback_point_grounding,
+                    camera_images, _fb_landmark, None
+                )
+                _fb_time = time.time() - _fb_start
+                logger.info(f"🤖 [Qwen3.5] 打点完成: {_fb_time:.2f}s")
 
-        logger.info(f"📊 推理结果:")
+                if _fb_result.get("success") and _fb_result.get("point"):
+                    _fb_cam = _fb_result.get("camera_name", "")
+                    _fb_point = _fb_result["point"]
+                    logger.info(f"🤖 [Qwen3.5] 打点成功: pixel={_fb_point}, camera={_fb_cam}")
 
-        if dual_sys_output.output_action is not None:
-            action_map = {0: 'STOP', 1: '↑前进', 2: '←左转', 3: '→右转', 5: '↓向下看'}
-            action_str = ', '.join([f"{action_map.get(a, str(a))}" for a in dual_sys_output.output_action[:5]])
-            if len(dual_sys_output.output_action) > 5:
-                action_str += f", ... (共{len(dual_sys_output.output_action)}个)"
-            logger.info(f"  ├─ 动作: {action_str}")
-            logger.info(f"  │  原始: {dual_sys_output.output_action}")
+                    # 保存打点可视化
+                    visualize_qwen35_grounding(camera_images, _fb_result, _fb_landmark, pts)
 
-            robot_action, task_status = convert_output_action_to_robot_action(dual_sys_output.output_action)
-            response["action"] = robot_action
-            response["task_status"] = task_status
-            logger.info(f"  ├─ 机器人动作: {robot_action}")
-            logger.info(f"  ├─ 任务状态: {task_status}")
+                    # 侧面相机输出旋转
+                    if _fb_cam in ('camera_2', 'camera_4'):
+                        _rot = 0.785 if _fb_cam == 'camera_2' else -0.785
+                        logger.info(f"🔄 [Qwen3.5] 侧面相机 {_fb_cam}，输出旋转动作 [0,0,{_rot}]")
+                        qwen_response["action"] = [[0.0, 0.0, _rot]]
+                    else:
+                        qwen_response["action"] = [[0.0, 0.0, 0.0]]
 
-        elif dual_sys_output.output_trajectory is not None:
-            traj_shape = dual_sys_output.output_trajectory.shape
-            logger.info(f"  ├─ 轨迹: shape={traj_shape}")
+                    qwen_response["pixel_target"] = _fb_point
+                    qwen_response["message"] = f"Qwen3.5打点兜底: landmark='{_fb_landmark}', camera={_fb_cam}"
+                    qwen_response["qwen35_fallback"] = True
+                else:
+                    _err = _fb_result.get('error', 'unknown')
+                    logger.info(f"🤖 [Qwen3.5] 打点失败: {_err}")
+                    qwen_response["action"] = [[0.0, 0.0, 0.0]]
+                    qwen_response["task_status"] = "executing"
+                    qwen_response["message"] = f"Qwen3.5打点无结果，原地等待 (error={_err})"
+            except Exception as e:
+                logger.warning(f"🤖 [Qwen3.5] 打点异常: {e}", exc_info=True)
+                qwen_response["action"] = [[0.0, 0.0, 0.0]]
+                qwen_response["message"] = f"Qwen3.5打点异常: {e}"
+        else:
+            logger.warning("🤖 [Qwen3.5] navigator 或 camera_images 不可用，原地等待")
+            qwen_response["message"] = "记忆导航未匹配且Qwen3.5不可用，原地等待"
 
-            robot_action = convert_trajectory_to_robot_action(dual_sys_output.output_trajectory.tolist())
-            response["action"] = robot_action
-            response["task_status"] = "executing"
-
-            if len(robot_action) > 0:
-                cumsum_trajectory = np.array([[pt[0], pt[1]] for pt in robot_action])
-                start_point = cumsum_trajectory[0]
-                end_point = cumsum_trajectory[-1]
-                logger.info(f"  │  起点: [{start_point[0]:.3f}, {start_point[1]:.3f}]")
-                logger.info(f"  │  终点: [{end_point[0]:.3f}, {end_point[1]:.3f}]")
-                dual_sys_output.output_trajectory = cumsum_trajectory
-
-            logger.info(f"  ├─ 轨迹点数: {len(robot_action)}")
-
-        if dual_sys_output.output_pixel is not None:
-            pixel_y_normalized = dual_sys_output.output_pixel[0] / 480.0
-            pixel_x_normalized = dual_sys_output.output_pixel[1] / 640.0
-            # pixel_target 不输出（统一置 None，action 计算不受影响）
-            # response["pixel_target"] = [pixel_x_normalized, pixel_y_normalized]
-            logger.info(f"  └─ 像素目标: [y={dual_sys_output.output_pixel[0]}, x={dual_sys_output.output_pixel[1]}]")
-            logger.info(f"     归一化: [x={pixel_x_normalized:.4f}, y={pixel_y_normalized:.4f}]")
-
-        # 检测小动作自动停止 (33 个三元组)
-        action_list = response["action"]
-        if len(action_list) == 33:
-            all_small = True
-            for triplet in action_list:
-                if len(triplet) >= 3:
-                    if abs(triplet[0]) >= 0.5 or abs(triplet[1]) >= 0.5 or abs(triplet[2]) >= 0.5:
-                        all_small = False
-                        break
-            if all_small:
-                logger.info(f"🎯 33个小动作 → 自动停止")
-                response["action"] = [[0.0, 0.0, 0.0]]
-                response["task_status"] = "end"
-
-        # 可视化
-        try:
-            annotated_image = annotate_image(
-                idx=timestamp_str,
-                image=rgb,
-                instruction=instruction,
-                output_action=dual_sys_output.output_action,
-                trajectory=dual_sys_output.output_trajectory,
-                pixel_goal=dual_sys_output.output_pixel,
-                output_dir=images_dir
-            )
-        except Exception as e:
-            logger.warning(f"生成可视化失败: {e}", exc_info=True)
-
-        logger.info(f"📤 响应JSON: {json.dumps(response, ensure_ascii=False, indent=2)}")
+        logger.info(f"📤 响应JSON: {json.dumps(qwen_response, ensure_ascii=False, indent=2)}")
 
         session_state['request_count'] += 1
         session_state['last_instruction'] = instruction
         session_state['last_task'] = current_task
 
-        return response
+        return qwen_response
 
     except Exception as e:
         logger.error(f"推理处理异常: {e}", exc_info=True)
@@ -1955,7 +1739,7 @@ async def handle_client(websocket):
     nav_state = MemoryNavState()
     memory_enabled = True  # 默认启用记忆导航
 
-    global global_agent, memory_navigator
+    global memory_navigator
 
     try:
         connected_clients[client_id] = {
@@ -1966,7 +1750,6 @@ async def handle_client(websocket):
         }
         logger.info(f"新客户端连接 [{client_id}]。连接数: {len(connected_clients)}")
 
-        # global_agent 已在 main() 启动时初始化
 
         async for message in websocket:
             try:
@@ -1997,14 +1780,12 @@ async def handle_client(websocket):
                 command = data.get('command')
 
                 if command == 'reset':
-                    async with agent_lock:
-                        global_agent.reset()
                     session_state['last_instruction'] = None
                     session_state['request_count'] = 0
                     session_state['last_task'] = None
                     nav_state.reset()
-                    response = {"status": "success", "message": "Agent已重置，记忆导航状态已清空"}
-                    logger.info(f"Agent已重置 [{client_id}]")
+                    response = {"status": "success", "message": "记忆导航状态已清空"}
+                    logger.info(f"记忆导航已重置 [{client_id}]")
 
                 elif command == 'session_status':
                     response = {
@@ -2062,7 +1843,7 @@ async def handle_client(websocket):
                 # ---- 处理推理请求 ----
                 else:
                     response = await process_inference_with_memory(
-                        data, session_state, global_agent,
+                        data, session_state,
                         memory_navigator, nav_state, memory_enabled
                     )
 
@@ -2096,7 +1877,7 @@ async def handle_client(websocket):
 
 async def main():
     """启动WebSocket服务器（带记忆导航）"""
-    global memory_navigator, global_agent, occlusion_detector
+    global memory_navigator, occlusion_detector
 
     # 切换工作目录到项目根目录
     os.chdir(project_root)
@@ -2122,8 +1903,7 @@ async def main():
     logger.info("│            📦 推理模型加载                            │")
     logger.info("└───────────────────────────────────────────────────────┘")
 
-    global_agent = None
-    logger.info("  ├─ InternVLA:    按需加载 (默认不启动)")
+    logger.info("  ├─ 推理模型: Qwen3.5 打点 (按需加载)")
 
     # ── 遮挡检测器 (YOLOv8n) ──
     try:
@@ -2145,7 +1925,7 @@ async def main():
     logger.info(f"  └─ Qwen3.5:      {qwen35_status}")
 
     # ── 4. 启动 WebSocket 服务 ──
-    WS_PORT = 9527
+    WS_PORT = 9528
     server = await websockets.serve(
         handle_client,
         "0.0.0.0",

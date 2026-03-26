@@ -60,7 +60,6 @@ MemoryNav/
 ├── deploy/                         # 배포 엔트리
 │   ├── ws_proxy_with_memory.py     # WebSocket 프록시 서비스 (메인 엔트리)
 │   ├── vpr_config.yaml             # VPR 통합 설정 파일
-│   ├── pretrained/                 # 사전 학습 모델 (YOLOv8n 등)
 │   ├── build_memory.sh             # 메모리 구축 스크립트
 │   └── start_server.sh             # 서버 시작 스크립트
 ├── cam/                            # 다안 어안 카메라
@@ -68,6 +67,7 @@ MemoryNav/
 │   └── tools/                      # 독립 도구
 ├── scripts/
 │   └── memory_visualization_server.py  # 시각화 서비스
+├── pretrained/                     # 사전 학습 모델 (YOLOv8n, DINOv3 등)
 ├── merged_labeled_data/            # 메모리 어노테이션 데이터
 ├── tests/
 │   └── test_memory_ws.py           # WebSocket 통합 테스트

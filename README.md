@@ -65,7 +65,6 @@ MemoryNav/
 ├── deploy/                         # 部署入口
 │   ├── ws_proxy_with_memory.py     # WebSocket 代理服务 (主入口)
 │   ├── vpr_config.yaml             # VPR 统一配置文件
-│   ├── pretrained/                 # 预训练模型 (YOLOv8n 等)
 │   ├── build_memory.sh             # 记忆构建脚本
 │   └── start_server.sh             # 服务启动脚本
 ├── cam/                            # 多目鱼眼相机
@@ -73,6 +72,7 @@ MemoryNav/
 │   └── tools/                      # 独立工具 (无 ROS2/CUDA 依赖)
 ├── scripts/                        # 工具脚本
 │   └── memory_visualization_server.py  # 可视化服务 (子图匹配 + 打点 + 遮挡检测)
+├── pretrained/                     # 预训练模型 (YOLOv8n, DINOv3 等)
 ├── merged_labeled_data/            # 记忆标注数据
 ├── tests/                          # 测试
 │   └── test_memory_ws.py           # WebSocket 集成测试

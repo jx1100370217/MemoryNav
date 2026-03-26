@@ -64,7 +64,6 @@ MemoryNav/
 ├── deploy/                         # Deployment entry points
 │   ├── ws_proxy_with_memory.py     # WebSocket proxy service (main entry)
 │   ├── vpr_config.yaml             # Unified VPR config
-│   ├── pretrained/                 # Pretrained models (YOLOv8n, etc.)
 │   ├── build_memory.sh             # Memory build script
 │   └── start_server.sh             # Server start script
 ├── cam/                            # Multi-eye fisheye camera
@@ -72,6 +71,7 @@ MemoryNav/
 │   └── tools/                      # Standalone tools (no ROS2/CUDA)
 ├── scripts/
 │   └── memory_visualization_server.py  # Visualization (sub-image + grounding + occlusion)
+├── pretrained/                     # Pretrained models (YOLOv8n, DINOv3, etc.)
 ├── merged_labeled_data/            # Memory annotated data
 ├── tests/
 │   └── test_memory_ws.py           # WebSocket integration tests

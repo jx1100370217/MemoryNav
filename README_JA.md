@@ -60,7 +60,6 @@ MemoryNav/
 ├── deploy/                         # デプロイエントリー
 │   ├── ws_proxy_with_memory.py     # WebSocketプロキシサービス (メインエントリー)
 │   ├── vpr_config.yaml             # VPR統一設定ファイル
-│   ├── pretrained/                 # 事前学習モデル (YOLOv8n等)
 │   ├── build_memory.sh             # 記憶構築スクリプト
 │   └── start_server.sh             # サーバー起動スクリプト
 ├── cam/                            # 多眼魚眼カメラ
@@ -68,6 +67,7 @@ MemoryNav/
 │   └── tools/                      # スタンドアロンツール
 ├── scripts/
 │   └── memory_visualization_server.py  # 可視化サービス
+├── pretrained/                     # 事前学習モデル (YOLOv8n, DINOv3等)
 ├── merged_labeled_data/            # 記憶アノテーションデータ
 ├── tests/
 │   └── test_memory_ws.py           # WebSocket統合テスト

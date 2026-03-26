@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-1.9.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v1.9.0)
+[![Version](https://img.shields.io/badge/Version-2.0.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.0.0)
 
 基于视觉位置识别（VPR）和拓扑地图的机器人记忆导航系统
 
@@ -19,7 +19,7 @@
 
 ## 📖 简介
 
-MemoryNav 是一个面向移动机器人的视觉记忆导航系统。系统通过 4 个环视鱼眼相机采集图像，利用 VPR 技术在预建的拓扑记忆图中定位，结合 Qwen3.5-9B 视觉语言模型进行兜底打点导航，实现"记住去过的地方，再走一次"的记忆导航能力。
+MemoryNav 是一个面向移动机器人的视觉记忆导航系统。系统通过 4 个环视鱼眼相机采集图像，利用 VPR 技术在预建的拓扑记忆图中定位，结合 YOLOv8n 视觉遮挡检测和 Qwen3.5-9B 视觉语言模型进行兜底打点导航，实现"记住去过的地方，再走一次"的记忆导航能力。
 
 ### 核心能力
 
@@ -30,7 +30,8 @@ MemoryNav 是一个面向移动机器人的视觉记忆导航系统。系统通�
 - **💾 子图匹配缓存**：匹配失败时自动延用上一帧的成功结果，提升导航连续性
 - **🔭 Lookahead 双重确认**：步骤切换时同时验证 VPR 定位和下一步子图匹配，避免过早 advance
 - **📤 统一输出格式**：记忆模式开关两种状态下输出格式一致，始终提供 `pixel_target`
-- **🤖 Qwen3.5 兜底打点**：VPR/子图匹配失败时自动切换 Qwen3.5-9B 视觉语言模型打点定位，直接使用中文地标名称
+- **🚧 YOLOv8n 遮挡检测**：VPR/子图匹配失败时自动检测相机画面是否被遮挡（行人、物体等），遮挡时原地等待，消除后继续导航
+- **🤖 Qwen3.5 兜底打点**：VPR/子图匹配失败且未遮挡时自动切换 Qwen3.5-9B 视觉语言模型打点定位，直接使用中文地标名称
 - **📷 鱼眼去畸变**：自动从 `cam/params.yaml` 加载相机内参，对输入图像做柱面投影去畸变，提升 VPR 及子图匹配精度
 - **🧭 像素→机器人坐标转换**：将 `pixel_target` 归一化坐标经柱面角度、相机方位角、俯仰角估距完整管线，转换为机器人运动坐标 `[x_forward, y_lateral, 0.0]`
 - **🌐 WebSocket 服务**：实时流式接收图像、返回导航指令
@@ -63,6 +64,7 @@ MemoryNav/
 │   │   ├── sub_image_matcher.py    # 子图匹配器 (DINOv3 密集特征匹配)
 │   │   ├── fisheye_undistort.py    # 🆕 鱼眼去畸变 (移植自 cam/tools/fisheye_undist_cpu.h)
 │   │   ├── coord_transform.py      # 🆕 像素→机器人坐标转换 (柱面投影完整管线)
+│   │   ├── occlusion_detector.py    # 🆕 YOLOv8n 遮挡检测器
 │   │   ├── qwen35_point_grounder.py # Qwen3.5 打点封装 (兜底模型)
 │   │   ├── qwen35_grounding_server.py # Qwen3.5 子进程推理服务
 │   │   ├── vpr_factory.py          # VPR 提取器工厂
@@ -74,7 +76,7 @@ MemoryNav/
 │   └── build_memory.sh             # 记忆构建脚本
 ├── internnav/                      # InternNav 导航框架
 ├── scripts/                        # 工具脚本
-│   └── memory_visualization_server.py  # 记忆图可视化服务 (含子图匹配验证 + 模型打点验证)
+│   └── memory_visualization_server.py  # 记忆图可视化服务 (含子图匹配验证 + 模型打点验证 + 遮挡检测验证)
 ├── tests/                          # 测试
 │   ├── test_memory_nav.py          # 记忆模块单元测试
 │   └── test_memory_ws.py           # WebSocket 集成测试 (详细日志版)
@@ -186,6 +188,55 @@ edge:
 | 记忆开启 + 子图匹配成功 | `sub_image_match.match.center_pct` | coord_transform | `true` |
 | 记忆开启 + 子图匹配失败 | 延用上一帧缓存 | coord_transform | `true` |
 | 记忆开启 + Qwen3.5 兜底 | Qwen3.5 打点归一化坐标 | coord_transform | `true` |
+| 记忆开启 + 遮挡检测 | 无（原地等待） | `[0, 0, 0]` | `true` |
+
+---
+
+## 🚧 遮挡检测
+
+当 VPR 匹配失败且子图匹配失败时，系统自动对注意力相机执行遮挡检测，判断是否因视觉遮挡导致：
+
+### 工作原理
+
+1. **遮挡检测相机选择**：使用子图匹配得分最高（但低于阈值）的 camera，而非静态的 `step.camera_name`，更准确反映注意力区域实际所在
+2. **YOLOv8n 推理**：检测画面中的近距离前景物体（person、backpack、umbrella 等），计算 bbox 面积占比
+3. **遮挡判定**：单个遮挡物面积占比 ≥ 35% → 判定为遮挡
+4. **遮挡时行为**：输出 `action: [0, 0, 0]`（原地等待），下一帧继续检测
+5. **未遮挡时行为**：使用 Qwen3.5 打点（landmark_name）继续导航
+
+### 导航决策流程
+
+```
+VPR 匹配成功:
+  ├─ 匹配到目标节点 → Lookahead 双重确认 → advance
+  └─ 匹配到其他节点 → 继续当前步骤记忆引导
+
+VPR 匹配失败:
+  ├─ YOLOv8n 遮挡检测 (对子图匹配得分最高的 camera)
+  │   ├─ 遮挡 → action=[0,0,0] 原地等待
+  │   └─ 未遮挡 → Qwen3.5 打点(landmark_name) 继续导航
+  │              └─ 打点也失败 → 重发记忆引导
+```
+
+### 响应新增字段
+
+遮挡检测结果附加在 `memory_info` 中：
+
+```json
+"memory_info": {
+    "phase": "occluded",
+    "consecutive_occlusions": 3,
+    "occlusion": {
+        "occluded": true,
+        "max_area_ratio": 0.42,
+        "total_area_ratio": 0.42,
+        "detections": [
+            {"class_name": "person", "confidence": 0.87, "area_ratio": 0.42}
+        ],
+        "reason": "person 占画面 42.0% (>= 35% 阈值)"
+    }
+}
+```
 
 ---
 
@@ -412,18 +463,32 @@ if match and match['match']['found']:
 # 单元测试
 python -m pytest tests/test_memory_nav.py -v
 
-# WebSocket 集成测试 (含逐帧决策日志 + 统计报告 + 相似度趋势图)
+# WebSocket 集成测试 (含逐帧决策日志 + 统计报告)
 python tests/test_memory_ws.py
 ```
 
 测试输出包含：
 - 📊 逐帧详情（VPR 匹配、子图匹配置信度、lookahead 置信度、camera、action、决策类型）
-- 📈 VPR 相似度变化趋势 ASCII 图
 - 📋 统计报告（VPR 匹配率、子图匹配率、Lookahead 双重确认统计、节点分布、决策分布）
 
 ---
 
 ## 📋 更新日志
+
+### v2.0.0
+
+- **🆕 YOLOv8n 遮挡检测**：新增 `deploy/memory_nav/occlusion_detector.py`，VPR/子图匹配失败时自动检测视觉遮挡
+  - 使用 YOLOv8n（6MB）检测 person、backpack、umbrella、handbag、suitcase 等近距离前景物体
+  - 遮挡判定基于 bbox 面积占比（默认阈值 35%），GPU 推理 ~30ms
+  - 遮挡时输出 `action: [0, 0, 0]` 原地等待，遮挡消除后自动恢复导航
+  - 未遮挡时使用 Qwen3.5 打点（landmark_name）继续导航
+- **🔄 导航决策简化**：移除旧的趋势判断方案（Case B 跳步 / Case C 重规划 / Case D 相似度趋势检测）
+  - VPR 匹配到非目标节点 → 统一继续当前步骤（取代复杂的跳步/重规划逻辑）
+  - VPR 丢失 → 遮挡检测 + Qwen3.5 兜底打点（取代不可靠的趋势判断）
+- **🎯 子图匹配 best_fail_camera**：`match_current_step()` 在全部失败时记录得分最高的 camera，遮挡检测使用该 camera 而非静态 `step.camera_name`
+- **🖥️ 可视化新增遮挡检测 Tab**：`memory_visualization_server.py` 新增 🚧 遮挡检测验证 Tab
+  - 上传相机图片，可调面积阈值和 YOLO 置信度
+  - 实时展示检测框、面积占比、遮挡判定结果
 
 ### v1.9.0
 
@@ -497,7 +562,6 @@ python tests/test_memory_ws.py
 ### v1.1.0
 
 - **记忆导航服务**：WebSocket 代理 + VPR 定位 + 路径规划
-- **趋势检测**：相似度趋势判断方向正确性
 
 ### v1.0.0
 

@@ -1254,6 +1254,31 @@ HTML_TEMPLATE = '''
             padding: 16px;
         }
 
+        /* 遮挡检测页面 */
+        #page-occlusion.active {
+            display: block;
+            padding: 16px;
+        }
+
+        .occ-threshold-display {
+            display: inline-block;
+            min-width: 40px;
+            text-align: center;
+            font-weight: 600;
+            color: var(--accent);
+        }
+
+        .occ-det-item {
+            background: var(--bg-card);
+            border-radius: 8px;
+            padding: 10px 12px;
+            margin-bottom: 8px;
+            border-left: 3px solid var(--border);
+        }
+        .occ-det-item.is-occluding {
+            border-left-color: var(--danger);
+        }
+
         /* 隐藏类 */
         .hidden { display: none !important; }
         
@@ -1281,6 +1306,7 @@ HTML_TEMPLATE = '''
             <button class="nav-tab" onclick="switchPage('db')">💾 数据管理</button>
             <button class="nav-tab" onclick="switchPage('sim')">🔍 子图匹配</button>
             <button class="nav-tab" onclick="switchPage('grounding')">🎯 模型打点</button>
+            <button class="nav-tab" onclick="switchPage('occlusion')">🚧 遮挡检测</button>
         </div>
         <div class="nav-status">
             <div class="status-badge">
@@ -1604,8 +1630,66 @@ HTML_TEMPLATE = '''
                 </div>
             </div>
         </div>
+
+        <!-- 遮挡检测验证页面 -->
+        <div id="page-occlusion" class="page">
+            <div class="sim-container">
+                <div class="sim-layout">
+                    <!-- 左侧: 控制面板 -->
+                    <div class="sim-panel">
+                        <div class="sim-panel-title">🚧 遮挡检测验证 (YOLOv8n)</div>
+
+                        <div class="form-label">上传图片 (相机图像)</div>
+                        <div class="sim-upload-area" id="occ-img-area" onclick="document.getElementById('occ-img-file').click()">
+                            <input type="file" id="occ-img-file" accept="image/*" onchange="onOccFileChange(this)">
+                            <div class="sim-upload-icon">🖼️</div>
+                            <div class="sim-upload-text">点击上传相机图像</div>
+                        </div>
+
+                        <details class="sim-settings" open>
+                            <summary>⚙️ 检测参数</summary>
+                            <div class="form-group" style="margin-top:10px">
+                                <label class="form-label">面积占比阈值</label>
+                                <div style="display:flex; align-items:center; gap:8px">
+                                    <input type="range" id="occ-area-threshold" min="0.1" max="0.8" step="0.05" value="0.35"
+                                        oninput="document.getElementById('occ-area-val').textContent = (this.value * 100).toFixed(0) + '%'" style="flex:1">
+                                    <span id="occ-area-val" class="occ-threshold-display">35%</span>
+                                </div>
+                                <div style="font-size:11px; color:var(--text-dim); margin-top:4px">
+                                    单个遮挡物 bbox 面积 ≥ 此比例判定为遮挡
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">YOLO 置信度阈值</label>
+                                <div style="display:flex; align-items:center; gap:8px">
+                                    <input type="range" id="occ-conf-threshold" min="0.1" max="0.9" step="0.05" value="0.4"
+                                        oninput="document.getElementById('occ-conf-val').textContent = this.value" style="flex:1">
+                                    <span id="occ-conf-val" class="occ-threshold-display">0.4</span>
+                                </div>
+                            </div>
+                        </details>
+
+                        <div style="display:flex; gap:8px; margin-bottom:16px">
+                            <button class="btn btn-primary" style="flex:1" onclick="runOcclusionDetect()">🚧 开始检测</button>
+                            <button class="btn btn-secondary" style="flex:0 0 auto" onclick="clearOccInputs()">🗑️ 清除</button>
+                        </div>
+
+                        <!-- 检测结果信息 -->
+                        <div id="occ-result-info"></div>
+                    </div>
+
+                    <!-- 右侧: 结果展示 -->
+                    <div class="sim-panel">
+                        <div class="sim-panel-title">📊 检测结果</div>
+                        <div id="occ-result-display" style="text-align:center; color:var(--text-dim); padding:40px 0">
+                            <div style="font-size:48px; margin-bottom:12px">🚧</div>
+                            <div>上传相机图像后点击"开始检测"</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
-    
 
         <!-- 添加节点模态框 -->
     <div id="add-node-modal" class="modal">
@@ -2816,6 +2900,139 @@ HTML_TEMPLATE = '''
             }
         }
 
+        // ============ 遮挡检测验证 ============
+        function onOccFileChange(input) {
+            const area = document.getElementById('occ-img-area');
+            if (input.files && input.files[0]) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    area.classList.add('has-image');
+                    let preview = area.querySelector('.sim-preview');
+                    if (!preview) {
+                        area.querySelectorAll('.sim-upload-icon, .sim-upload-text').forEach(el => el.style.display = 'none');
+                        preview = document.createElement('img');
+                        preview.className = 'sim-preview';
+                        area.appendChild(preview);
+                    }
+                    preview.src = e.target.result;
+                };
+                reader.readAsDataURL(input.files[0]);
+            }
+        }
+
+        function clearOccInputs() {
+            const area = document.getElementById('occ-img-area');
+            area.classList.remove('has-image');
+            document.getElementById('occ-img-file').value = '';
+            const preview = area.querySelector('.sim-preview');
+            if (preview) preview.remove();
+            area.querySelectorAll('.sim-upload-icon, .sim-upload-text').forEach(el => el.style.display = '');
+            document.getElementById('occ-result-info').innerHTML = '';
+            document.getElementById('occ-result-display').innerHTML = `
+                <div style="text-align:center; color:var(--text-dim); padding:40px 0">
+                    <div style="font-size:48px; margin-bottom:12px">🚧</div>
+                    <div>上传相机图像后点击"开始检测"</div>
+                </div>`;
+        }
+
+        async function runOcclusionDetect() {
+            const imgInput = document.getElementById('occ-img-file');
+            if (!imgInput.files || !imgInput.files[0]) {
+                showToast('请上传图片', 'error');
+                return;
+            }
+
+            const areaThreshold = parseFloat(document.getElementById('occ-area-threshold').value);
+            const confThreshold = parseFloat(document.getElementById('occ-conf-threshold').value);
+
+            document.getElementById('occ-result-info').innerHTML = '<div class="loading"><div class="spinner"></div>YOLOv8n 遮挡检测中...</div>';
+            document.getElementById('occ-result-display').innerHTML = '<div style="text-align:center; padding:40px"><div class="spinner"></div></div>';
+
+            try {
+                const fd = new FormData();
+                fd.append('image', imgInput.files[0]);
+                fd.append('area_threshold', areaThreshold);
+                fd.append('confidence_threshold', confThreshold);
+
+                const res = await fetch('/api/occlusion_detect', { method: 'POST', body: fd });
+                const data = await res.json();
+
+                if (data.success) {
+                    const r = data.result;
+                    const isOcc = r.occluded;
+                    const statusColor = isOcc ? 'var(--danger)' : 'var(--success)';
+                    const statusIcon = isOcc ? '🚫' : '✅';
+                    const statusText = isOcc ? '遮挡' : '未遮挡';
+
+                    let detHtml = '';
+                    if (r.detections && r.detections.length > 0) {
+                        detHtml = '<div style="margin-top:12px"><div style="font-size:12px; font-weight:600; margin-bottom:6px">检测到的前景物体:</div>';
+                        r.detections.forEach(d => {
+                            const isOccItem = d.area_ratio >= areaThreshold;
+                            detHtml += `<div class="occ-det-item ${isOccItem ? 'is-occluding' : ''}">
+                                <div style="font-weight:600">${isOccItem ? '🚫' : '⚠️'} ${d.class_name}</div>
+                                <div style="font-size:12px; color:var(--text-dim); margin-top:4px">
+                                    置信度: ${(d.confidence * 100).toFixed(1)}% | 面积占比: ${(d.area_ratio * 100).toFixed(1)}%
+                                    | bbox: [${d.bbox.join(', ')}]
+                                </div>
+                            </div>`;
+                        });
+                        detHtml += '</div>';
+                    }
+
+                    document.getElementById('occ-result-info').innerHTML = `
+                        <div class="result-box" style="border-left: 3px solid ${statusColor}">
+                            <div class="result-title" style="color:${statusColor}">${statusIcon} ${statusText}</div>
+                            <div class="sim-info-grid">
+                                <div class="sim-info-item">
+                                    <div class="sim-info-value" style="font-size:16px">${(r.max_area_ratio * 100).toFixed(1)}%</div>
+                                    <div class="sim-info-label">最大面积占比</div>
+                                </div>
+                                <div class="sim-info-item">
+                                    <div class="sim-info-value" style="font-size:16px">${r.elapsed_ms.toFixed(0)}ms</div>
+                                    <div class="sim-info-label">推理耗时</div>
+                                </div>
+                                <div class="sim-info-item">
+                                    <div class="sim-info-value" style="font-size:16px">${r.detections ? r.detections.length : 0}</div>
+                                    <div class="sim-info-label">前景物体数</div>
+                                </div>
+                                <div class="sim-info-item">
+                                    <div class="sim-info-value" style="font-size:16px">${(r.total_area_ratio * 100).toFixed(1)}%</div>
+                                    <div class="sim-info-label">总面积占比</div>
+                                </div>
+                            </div>
+                            <div style="margin-top:8px; font-size:12px; color:var(--text-dim)">
+                                判定理由: ${r.reason}
+                            </div>
+                            ${detHtml}
+                        </div>`;
+
+                    if (data.annotated_image) {
+                        document.getElementById('occ-result-display').innerHTML = `
+                            <div class="sim-result-images">
+                                <div>
+                                    <div style="font-size:13px; font-weight:600; margin-bottom:8px">🚧 YOLOv8n 遮挡检测结果</div>
+                                    <img src="data:image/jpeg;base64,${data.annotated_image}" class="sim-result-img">
+                                </div>
+                            </div>`;
+                    }
+                } else {
+                    document.getElementById('occ-result-info').innerHTML = `
+                        <div class="result-box result-error">
+                            <div class="result-title">❌ 错误</div>
+                            <div>${data.error}</div>
+                        </div>`;
+                    document.getElementById('occ-result-display').innerHTML = '';
+                }
+            } catch(e) {
+                document.getElementById('occ-result-info').innerHTML = `
+                    <div class="result-box result-error">
+                        <div class="result-title">❌ 请求错误</div>
+                        <div>${e.message}</div>
+                    </div>`;
+            }
+        }
+
         // 初始化
         window.onload = refreshGraph;
     </script>
@@ -3300,6 +3517,63 @@ class MemoryNavServer:
             })
 
                 # ========================================================================
+        #  遮挡检测 API (YOLOv8n)
+        # ========================================================================
+
+        @self.app.route('/api/occlusion_detect', methods=['POST'])
+        def api_occlusion_detect():
+            """遮挡检测"""
+            import cv2
+            try:
+                if 'image' not in request.files:
+                    return jsonify({'success': False, 'error': '缺少图片'})
+
+                area_threshold = float(request.form.get('area_threshold', 0.35))
+                confidence_threshold = float(request.form.get('confidence_threshold', 0.4))
+
+                # 读取图片
+                file = request.files['image']
+                file_bytes = np.frombuffer(file.read(), np.uint8)
+                image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+                if image is None:
+                    return jsonify({'success': False, 'error': '无法解码图片'})
+
+                # 延迟初始化遮挡检测器
+                if not hasattr(self, '_occlusion_detector') or self._occlusion_detector is None:
+                    from deploy.memory_nav.occlusion_detector import OcclusionDetector
+                    occ_device = getattr(self, '_occ_device', 'cuda:0')
+                    self._occlusion_detector = OcclusionDetector(
+                        device=occ_device,
+                        area_threshold=area_threshold,
+                        confidence_threshold=confidence_threshold,
+                    )
+
+                # 临时覆盖阈值
+                self._occlusion_detector.area_threshold = area_threshold
+                self._occlusion_detector.confidence_threshold = confidence_threshold
+
+                # 执行检测 + 可视化
+                result, vis_img = self._occlusion_detector.detect_with_visualization(
+                    image, camera_name="uploaded"
+                )
+
+                # 编码可视化图
+                _, buf = cv2.imencode('.jpg', vis_img, [cv2.IMWRITE_JPEG_QUALITY, 90])
+                import base64
+                annotated_b64 = base64.b64encode(buf).decode('utf-8')
+
+                return jsonify({
+                    'success': True,
+                    'result': result.to_dict(),
+                    'annotated_image': annotated_b64,
+                })
+
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                return jsonify({'success': False, 'error': str(e)})
+
+        # ========================================================================
         # 数据库管理 API
         # ========================================================================
         

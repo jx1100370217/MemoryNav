@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-1.9.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v1.9.0)
+[![Version](https://img.shields.io/badge/Version-2.0.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.0.0)
 
 VPR(시각적 장소 인식)과 위상 지도 기반 로봇 기억 내비게이션 시스템
 
@@ -19,7 +19,7 @@ VPR(시각적 장소 인식)과 위상 지도 기반 로봇 기억 내비게이�
 
 ## 📖 소개
 
-MemoryNav는 이동 로봇을 위한 시각적 기억 내비게이션 시스템입니다. 4개의 전방위 어안 카메라로 이미지를 수집하고, VPR 기술을 사용하여 사전 구축된 위상 기억 그래프에서 위치를 추정하며, Qwen3.5-9B 시각-언어 모델을 폴백으로 결합하여 "한번 간 곳을 기억하고 다시 걷는" 기억 내비게이션 능력을 실현합니다.
+MemoryNav는 이동 로봇을 위한 시각적 기억 내비게이션 시스템입니다. 4개의 전방위 어안 카메라로 이미지를 수집하고, VPR 기술을 사용하여 사전 구축된 위상 기억 그래프에서 위치를 추정하며, YOLOv8n 시각적 차폐 감지와 Qwen3.5-9B 시각-언어 모델 폴백을 결합하여 "한번 간 곳을 기억하고 다시 걷는" 기억 내비게이션 능력을 실현합니다.
 
 ### 주요 기능
 
@@ -30,7 +30,8 @@ MemoryNav는 이동 로봇을 위한 시각적 기억 내비게이션 시스템�
 - **💾 매칭 캐시**：신뢰도가 낮을 경우 마지막 성공 결과를 자동 재사용하여 내비게이션 연속성 향상
 - **🔭 Lookahead 이중 확인**: 단계 전환 시 VPR 위치 확인과 다음 단계 서브이미지 매칭을 동시 검증하여 조기 advance 방지
 - **📤 통합 출력 형식**：기억 모드 온/오프에 관계없이 일관된 응답 형식, 항상 `pixel_target` 제공
-- **🤖 Qwen3.5 폴백 그라운딩**：VPR/서브 이미지 매칭 실패 시 Qwen3.5-9B VLM으로 자동 전환
+- **🚧 YOLOv8n 차폐 감지**：VPR/서브 이미지 매칭 실패 시 카메라 화면의 차폐(보행자, 물체 등)를 자동 감지, 차폐 시 정지 대기 후 해소되면 내비게이션 재개
+- **🤖 Qwen3.5 폴백 그라운딩**：차폐 없이 VPR/서브 이미지 매칭 실패 시 Qwen3.5-9B VLM으로 자동 전환
 - **📷 어안 왜곡 보정**：시작 시 `cam/params.yaml`에서 카메라 내부 파라미터 로드, VPR 및 서브 이미지 매칭 전 원통형 투영 왜곡 보정 적용
 - **🧭 픽셀→로봇 좌표 변환**：정규화된 `pixel_target`을 원통형 각도·카메라 방위각·우각 파이프라인을 통해 로봇 운동 좌표 `[x_forward, y_lateral, 0.0]`으로 변환
 - **🌐 WebSocket 서비스**：실시간 스트리밍으로 이미지 수신 및 내비게이션 명령 반환
@@ -63,6 +64,7 @@ MemoryNav/
 │   │   ├── sub_image_matcher.py    # 서브 이미지 매처 (DINOv3 고밀도 특징)
 │   │   ├── fisheye_undistort.py    # 🆕 어안 왜곡 보정 (cam/tools/fisheye_undist_cpu.h 포팅)
 │   │   ├── coord_transform.py      # 🆕 픽셀→로봇 좌표 변환 (원통형 투영 전체 파이프라인)
+│   │   ├── occlusion_detector.py    # 🆕 YOLOv8n 차폐 감지기
 │   │   ├── qwen35_point_grounder.py # Qwen3.5 그라운딩 래퍼 (폴백 모델)
 │   │   ├── qwen35_grounding_server.py # Qwen3.5 서브프로세스 추론 서버
 │   │   ├── vpr_factory.py          # VPR 추출기 팩토리
@@ -74,7 +76,7 @@ MemoryNav/
 │   └── build_memory.sh             # 기억 구축 스크립트
 ├── internnav/                      # InternNav 내비게이션 프레임워크
 ├── scripts/
-│   └── memory_visualization_server.py  # 기억 그래프 시각화 서비스
+│   └── memory_visualization_server.py  # 기억 그래프 시각화 서비스 (서브 이미지 매칭 + 모델 그라운딩 + 차폐 감지)
 ├── tests/
 │   ├── test_memory_nav.py          # 기억 모듈 유닛 테스트
 │   └── test_memory_ws.py           # WebSocket 통합 테스트 (상세 로그)
@@ -225,6 +227,16 @@ python deploy/ws_proxy_with_memory.py
 ---
 
 ## 📋 업데이트 로그
+
+### v2.0.0
+
+- **🆕 YOLOv8n 차폐 감지**：`deploy/memory_nav/occlusion_detector.py` 신설
+  - YOLOv8n(6MB)으로 person, backpack, umbrella 등 근거리 전경 물체 감지, bbox 면적비 ≥ 35%로 차폐 판정
+  - 차폐 시 `action: [0, 0, 0]`(정지 대기), 해소 후 자동 내비게이션 재개
+  - 차폐 없을 경우 Qwen3.5 포인팅(landmark_name)으로 폴백 내비게이션
+- **🔄 내비게이션 로직 간소화**：기존 트렌드 감지 방식(Case B 건너뛰기 / Case C 재계획 / Case D 유사도 트렌드) 삭제
+- **🎯 서브 이미지 매칭 best_fail_camera**：전체 실패 시에도 최고 점수 카메라를 기록, 차폐 감지에 사용
+- **🖥️ 차폐 감지 탭**：`memory_visualization_server.py`에 🚧 차폐 감지 검증 탭 추가
 
 ### v1.9.0
 

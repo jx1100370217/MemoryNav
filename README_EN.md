@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-1.9.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v1.9.0)
+[![Version](https://img.shields.io/badge/Version-2.0.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.0.0)
 
 A robot memory navigation system based on Visual Place Recognition (VPR) and topological maps
 
@@ -19,7 +19,7 @@ A robot memory navigation system based on Visual Place Recognition (VPR) and top
 
 ## 📖 Introduction
 
-MemoryNav is a visual memory navigation system for mobile robots. It collects images via 4 omnidirectional fisheye cameras, uses VPR to localize within a pre-built topological memory graph, and falls back to Qwen3.5-9B visual-language model for grounding — enabling "remember where you've been, walk it again" navigation.
+MemoryNav is a visual memory navigation system for mobile robots. It collects images via 4 omnidirectional fisheye cameras, uses VPR to localize within a pre-built topological memory graph, uses YOLOv8n for visual occlusion detection, and falls back to Qwen3.5-9B visual-language model for grounding — enabling "remember where you've been, walk it again" navigation.
 
 ### Key Capabilities
 
@@ -29,7 +29,8 @@ MemoryNav is a visual memory navigation system for mobile robots. It collects im
 - **🎯 DINOv3 Sub-image Matching**: Dense patch feature matching with sliding-window cosine similarity to localize navigation targets in real-time camera frames
 - **💾 Match Caching**: Automatically reuses the last successful match when confidence drops, ensuring navigation continuity
 - **📤 Unified Output Format**: Consistent response schema regardless of memory mode — always provides `pixel_target`
-- **🤖 Qwen3.5 Fallback Grounding**: Falls back to Qwen3.5-9B VLM when VPR/sub-image matching fails, using Chinese landmark names directly
+- **🚧 YOLOv8n Occlusion Detection**: Automatically detects camera occlusion (pedestrians, objects, etc.) when VPR/sub-image matching fails; stops in place when occluded and resumes after clearance
+- **🤖 Qwen3.5 Fallback Grounding**: Falls back to Qwen3.5-9B VLM when not occluded but VPR/sub-image matching fails, using Chinese landmark names directly
 - **📷 Fisheye Undistortion**: Loads camera intrinsics from `cam/params.yaml` at startup; applies cylindrical-projection undistortion to all input images before VPR and sub-image matching
 - **🧭 Pixel→Robot Coordinate Transform**: Converts normalized `pixel_target` to robot motion coordinates `[x_forward, y_lateral, 0.0]` via a full cylindrical-angle + camera-azimuth + depression-angle pipeline
 - **🌐 WebSocket Service**: Real-time streaming of images and navigation commands
@@ -62,6 +63,7 @@ MemoryNav/
 │   │   ├── sub_image_matcher.py    # Sub-image matcher (DINOv3 dense features)
 │   │   ├── fisheye_undistort.py    # 🆕 Fisheye undistortion (ported from cam/tools/fisheye_undist_cpu.h)
 │   │   ├── coord_transform.py      # 🆕 Pixel→robot coordinate transform (full cylindrical pipeline)
+│   │   ├── occlusion_detector.py    # 🆕 YOLOv8n occlusion detector
 │   │   ├── qwen35_point_grounder.py # Qwen3.5 grounding wrapper (fallback model)
 │   │   ├── qwen35_grounding_server.py # Qwen3.5 subprocess inference server
 │   │   ├── vpr_factory.py          # VPR extractor factory
@@ -73,7 +75,7 @@ MemoryNav/
 │   └── build_memory.sh             # Memory build script
 ├── internnav/                      # InternNav navigation framework
 ├── scripts/
-│   └── memory_visualization_server.py  # Memory graph visualization (sub-image + model grounding)
+│   └── memory_visualization_server.py  # Memory graph visualization (sub-image + model grounding + occlusion detection)
 ├── tests/
 │   ├── test_memory_nav.py          # Memory module unit tests
 │   └── test_memory_ws.py           # WebSocket integration tests (detailed logging)
@@ -376,13 +378,26 @@ Cyclic-shift matching supports 4 heading offsets: `0°`, `-75°`, `180°`, `+105
 # Unit tests
 python -m pytest tests/test_memory_nav.py -v
 
-# WebSocket integration test (per-frame logs + stats + similarity trend chart)
+# WebSocket integration test (per-frame logs + stats)
 python tests/test_memory_ws.py
 ```
 
 ---
 
 ## 📋 Changelog
+
+### v2.0.0
+
+- **🆕 YOLOv8n Occlusion Detection**: Added `deploy/memory_nav/occlusion_detector.py`
+  - Detects person, backpack, umbrella, handbag, suitcase using YOLOv8n (6MB, ~30ms GPU inference)
+  - Occlusion = single object bbox area ratio ≥ 35% of frame
+  - Occluded → `action: [0, 0, 0]` (wait in place); cleared → resume navigation
+  - Not occluded → Qwen3.5 grounding with landmark_name as fallback
+- **🔄 Simplified Navigation Logic**: Removed legacy trend-based detection (Case B skip / Case C replan / Case D similarity trend)
+  - VPR matches non-target node → continue current step (replaces complex skip/replan)
+  - VPR lost → occlusion detection + Qwen3.5 fallback (replaces unreliable trend detection)
+- **🎯 Sub-image Match best_fail_camera**: `match_current_step()` now tracks the highest-scoring camera even on failure, used by occlusion detector instead of static `step.camera_name`
+- **🖥️ Occlusion Detection Tab**: Added 🚧 tab in `memory_visualization_server.py` with adjustable thresholds
 
 ### v1.9.0
 

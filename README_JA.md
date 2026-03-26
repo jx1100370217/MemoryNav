@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-1.9.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v1.9.0)
+[![Version](https://img.shields.io/badge/Version-2.0.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.0.0)
 
 VPR（視覚的場所認識）とトポロジカルマップに基づくロボット記憶ナビゲーションシステム
 
@@ -19,7 +19,7 @@ VPR（視覚的場所認識）とトポロジカルマップに基づくロボ�
 
 ## 📖 概要
 
-MemoryNavは移動ロボット向けの視覚記憶ナビゲーションシステムです。4台の全方位魚眼カメラで画像を取得し、VPR技術を用いて事前構築したトポロジカル記憶グラフ上で自己位置推定を行います。Qwen3.5-9B視覚言語モデルをフォールバックとして組み合わせ、「一度行った場所を記憶し、再び歩く」記憶ナビゲーション能力を実現します。
+MemoryNavは移動ロボット向けの視覚記憶ナビゲーションシステムです。4台の全方位魚眼カメラで画像を取得し、VPR技術を用いて事前構築したトポロジカル記憶グラフ上で自己位置推定を行います。YOLOv8nによる視覚遮蔽検出とQwen3.5-9B視覚言語モデルのフォールバックを組み合わせ、「一度行った場所を記憶し、再び歩く」記憶ナビゲーション能力を実現します。
 
 ### 主な機能
 
@@ -30,7 +30,8 @@ MemoryNavは移動ロボット向けの視覚記憶ナビゲーションシス�
 - **💾 マッチングキャッシュ**：信頼度が低い場合は直前の成功結果を自動的に再利用し、ナビゲーションの継続性を向上
 - **🔭 Lookahead二重確認**：ステップ切替時にVPR定位と次ステップのサブ画像マッチングを同時検証し、早期advanceを防止
 - **📤 統一出力フォーマット**：記憶モードのオン/オフに関わらず一貫したレスポンス形式、常に`pixel_target`を提供
-- **🤖 Qwen3.5フォールバックグラウンディング**：VPR/サブ画像マッチング失敗時にQwen3.5-9B VLMへ自動切り替え、中国語のランドマーク名を直接使用
+- **🚧 YOLOv8n遮蔽検出**：VPR/サブ画像マッチング失敗時にカメラ画面の遮蔽（歩行者・物体等）を自動検出、遮蔽時はその場で待機し解消後にナビゲーション再開
+- **🤖 Qwen3.5フォールバックグラウンディング**：遮蔽なしでVPR/サブ画像マッチング失敗時にQwen3.5-9B VLMへ自動切り替え、中国語のランドマーク名を直接使用
 - **📷 魚眼歪み補正**：起動時に`cam/params.yaml`からカメラ内部パラメータを読み込み、VPR・サブ画像マッチング前に入力画像へ円筒投影歪み補正を適用
 - **🧭 ピクセル→ロボット座標変換**：正規化された`pixel_target`を円筒角度・カメラ方位角・俯角管線を通じてロボット運動座標`[x_forward, y_lateral, 0.0]`に変換
 - **🌐 WebSocketサービス**：リアルタイムストリーミングで画像受信・ナビゲーション指令を返送
@@ -63,6 +64,7 @@ MemoryNav/
 │   │   ├── sub_image_matcher.py    # サブ画像マッチャー (DINOv3高密度特徴量)
 │   │   ├── fisheye_undistort.py    # 🆕 魚眼歪み補正 (cam/tools/fisheye_undist_cpu.hから移植)
 │   │   ├── coord_transform.py      # 🆕 ピクセル→ロボット座標変換 (円筒投影完全パイプライン)
+│   │   ├── occlusion_detector.py    # 🆕 YOLOv8n遮蔽検出器
 │   │   ├── qwen35_point_grounder.py # Qwen3.5グラウンディングラッパー (フォールバックモデル)
 │   │   ├── qwen35_grounding_server.py # Qwen3.5サブプロセス推論サーバー
 │   │   ├── vpr_factory.py          # VPR抽出器ファクトリー
@@ -74,7 +76,7 @@ MemoryNav/
 │   └── build_memory.sh             # 記憶構築スクリプト
 ├── internnav/                      # InternNavナビゲーションフレームワーク
 ├── scripts/
-│   └── memory_visualization_server.py  # 記憶グラフ可視化サービス
+│   └── memory_visualization_server.py  # 記憶グラフ可視化サービス（サブ画像マッチング + モデルグラウンディング + 遮蔽検出）
 ├── tests/
 │   ├── test_memory_nav.py          # 記憶モジュールユニットテスト
 │   └── test_memory_ws.py           # WebSocket統合テスト（詳細ログ）
@@ -225,6 +227,16 @@ python deploy/ws_proxy_with_memory.py
 ---
 
 ## 📋 更新履歴
+
+### v2.0.0
+
+- **🆕 YOLOv8n遮蔽検出**：`deploy/memory_nav/occlusion_detector.py`を新設
+  - YOLOv8n（6MB）でperson、backpack、umbrella等の近距離前景物体を検出、bbox面積比≥35%で遮蔽と判定
+  - 遮蔽時は`action: [0, 0, 0]`（その場で待機）、解消後に自動でナビゲーション再開
+  - 遮蔽なしの場合はQwen3.5打点（landmark_name）でフォールバックナビゲーション
+- **🔄 ナビゲーションロジック簡素化**：旧トレンド検出方式（Case B スキップ / Case C 再計画 / Case D 類似度トレンド）を削除
+- **🎯 サブ画像マッチングbest_fail_camera**：全カメラ失敗時でも最高スコアのカメラを記録、遮蔽検出に使用
+- **🖥️ 遮蔽検出タブ**：`memory_visualization_server.py`に🚧遮蔽検出検証タブを追加
 
 ### v1.9.0
 

@@ -56,6 +56,7 @@ from deploy.memory_nav import (
 
 # 鱼眼去畸变 + 坐标变换
 from deploy.memory_nav.fisheye_undistort import FisheyeUndistorter
+from deploy.memory_nav.occlusion_detector import OcclusionDetector
 from deploy.memory_nav.coord_transform import (
     pixel_target_to_action,
     pixel_norm_to_angle,
@@ -122,6 +123,7 @@ agent_lock = asyncio.Lock()
 
 # 记忆导航全局实例
 memory_navigator: Optional[MemoryNavigator] = None
+occlusion_detector: Optional[OcclusionDetector] = None
 
 # 鱼眼去畸变全局实例
 fisheye_undistorter: Optional[FisheyeUndistorter] = None
@@ -147,12 +149,9 @@ class MemoryNavState:
     last_vpr_result: Optional[VPRResult] = None
     last_task: Optional[str] = None  # 记录发起记忆导航时的 task
 
-    # ---- 相似度趋势检测 ----
-    source_sim_history: List[float] = field(default_factory=list)
-    target_sim_history: List[float] = field(default_factory=list)
-    deviation_count: int = 0          # 连续偏离次数
-    TREND_WINDOW: int = 2             # 趋势检测滑动窗口
-    MAX_DEVIATIONS: int = 5           # 最大偏离次数 → 强制 advance
+    # ---- 遮挡检测 ----
+    consecutive_occlusions: int = 0   # 连续遮挡次数
+    last_occlusion_result: Optional[Dict] = None  # 最近一次遮挡检测结果
     last_query_features: Optional[Dict] = None  # 最近一次提取的特征
     last_good_sub_match: Optional[Dict] = None   # 上一帧成功的子图匹配结果 (confidence >= threshold)
     last_good_query_features: Optional[Dict] = None  # 上一帧匹配成功时的 VPR 特征（用于帧间相似度）
@@ -173,9 +172,8 @@ class MemoryNavState:
         self.consecutive_misses = 0
         self.last_vpr_result = None
         self.last_task = None
-        self.source_sim_history = []
-        self.target_sim_history = []
-        self.deviation_count = 0
+        self.consecutive_occlusions = 0
+        self.last_occlusion_result = None
         self.last_query_features = None
         self.last_good_sub_match = None
         self.last_good_query_features = None
@@ -200,9 +198,8 @@ class MemoryNavState:
             return False
         self.current_step_idx += 1
         self.consecutive_misses = 0
-        self.source_sim_history = []
-        self.target_sim_history = []
-        self.deviation_count = 0
+        self.consecutive_occlusions = 0
+        self.last_occlusion_result = None
         self.last_good_sub_match = None
         self.last_good_query_features = None
         self.cache_miss_count = 0
@@ -700,6 +697,8 @@ def build_memory_response(
         "vpr_matched_node": vpr_result.matched_node_id if vpr_result else None,
         "phase": nav_state.phase,
         "consecutive_misses": nav_state.consecutive_misses,
+        "consecutive_occlusions": nav_state.consecutive_occlusions,
+        "occlusion": nav_state.last_occlusion_result,
         "lookahead_conf": (nav_state.next_step_sub_match.get('match', {}).get('confidence', 0)
                            if nav_state.next_step_sub_match else None),
         "lookahead_found": (nav_state.next_step_sub_match.get('match', {}).get('found', False)
@@ -1405,21 +1404,6 @@ async def process_inference_with_memory(message_data, session_state, agent,
                         f"{step.from_node_name}({source_node_id}) → {step.to_node_name}({target_node_id}), "
                         f"phase={nav_state.phase}, misses={nav_state.consecutive_misses}")
 
-            # ---- 无论 VPR 成功与否，都记录 source/target 相似度（为趋势检测积累数据）----
-            if nav_state.last_query_features and navigator.vpr:
-                try:
-                    _src_sim = navigator.vpr.get_node_similarity(
-                        nav_state.last_query_features, source_node_id)
-                    _tgt_sim = navigator.vpr.get_node_similarity(
-                        nav_state.last_query_features, target_node_id)
-                    nav_state.source_sim_history.append(_src_sim)
-                    nav_state.target_sim_history.append(_tgt_sim)
-                    logger.info(f"📊 [Memory] 相似度记录: source({step.from_node_name})={_src_sim:.4f}, "
-                                f"target({step.to_node_name})={_tgt_sim:.4f}, "
-                                f"history_len={len(nav_state.source_sim_history)}")
-                except Exception as e:
-                    logger.warning(f"[Memory] 记录相似度失败: {e}")
-
             if vpr_result is not None:
                 matched_id = vpr_result.matched_node_id
 
@@ -1495,47 +1479,10 @@ async def process_inference_with_memory(message_data, session_state, agent,
                         logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
                         return resp
 
-                # ---- Case B: VPR 匹配到当前路径中更后面的节点 → 跳步 ----
-                elif matched_id in nav_state.plan.path:
-                    matched_path_idx = nav_state.plan.path.index(matched_id)
-                    # 当前步骤的 from_node 在 path 中的位置
-                    current_from_path_idx = nav_state.plan.path.index(source_node_id) if source_node_id in nav_state.plan.path else -1
-
-                    if matched_path_idx > current_from_path_idx + 1:
-                        # 跳过中间节点
-                        # 找到对应的 step_idx
-                        new_step_idx = matched_path_idx - 1  # path[i] → path[i+1] 对应 step[i]
-                        if new_step_idx < len(nav_state.plan.steps):
-                            logger.info(f"⏩ [Memory] VPR 匹配到路径中的后续节点 {matched_id} "
-                                        f"(path_idx={matched_path_idx}), 跳到步骤 {new_step_idx}")
-                            nav_state.current_step_idx = new_step_idx
-                            nav_state.consecutive_misses = 0
-                            nav_state.phase = 'step_init'
-
-                            # 检查是否已是最后一个节点（终点）
-                            if matched_id == nav_state.plan.goal_node_id:
-                                nav_state.phase = 'completed'
-                                session_state['request_count'] += 1
-                                session_state['last_instruction'] = instruction
-                                session_state['last_task'] = current_task
-                                resp = build_memory_response(
-                                    robot_id, pts, nav_state, vpr_result,
-                                    task_status="end",
-                                    message=f"记忆导航完成！已到达 {nav_state.plan.goal_node_name}"
-                                )
-                                logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
-                                return resp
-
-                            session_state['request_count'] += 1
-                            session_state['last_instruction'] = instruction
-                            session_state['last_task'] = current_task
-                            resp = build_memory_response(robot_id, pts, nav_state, vpr_result)
-                            logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
-                            return resp
-
-                    # VPR 匹配到源节点或之前的节点 → 继续当前步骤
-                    logger.info(f"🔄 [Memory] VPR 匹配到路径中的节点 {matched_id} "
-                                f"(path_idx={matched_path_idx}), 继续当前步骤")
+                # ---- Case B/C: VPR 匹配到非目标节点 → 继续当前步骤的记忆引导 ----
+                else:
+                    logger.info(f"🔄 [Memory] VPR 匹配到非目标节点 {matched_id} "
+                                f"({vpr_result.matched_node_name}), 继续当前步骤")
                     nav_state.consecutive_misses = 0
                     nav_state.phase = 'verifying'
                     session_state['request_count'] += 1
@@ -1545,186 +1492,125 @@ async def process_inference_with_memory(message_data, session_state, agent,
                     logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
                     return resp
 
-                # ---- Case C: VPR 匹配到不在路径中的节点 → 也当作"已知位置" ----
-                else:
-                    logger.info(f"🔀 [Memory] VPR 匹配到路径外节点 {matched_id} "
-                                f"({vpr_result.matched_node_name}), "
-                                f"sim={vpr_result.similarity:.4f}")
-                    # 尝试从当前位置重新规划
-                    if vpr_result.confidence >= 0.8:
-                        logger.info(f"🔄 [Memory] 高置信度匹配到路径外节点，尝试重新规划...")
-                        try:
-                            new_plan = await asyncio.to_thread(
-                                navigator.plan_navigation,
-                                nav_state.plan.goal_node_id,
-                                matched_id
-                            )
-                            if new_plan.success and new_plan.total_steps > 0:
-                                logger.info(f"✅ [Memory] 重新规划成功: {' → '.join(new_plan.path)}")
-                                nav_state.plan = new_plan
-                                nav_state.current_step_idx = 0
-                                nav_state.consecutive_misses = 0
-                                nav_state.phase = 'step_init'
-                                session_state['request_count'] += 1
-                                session_state['last_instruction'] = instruction
-                                session_state['last_task'] = current_task
-                                resp = build_memory_response(robot_id, pts, nav_state, vpr_result,
-                                    sub_image_match=_sub_match, message=f"记忆导航重规划: {new_plan.start_node_name} → {new_plan.goal_node_name}")
-                                logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
-                                return resp
-                        except Exception as e:
-                            logger.warning(f"[Memory] 重新规划失败: {e}")
-
-                    # 否则继续返回当前步骤的记忆响应
-                    nav_state.phase = 'verifying'
-                    session_state['request_count'] += 1
-                    session_state['last_instruction'] = instruction
-                    session_state['last_task'] = current_task
-                    resp = build_memory_response(robot_id, pts, nav_state, vpr_result)
-                    logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
-                    return resp
-
             else:
-                # ---- Case D: VPR 丢失 → 相似度趋势检测 ----
+                # ---- Case D: VPR 丢失 + 子图匹配失败 → 遮挡检测 ----
                 nav_state.consecutive_misses += 1
                 logger.info(f"❓ [Memory] VPR 丢失 ({nav_state.consecutive_misses})")
 
-                # 相似度已在上方统一记录，直接读取最新值
-                source_sim = nav_state.source_sim_history[-1] if nav_state.source_sim_history else 0.0
-                target_sim = nav_state.target_sim_history[-1] if nav_state.target_sim_history else 0.0
+                # 遮挡检测: 对子图匹配的最佳 camera (得分最高) 进行遮挡判断
+                _occ_camera = _sub_match.get('camera_name', '') if _sub_match else (step.camera_name if step else '')
+                _occ_occluded = False
+                _occ_result = None
 
-                # 趋势检测（需要至少 TREND_WINDOW 个样本）
-                tw = nav_state.TREND_WINDOW
-                if len(nav_state.source_sim_history) >= tw:
-                    src_hist = nav_state.source_sim_history[-tw:]
-                    tgt_hist = nav_state.target_sim_history[-tw:]
-                    src_trend = src_hist[-1] - src_hist[0]  # 负=下降, 正=上升
-                    tgt_trend = tgt_hist[-1] - tgt_hist[0]
+                if occlusion_detector is not None and _occ_camera and camera_images.get(_occ_camera) is not None:
+                    try:
+                        _occ_result = await asyncio.to_thread(
+                            occlusion_detector.detect,
+                            camera_images[_occ_camera],
+                            _occ_camera
+                        )
+                        _occ_occluded = _occ_result.occluded
+                        nav_state.last_occlusion_result = _occ_result.to_dict()
+                        logger.info(f"🔍 [Memory] 遮挡检测: camera={_occ_camera}, "
+                                    f"occluded={_occ_occluded}, "
+                                    f"max_area={_occ_result.max_area_ratio:.4f}, "
+                                    f"reason={_occ_result.reason}")
+                    except Exception as e:
+                        logger.warning(f"[Memory] 遮挡检测异常: {e}")
 
-                    logger.info(f"📈 [Memory] 趋势: source_trend={src_trend:+.4f}, "
-                                f"target_trend={tgt_trend:+.4f} "
-                                f"(window={tw}, deviation_count={nav_state.deviation_count})")
+                if _occ_occluded:
+                    # ---- 判定为遮挡 → 停止等待 ----
+                    nav_state.consecutive_occlusions += 1
+                    logger.info(f"🚧 [Memory] 遮挡! 原地等待 "
+                                f"(连续遮挡 {nav_state.consecutive_occlusions} 次)")
+                    session_state['request_count'] += 1
+                    session_state['last_instruction'] = instruction
+                    session_state['last_task'] = current_task
+                    resp = {
+                        "status": "success",
+                        "id": robot_id,
+                        "pts": pts,
+                        "task_status": "executing",
+                        "action": [[0.0, 0.0, 0.0]],
+                        "pixel_target": None,
+                        "camera_name": _occ_camera,
+                        "landmark_name": step.landmark_name if step else None,
+                        "sub_image_match": _sub_match,
+                        "memory_active": True,
+                        "memory_info": {
+                            "plan_path": nav_state.plan.path if nav_state.plan else [],
+                            "current_step": nav_state.current_step_idx,
+                            "total_steps": nav_state.plan.total_steps if nav_state.plan else 0,
+                            "from_node": step.from_node_name if step else "",
+                            "to_node": step.to_node_name if step else "",
+                            "phase": "occluded",
+                            "consecutive_misses": nav_state.consecutive_misses,
+                            "consecutive_occlusions": nav_state.consecutive_occlusions,
+                            "occlusion": nav_state.last_occlusion_result,
+                        },
+                        "message": f"记忆导航: 检测到遮挡 ({_occ_result.reason if _occ_result else ''}), 原地等待"
+                    }
+                    logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
+                    return resp
 
-                    if src_trend <= 0 and tgt_trend > 0:
-                        # ---- 情况1: 远离源节点 + 接近目标节点 → 方向正确，直行 ----
-                        logger.info(f"✅ [Memory] 趋势正确 (source↓ target↑)，发送 go straight")
-                        nav_state.deviation_count = 0  # 重置偏离计数
+                else:
+                    # ---- 未遮挡 → Qwen3.5 打点继续导航 ----
+                    nav_state.consecutive_occlusions = 0  # 重置连续遮挡计数
+                    _fb_landmark = step.landmark_name if step else ''
+
+                    if _fb_landmark and nav_state.fallback_pixel_target:
+                        # 已有 Qwen3.5 打点结果（在上方子图匹配失败时已调用）
+                        _fb_pixel = nav_state.fallback_pixel_target
+                        _fb_cam = step.camera_name if step else None
+                        if _fb_pixel and _fb_cam and len(_fb_pixel) >= 2:
+                            _fb_vec, _fb_debug = _pixel_target_to_robot_action(_fb_pixel[0], _fb_pixel[1], _fb_cam)
+                            _fb_action = [_fb_vec]
+                        else:
+                            _fb_action = [[1.0, 0.0, 0.0]]  # 直行 1m
+                        logger.info(f"🤖 [Memory] 未遮挡，使用 Qwen3.5 打点结果导航: "
+                                    f"landmark='{_fb_landmark}', pixel={_fb_pixel}")
                         session_state['request_count'] += 1
                         session_state['last_instruction'] = instruction
                         session_state['last_task'] = current_task
-                        # 趋势正确时优先用像素目标做坐标转换，否则直行 1m
-                        _trend_pixel = nav_state.fallback_pixel_target if (nav_state.fallback_pixel_target and _sub_match is None) else _extract_pixel_target(_sub_match)
-                        _trend_cam = step.camera_name if step else None
-                        if _trend_pixel and _trend_cam and len(_trend_pixel) >= 2:
-                            _trend_vec, _trend_debug = _pixel_target_to_robot_action(_trend_pixel[0], _trend_pixel[1], _trend_cam)
-                            _trend_action = [_trend_vec]
-                        else:
-                            _trend_action = nav_state.fallback_action if (nav_state.fallback_action and _sub_match is None) else [[1.0, 0.0, 0.0]]
                         resp = {
                             "status": "success",
                             "id": robot_id,
                             "pts": pts,
                             "task_status": "executing",
-                            "action": _trend_action,
-                            "pixel_target": None,
-                            "camera_name": step.camera_name if step else None,
-                            "landmark_name": step.landmark_name if step else None,
+                            "action": _fb_action,
+                            "pixel_target": _fb_pixel,
+                            "camera_name": _fb_cam,
+                            "landmark_name": _fb_landmark,
                             "sub_image_match": _sub_match,
-                            "fallback_instruction": nav_state.fallback_instruction if _sub_match is None else None,
+                            "fallback_instruction": _fb_landmark,
                             "memory_active": True,
                             "memory_info": {
                                 "plan_path": nav_state.plan.path if nav_state.plan else [],
                                 "current_step": nav_state.current_step_idx,
                                 "total_steps": nav_state.plan.total_steps if nav_state.plan else 0,
-                                "from_node": step.from_node_name,
-                                "to_node": step.to_node_name,
-                                "phase": "trend_go_straight",
+                                "from_node": step.from_node_name if step else "",
+                                "to_node": step.to_node_name if step else "",
+                                "phase": "qwen35_fallback",
                                 "consecutive_misses": nav_state.consecutive_misses,
-                                "source_sim": source_sim,
-                                "target_sim": target_sim,
-                                "source_trend": src_trend,
-                                "target_trend": tgt_trend,
                             },
-                            "message": f"记忆导航: 趋势正确 (source↓ target↑)，直行前进"
+                            "message": f"记忆导航: VPR丢失+未遮挡，Qwen3.5打点导航 (landmark={_fb_landmark})"
                         }
                         logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
                         return resp
-
-                    elif src_trend < 0 and tgt_trend < 0:
-                        # ---- 情况2: 远离源节点 + 远离目标节点 → 偏离路线 ----
-                        nav_state.deviation_count += 1
-                        logger.warning(f"⚠️ [Memory] 偏离检测! source↓ target↓ "
-                                       f"(deviation {nav_state.deviation_count}/{nav_state.MAX_DEVIATIONS})")
-
-                        if nav_state.deviation_count >= nav_state.MAX_DEVIATIONS:
-                            # 偏离超限 → 强制 advance
-                            logger.warning(f"🚨 [Memory] 偏离超限! 强制 advance")
-                            has_next = nav_state.advance()
-                            session_state['request_count'] += 1
-                            session_state['last_instruction'] = instruction
-                            session_state['last_task'] = current_task
-                            if has_next:
-                                nav_state.phase = 'step_init'
-                                resp = build_memory_response(
-                                    robot_id, pts, nav_state, nav_state.last_vpr_result,
-                                    sub_image_match=_sub_match, message=f"记忆导航: 偏离超限，强制前进到下一步"
-                                )
-                            else:
-                                nav_state.phase = 'completed'
-                                resp = {
-                                    "status": "success",
-                                    "id": robot_id,
-                                    "pts": pts,
-                                    "task_status": "end",
-                                    "action": [[0.0, 0.0, 0.0]],
-                                    "pixel_target": None,
-                                    "camera_name": None,
-                                    "landmark_name": None,
-                                    "sub_image_match": None,
-                                    "memory_active": True,
-                                    "memory_info": {
-                                        "plan_path": nav_state.plan.path if nav_state.plan else [],
-                                        "current_step": nav_state.current_step_idx,
-                                        "total_steps": nav_state.plan.total_steps if nav_state.plan else 0,
-                                        "phase": "completed",
-                                        "deviation_count": nav_state.deviation_count,
-                                    },
-                                    "message": f"🎉 记忆导航完成（偏离超限强制结束）！目标: {nav_state.plan.goal_node_name if nav_state.plan else ''}"
-                                }
-                            logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
-                            return resp
-
-                        # 偏离但未超限 → 重新发送记忆引导 (angle + pixel_goal)，让机器人重新调整朝向
-                        logger.info(f"🔄 [Memory] 偏离未超限，重发记忆引导帮助纠偏")
-                        session_state['request_count'] += 1
-                        session_state['last_instruction'] = instruction
-                        session_state['last_task'] = current_task
-                        resp = build_memory_response(
-                            robot_id, pts, nav_state, nav_state.last_vpr_result,
-                            sub_image_match=_sub_match, message=f"记忆导航: 检测到偏离 ({nav_state.deviation_count}/{nav_state.MAX_DEVIATIONS})，重发引导纠偏"
-                        )
-                        logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
-                        return resp
-
                     else:
-                        # ---- 其他情况 (source↑ 或 趋势不明) → 可能还在源节点附近 ----
-                        # 重发记忆引导
-                        logger.info(f"🔄 [Memory] 趋势不明确 (src={src_trend:+.4f}, tgt={tgt_trend:+.4f})，重发记忆引导")
-                        nav_state.deviation_count = 0  # 没有偏离，重置
+                        # Qwen3.5 打点也失败了 → 重发记忆引导
+                        logger.info(f"🔄 [Memory] VPR丢失 + 未遮挡 + Qwen3.5无结果，重发记忆引导")
+                        nav_state.phase = 'fallback'
                         session_state['request_count'] += 1
                         session_state['last_instruction'] = instruction
                         session_state['last_task'] = current_task
                         resp = build_memory_response(
                             robot_id, pts, nav_state, nav_state.last_vpr_result,
-                            sub_image_match=_sub_match, message=f"记忆导航: 趋势不明确，重发引导"
+                            sub_image_match=_sub_match,
+                            message=f"记忆导航: VPR丢失+未遮挡+打点无结果，重发引导"
                         )
                         logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
                         return resp
-
-                # 趋势样本不足 → 走 InternVLA 兜底推理
-                nav_state.phase = 'fallback'
-                logger.info(f"🔄 [Memory] 趋势样本不足 ({len(nav_state.source_sim_history)}/{tw})，走 InternVLA 兜底推理")
-                # 继续往下走到 InternVLA 推理
 
         # ================================================================
         # 4. 无活跃计划但 VPR 定位成功 → 尝试建立记忆导航
@@ -2197,7 +2083,7 @@ async def handle_client(websocket):
 
 async def main():
     """启动WebSocket服务器（带记忆导航）"""
-    global memory_navigator, global_agent
+    global memory_navigator, global_agent, occlusion_detector
 
     # 切换工作目录到项目根目录
     os.chdir(project_root)
@@ -2225,6 +2111,15 @@ async def main():
 
     global_agent = None
     logger.info("  ├─ InternVLA:    按需加载 (默认不启动)")
+
+    # ── 遮挡检测器 (YOLOv8n) ──
+    try:
+        occlusion_detector = OcclusionDetector(device=vpr_device)
+        occlusion_detector.preload()
+        logger.info(f"  ├─ 遮挡检测:    ✅ YOLOv8n (device={vpr_device})")
+    except Exception as e:
+        occlusion_detector = None
+        logger.warning(f"  ├─ 遮挡检测:    ⚠️ 加载失败 ({e})")
 
     qwen35_status = "❌ 未加载"
     if memory_navigator is not None:

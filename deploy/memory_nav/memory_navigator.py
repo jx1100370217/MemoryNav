@@ -457,13 +457,19 @@ class MemoryNavigator:
     
     def _cascade_match_single_camera(self, camera_image: np.ndarray,
                                      crop_paths: Dict[str, str],
-                                     camera_name: str) -> Tuple[Optional[SubImageMatchResult], Optional[str]]:
+                                     camera_name: str) -> Tuple[Optional[SubImageMatchResult], Optional[str], Optional[SubImageMatchResult], Optional[str]]:
         """
         在单个相机图上执行级联匹配: small → mid → big
         
         Returns:
-            (match_result, matched_scale) — 匹配成功返回结果和尺度，失败返回 (None, None)
+            (match_result, matched_scale, best_fail_result, best_fail_scale)
+            匹配成功时 match_result 有值；
+            best_fail_result 始终记录该相机上得分最高的结果（无论是否达标），用于遮挡检测选择 camera。
         """
+        best_fail_result = None
+        best_fail_scale = None
+        best_fail_conf = -1.0
+
         for scale in ['small', 'mid', 'big']:
             crop_path = crop_paths.get(scale, '')
             if not crop_path:
@@ -472,11 +478,15 @@ class MemoryNavigator:
             if result.found:
                 logger.info(f"[MemoryNavigator] 级联匹配命中: camera={camera_name}, "
                            f"scale={scale}, confidence={result.confidence:.4f}")
-                return result, scale
+                return result, scale, result, scale
             else:
                 logger.debug(f"[MemoryNavigator] 级联匹配未命中: camera={camera_name}, "
                             f"scale={scale}, confidence={result.confidence:.4f}")
-        return None, None
+                if result.confidence > best_fail_conf:
+                    best_fail_result = result
+                    best_fail_scale = scale
+                    best_fail_conf = result.confidence
+        return None, None, best_fail_result, best_fail_scale
 
     def match_current_step(self, camera_images: Dict[str, np.ndarray], step: 'NavigationStep' = None) -> Optional[Dict]:
         """
@@ -510,9 +520,13 @@ class MemoryNavigator:
         best_camera = None
         best_confidence = -1.0
         
+        # 额外追踪: 即使全部失败，也记录得分最高的 camera (用于遮挡检测)
+        best_fail_camera = None
+        best_fail_confidence = -1.0
+
         for cam_name in sorted(camera_images.keys()):
             cam_image = camera_images[cam_name]
-            match_result, matched_scale = self._cascade_match_single_camera(
+            match_result, matched_scale, fail_result, fail_scale = self._cascade_match_single_camera(
                 cam_image, crop_paths, cam_name)
             
             if match_result is not None and match_result.confidence > best_confidence:
@@ -520,16 +534,23 @@ class MemoryNavigator:
                 best_scale = matched_scale
                 best_camera = cam_name
                 best_confidence = match_result.confidence
+
+            # 记录所有相机中得分最高的 (无论是否达标)
+            if fail_result is not None and fail_result.confidence > best_fail_confidence:
+                best_fail_camera = cam_name
+                best_fail_confidence = fail_result.confidence
         
         # 所有相机都匹配失败
         if best_result is None:
             logger.info(f"[MemoryNavigator] 子图匹配全部失败: "
-                       f"landmark={step.landmark_name}, 已尝试 {len(camera_images)} 个相机")
+                       f"landmark={step.landmark_name}, 已尝试 {len(camera_images)} 个相机, "
+                       f"得分最高camera={best_fail_camera}(conf={best_fail_confidence:.4f})")
             best_result = SubImageMatchResult(
-                found=False, confidence=0.0,
-                method=f"all cameras cascade(small->mid->big) failed"
+                found=False, confidence=best_fail_confidence if best_fail_confidence > 0 else 0.0,
+                method=f"all cameras cascade(small->mid->big) failed, best_fail_camera={best_fail_camera}"
             )
-            best_camera = memory_camera or ''
+            # 使用得分最高的 camera 而非静态的 memory_camera
+            best_camera = best_fail_camera or memory_camera or ''
         
         result = {
             'camera_name': best_camera,

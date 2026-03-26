@@ -42,43 +42,39 @@ MemoryNav is a visual memory navigation system for mobile robots. It collects im
 
 ```
 MemoryNav/
-├── cam/                            # Multi-eye fisheye camera ROS2 node
-│   ├── params.yaml                 # Camera intrinsics, extrinsics (T_ic), distortion coeffs
-│   ├── fisheye_undist.h            # GPU-accelerated fisheye undistortion (CUDA)
-│   ├── main.cc / main.h            # ROS2 node main program
-│   ├── video.h                     # V4L2 video capture
-│   └── tools/                      # Standalone tools (no ROS2/CUDA required)
-│       ├── fisheye_undist_cpu.h    # CPU undistortion (numpy/cv2 port basis)
-│       ├── fisheye_to_cylindrical.cpp  # Fisheye-to-cylindrical CLI tool
-│       └── batch_undistort.py      # Batch undistortion script
-├── deploy/                         # Deployment module
-│   ├── vpr_config.yaml             # Unified VPR config
-│   ├── memory_nav/                 # Core memory navigation package
-│   │   ├── vpr_config_loader.py    # Config loader
-│   │   ├── memory_models.py        # Data models (Node, Edge, Plan, VPRResult)
-│   │   ├── memory_graph.py         # Topology graph (BFS/Dijkstra)
-│   │   ├── memory_vpr.py           # VPR matching engine (cyclic-shift + order-invariant)
-│   │   ├── memory_builder.py       # Memory builder (topology from annotated data)
-│   │   ├── memory_navigator.py     # Navigator main interface
-│   │   ├── sub_image_matcher.py    # Sub-image matcher (DINOv3 dense features)
-│   │   ├── fisheye_undistort.py    # 🆕 Fisheye undistortion (ported from cam/tools/fisheye_undist_cpu.h)
-│   │   ├── coord_transform.py      # 🆕 Pixel→robot coordinate transform (full cylindrical pipeline)
-│   │   ├── occlusion_detector.py    # 🆕 YOLOv8n occlusion detector
-│   │   ├── qwen35_point_grounder.py # Qwen3.5 grounding wrapper (fallback model)
-│   │   ├── qwen35_grounding_server.py # Qwen3.5 subprocess inference server
-│   │   ├── vpr_factory.py          # VPR extractor factory
-│   │   ├── anyloc_extractor.py     # AnyLoc (DINOv2 + VLAD)
-│   │   ├── megaloc_extractor.py    # MegaLoc (DINOv2 + OT aggregation)
-│   │   ├── effovpr_extractor.py    # EffoVPR (DINOv2 multi-layer CLS)
-│   │   └── selavpr_extractor.py    # SelaVPR++ (DINOv2 + MultiConv)
+├── memory_nav/                     # Core memory navigation module
+│   ├── memory_navigator.py         # Navigator main interface
+│   ├── memory_models.py            # Data models (Node, Edge, Plan, VPRResult)
+│   ├── memory_graph.py             # Topology graph (BFS/Dijkstra)
+│   ├── memory_vpr.py               # VPR matching engine (cyclic-shift + order-invariant)
+│   ├── memory_builder.py           # Memory builder (topology from annotated data)
+│   ├── sub_image_matcher.py        # Sub-image matcher (DINOv3 dense features)
+│   ├── occlusion_detector.py       # YOLOv8n occlusion detector
+│   ├── fisheye_undistort.py        # Fisheye undistortion (cylindrical projection)
+│   ├── coord_transform.py          # Pixel→robot coordinate transform
+│   ├── qwen35_point_grounder.py    # Qwen3.5 grounding wrapper (fallback model)
+│   ├── qwen35_grounding_server.py  # Qwen3.5 subprocess inference server
+│   ├── vpr_factory.py              # VPR extractor factory
+│   ├── vpr_config_loader.py        # Unified config loader
+│   ├── selavpr_extractor.py        # SelaVPR++ (DINOv2 + MultiConv)
+│   ├── megaloc_extractor.py        # MegaLoc (DINOv2 + OT aggregation)
+│   ├── effovpr_extractor.py        # EffoVPR (DINOv2 multi-layer CLS)
+│   ├── anyloc_extractor.py         # AnyLoc (DINOv2 + VLAD)
+│   └── selavpr_model/              # SelaVPR++ model code
+├── deploy/                         # Deployment entry points
 │   ├── ws_proxy_with_memory.py     # WebSocket proxy service (main entry)
-│   └── build_memory.sh             # Memory build script
-├── internnav/                      # InternNav navigation framework
+│   ├── vpr_config.yaml             # Unified VPR config
+│   ├── pretrained/                 # Pretrained models (YOLOv8n, etc.)
+│   ├── build_memory.sh             # Memory build script
+│   └── start_server.sh             # Server start script
+├── cam/                            # Multi-eye fisheye camera
+│   ├── params.yaml                 # Camera intrinsics & extrinsics
+│   └── tools/                      # Standalone tools (no ROS2/CUDA)
 ├── scripts/
-│   └── memory_visualization_server.py  # Memory graph visualization (sub-image + model grounding + occlusion detection)
+│   └── memory_visualization_server.py  # Visualization (sub-image + grounding + occlusion)
+├── merged_labeled_data/            # Memory annotated data
 ├── tests/
-│   ├── test_memory_nav.py          # Memory module unit tests
-│   └── test_memory_ws.py           # WebSocket integration tests (detailed logging)
+│   └── test_memory_ws.py           # WebSocket integration tests
 └── docs/
 ```
 
@@ -96,7 +92,7 @@ The system automatically undistorts all 4 fisheye camera images before VPR match
 4. Gracefully skips undistortion if `cam/params.yaml` is missing — service continues normally
 
 ```python
-from deploy.memory_nav.fisheye_undistort import FisheyeUndistorter
+from memory_nav.fisheye_undistort import FisheyeUndistorter
 
 undistorter = FisheyeUndistorter.from_yaml("cam/params.yaml")
 # Batch undistort all 4 camera images
@@ -183,7 +179,6 @@ All responses always include `pixel_target: [x, y]` (normalized 0–1) and robot
 
 | Scenario | pixel_target Source | action Source | memory_active |
 |----------|---------------------|---------------|---------------|
-| Memory off + InternVLA | `output_pixel / image_size` | InternVLA | not present |
 | Memory on + sub-match hit | `sub_image_match.match.center_pct` | coord_transform | `true` |
 | Memory on + cache reuse | last successful match | coord_transform | `true` |
 | Memory on + Qwen3.5 fallback | Qwen3.5 grounding coords | coord_transform | `true` |
@@ -277,7 +272,7 @@ python deploy/ws_proxy_with_memory.py
 ### Python API
 
 ```python
-from deploy.memory_nav import MemoryNavigator
+from memory_nav import MemoryNavigator
 
 navigator = MemoryNavigator(vpr_method='selavpr', device='cuda:0')
 navigator.load_memory(path='memory_cache.pkl', data_dir='merged_labeled_data')
@@ -388,7 +383,7 @@ python tests/test_memory_ws.py
 
 ### v2.0.0
 
-- **🆕 YOLOv8n Occlusion Detection**: Added `deploy/memory_nav/occlusion_detector.py`
+- **🆕 YOLOv8n Occlusion Detection**: Added `memory_nav/occlusion_detector.py`
   - Detects person, backpack, umbrella, handbag, suitcase using YOLOv8n (6MB, ~30ms GPU inference)
   - Occlusion = single object bbox area ratio ≥ 35% of frame
   - Occluded → `action: [0, 0, 0]` (wait in place); cleared → resume navigation
@@ -413,11 +408,11 @@ python tests/test_memory_ws.py
 
 ### v1.8.0
 
-- **🆕 Fisheye Undistortion**: Added `deploy/memory_nav/fisheye_undistort.py`, ported from `cam/tools/fisheye_undist_cpu.h`
+- **🆕 Fisheye Undistortion**: Added `memory_nav/fisheye_undistort.py`, ported from `cam/tools/fisheye_undist_cpu.h`
   - Loads 4-camera intrinsics at startup; pre-computes cylindrical remap tables
   - Automatically undistorts input images before each inference frame
   - Gracefully skips if `cam/params.yaml` is missing
-- **🆕 Pixel→Robot Coordinate Transform**: Added `deploy/memory_nav/coord_transform.py`
+- **🆕 Pixel→Robot Coordinate Transform**: Added `memory_nav/coord_transform.py`
   - Full pipeline: cylindrical angle → camera azimuth → global yaw + depression angle → distance → `[x_forward, y_lateral, 0.0]`
   - Applied to all three navigation decision paths (sub-match, cache, Qwen3.5 fallback)
   - Debug fields (yaw, depression, distance, latency) included in response

@@ -43,43 +43,34 @@ MemoryNavは移動ロボット向けの視覚記憶ナビゲーションシス�
 
 ```
 MemoryNav/
-├── cam/                            # 多眼魚眼カメラ ROS2 ノード
-│   ├── params.yaml                 # カメラ内部・外部パラメータ (T_ic, intrinsics, distortion)
-│   ├── fisheye_undist.h            # GPU加速魚眼歪み補正 (CUDA)
-│   ├── main.cc / main.h            # ROS2ノードメインプログラム
-│   ├── video.h                     # V4L2ビデオキャプチャ
-│   └── tools/                      # スタンドアロンツール（ROS2/CUDA不要）
-│       ├── fisheye_undist_cpu.h    # CPU版歪み補正（numpy/cv2移植ベース）
-│       ├── fisheye_to_cylindrical.cpp  # 魚眼→円筒CLIツール
-│       └── batch_undistort.py      # バッチ歪み補正スクリプト
-├── deploy/                         # デプロイモジュール
-│   ├── vpr_config.yaml             # VPR統一設定ファイル
-│   ├── memory_nav/                 # コア記憶ナビゲーションパッケージ
-│   │   ├── vpr_config_loader.py    # 設定ローダー
-│   │   ├── memory_models.py        # データモデル (Node, Edge, Plan, VPRResult)
-│   │   ├── memory_graph.py         # トポロジーグラフ (BFS/Dijkstra)
-│   │   ├── memory_vpr.py           # VPRマッチングエンジン (循環シフト + 順序不変)
-│   │   ├── memory_builder.py       # 記憶構築器 (アノテーションデータからトポロジー生成)
-│   │   ├── memory_navigator.py     # ナビゲーターメインインターフェース
-│   │   ├── sub_image_matcher.py    # サブ画像マッチャー (DINOv3高密度特徴量)
-│   │   ├── fisheye_undistort.py    # 🆕 魚眼歪み補正 (cam/tools/fisheye_undist_cpu.hから移植)
-│   │   ├── coord_transform.py      # 🆕 ピクセル→ロボット座標変換 (円筒投影完全パイプライン)
-│   │   ├── occlusion_detector.py    # 🆕 YOLOv8n遮蔽検出器
-│   │   ├── qwen35_point_grounder.py # Qwen3.5グラウンディングラッパー (フォールバックモデル)
-│   │   ├── qwen35_grounding_server.py # Qwen3.5サブプロセス推論サーバー
-│   │   ├── vpr_factory.py          # VPR抽出器ファクトリー
-│   │   ├── anyloc_extractor.py     # AnyLoc (DINOv2 + VLAD)
-│   │   ├── megaloc_extractor.py    # MegaLoc (DINOv2 + OT集約)
-│   │   ├── effovpr_extractor.py    # EffoVPR (DINOv2 多層CLS)
-│   │   └── selavpr_extractor.py    # SelaVPR++ (DINOv2 + MultiConv)
+├── memory_nav/                     # コア記憶ナビゲーションモジュール
+│   ├── memory_navigator.py         # ナビゲーターメインインターフェース
+│   ├── memory_models.py            # データモデル (Node, Edge, Plan, VPRResult)
+│   ├── memory_graph.py             # トポロジーグラフ (BFS/Dijkstra)
+│   ├── memory_vpr.py               # VPRマッチングエンジン (循環シフト + 順序不変)
+│   ├── memory_builder.py           # 記憶構築器
+│   ├── sub_image_matcher.py        # サブ画像マッチャー (DINOv3高密度特徴量)
+│   ├── occlusion_detector.py       # YOLOv8n遮蔽検出器
+│   ├── fisheye_undistort.py        # 魚眼歪み補正 (円筒投影)
+│   ├── coord_transform.py          # ピクセル→ロボット座標変換
+│   ├── qwen35_point_grounder.py    # Qwen3.5グラウンディング (フォールバック)
+│   ├── vpr_factory.py              # VPR抽出器ファクトリー
+│   ├── vpr_config_loader.py        # 設定ローダー
+│   └── selavpr_model/              # SelaVPR++モデルコード
+├── deploy/                         # デプロイエントリー
 │   ├── ws_proxy_with_memory.py     # WebSocketプロキシサービス (メインエントリー)
-│   └── build_memory.sh             # 記憶構築スクリプト
-├── internnav/                      # InternNavナビゲーションフレームワーク
+│   ├── vpr_config.yaml             # VPR統一設定ファイル
+│   ├── pretrained/                 # 事前学習モデル (YOLOv8n等)
+│   ├── build_memory.sh             # 記憶構築スクリプト
+│   └── start_server.sh             # サーバー起動スクリプト
+├── cam/                            # 多眼魚眼カメラ
+│   ├── params.yaml                 # カメラパラメータ
+│   └── tools/                      # スタンドアロンツール
 ├── scripts/
-│   └── memory_visualization_server.py  # 記憶グラフ可視化サービス（サブ画像マッチング + モデルグラウンディング + 遮蔽検出）
+│   └── memory_visualization_server.py  # 可視化サービス
+├── merged_labeled_data/            # 記憶アノテーションデータ
 ├── tests/
-│   ├── test_memory_nav.py          # 記憶モジュールユニットテスト
-│   └── test_memory_ws.py           # WebSocket統合テスト（詳細ログ）
+│   └── test_memory_ws.py           # WebSocket統合テスト
 └── docs/
 ```
 
@@ -97,7 +88,7 @@ VPRマッチングおよびサブ画像マッチング前に、4チャンネル�
 4. `cam/params.yaml`が存在しない場合は歪み補正をスキップ、サービスは正常起動
 
 ```python
-from deploy.memory_nav.fisheye_undistort import FisheyeUndistorter
+from memory_nav.fisheye_undistort import FisheyeUndistorter
 
 undistorter = FisheyeUndistorter.from_yaml("cam/params.yaml")
 perspective_images = undistorter.undistort_batch(camera_images)
@@ -230,7 +221,7 @@ python deploy/ws_proxy_with_memory.py
 
 ### v2.0.0
 
-- **🆕 YOLOv8n遮蔽検出**：`deploy/memory_nav/occlusion_detector.py`を新設
+- **🆕 YOLOv8n遮蔽検出**：`memory_nav/occlusion_detector.py`を新設
   - YOLOv8n（6MB）でperson、backpack、umbrella等の近距離前景物体を検出、bbox面積比≥35%で遮蔽と判定
   - 遮蔽時は`action: [0, 0, 0]`（その場で待機）、解消後に自動でナビゲーション再開
   - 遮蔽なしの場合はQwen3.5打点（landmark_name）でフォールバックナビゲーション
@@ -249,8 +240,8 @@ python deploy/ws_proxy_with_memory.py
 
 ### v1.8.0
 
-- **🆕 魚眼歪み補正**：`deploy/memory_nav/fisheye_undistort.py`を追加（`cam/tools/fisheye_undist_cpu.h`から移植）
-- **🆕 ピクセル→ロボット座標変換**：`deploy/memory_nav/coord_transform.py`を追加（完全円筒投影パイプライン）
+- **🆕 魚眼歪み補正**：`memory_nav/fisheye_undistort.py`を追加（`cam/tools/fisheye_undist_cpu.h`から移植）
+- **🆕 ピクセル→ロボット座標変換**：`memory_nav/coord_transform.py`を追加（完全円筒投影パイプライン）
 - **🆕 cam/ディレクトリ**：多眼魚眼カメラROS2ノードのソースコードと`params.yaml`を追加
 
 ### v1.7.0

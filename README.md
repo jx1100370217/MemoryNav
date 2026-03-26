@@ -43,43 +43,39 @@ MemoryNav 是一个面向移动机器人的视觉记忆导航系统。系统通�
 
 ```
 MemoryNav/
-├── cam/                            # 多目鱼眼相机 ROS2 节点
-│   ├── params.yaml                 # 相机内参 & 外参配置 (T_ic, intrinsics, distortion)
-│   ├── fisheye_undist.h            # 鱼眼去畸变（GPU 版, CUDA）
-│   ├── main.cc / main.h            # ROS2 节点主程序
-│   ├── video.h                     # V4L2 视频采集
-│   └── tools/                      # 独立工具（无 ROS2/CUDA 依赖）
-│       ├── fisheye_undist_cpu.h    # CPU 版去畸变（numpy/cv2 移植基础）
-│       ├── fisheye_to_cylindrical.cpp  # 鱼眼转柱面命令行工具
-│       └── batch_undistort.py      # 批量去畸变脚本
-├── deploy/                         # 部署模块
-│   ├── vpr_config.yaml             # VPR 统一配置文件
-│   ├── memory_nav/                 # 核心记忆导航包
-│   │   ├── vpr_config_loader.py    # 统一配置加载器
-│   │   ├── memory_models.py        # 数据模型 (Node, Edge, Plan, VPRResult)
-│   │   ├── memory_graph.py         # 拓扑图 (BFS/Dijkstra 路径规划)
-│   │   ├── memory_vpr.py           # VPR 匹配引擎 (循环移位 + 无序匹配)
-│   │   ├── memory_builder.py       # 记忆构建器 (从标注数据构建拓扑图)
-│   │   ├── memory_navigator.py     # 导航器主接口
-│   │   ├── sub_image_matcher.py    # 子图匹配器 (DINOv3 密集特征匹配)
-│   │   ├── fisheye_undistort.py    # 🆕 鱼眼去畸变 (移植自 cam/tools/fisheye_undist_cpu.h)
-│   │   ├── coord_transform.py      # 🆕 像素→机器人坐标转换 (柱面投影完整管线)
-│   │   ├── occlusion_detector.py    # 🆕 YOLOv8n 遮挡检测器
-│   │   ├── qwen35_point_grounder.py # Qwen3.5 打点封装 (兜底模型)
-│   │   ├── qwen35_grounding_server.py # Qwen3.5 子进程推理服务
-│   │   ├── vpr_factory.py          # VPR 提取器工厂
-│   │   ├── anyloc_extractor.py     # AnyLoc (DINOv2 + VLAD)
-│   │   ├── megaloc_extractor.py    # MegaLoc (DINOv2 + OT聚合)
-│   │   ├── effovpr_extractor.py    # EffoVPR (DINOv2 多层CLS token)
-│   │   └── selavpr_extractor.py    # SelaVPR++ (DINOv2 + MultiConv)
+├── memory_nav/                     # 核心记忆导航模块
+│   ├── memory_navigator.py         # 导航器主接口
+│   ├── memory_models.py            # 数据模型 (Node, Edge, Plan, VPRResult)
+│   ├── memory_graph.py             # 拓扑图 (BFS/Dijkstra 路径规划)
+│   ├── memory_vpr.py               # VPR 匹配引擎 (循环移位 + 无序匹配)
+│   ├── memory_builder.py           # 记忆构建器 (从标注数据构建拓扑图)
+│   ├── sub_image_matcher.py        # 子图匹配器 (DINOv3 密集特征匹配)
+│   ├── occlusion_detector.py       # YOLOv8n 遮挡检测器
+│   ├── fisheye_undistort.py        # 鱼眼去畸变 (柱面投影)
+│   ├── coord_transform.py          # 像素→机器人坐标转换
+│   ├── qwen35_point_grounder.py    # Qwen3.5 打点封装 (兜底模型)
+│   ├── qwen35_grounding_server.py  # Qwen3.5 子进程推理服务
+│   ├── vpr_factory.py              # VPR 提取器工厂
+│   ├── vpr_config_loader.py        # 统一配置加载器
+│   ├── selavpr_extractor.py        # SelaVPR++ (DINOv2 + MultiConv)
+│   ├── megaloc_extractor.py        # MegaLoc (DINOv2 + OT聚合)
+│   ├── effovpr_extractor.py        # EffoVPR (DINOv2 多层CLS token)
+│   ├── anyloc_extractor.py         # AnyLoc (DINOv2 + VLAD)
+│   └── selavpr_model/              # SelaVPR++ 模型代码
+├── deploy/                         # 部署入口
 │   ├── ws_proxy_with_memory.py     # WebSocket 代理服务 (主入口)
-│   └── build_memory.sh             # 记忆构建脚本
-├── internnav/                      # InternNav 导航框架
+│   ├── vpr_config.yaml             # VPR 统一配置文件
+│   ├── pretrained/                 # 预训练模型 (YOLOv8n 等)
+│   ├── build_memory.sh             # 记忆构建脚本
+│   └── start_server.sh             # 服务启动脚本
+├── cam/                            # 多目鱼眼相机
+│   ├── params.yaml                 # 相机内参 & 外参配置
+│   └── tools/                      # 独立工具 (无 ROS2/CUDA 依赖)
 ├── scripts/                        # 工具脚本
-│   └── memory_visualization_server.py  # 记忆图可视化服务 (含子图匹配验证 + 模型打点验证 + 遮挡检测验证)
+│   └── memory_visualization_server.py  # 可视化服务 (子图匹配 + 打点 + 遮挡检测)
+├── merged_labeled_data/            # 记忆标注数据
 ├── tests/                          # 测试
-│   ├── test_memory_nav.py          # 记忆模块单元测试
-│   └── test_memory_ws.py           # WebSocket 集成测试 (详细日志版)
+│   └── test_memory_ws.py           # WebSocket 集成测试
 └── docs/                           # 文档
 ```
 
@@ -97,7 +93,7 @@ MemoryNav/
 4. 若 `cam/params.yaml` 不存在，自动跳过去畸变，不影响服务启动
 
 ```python
-from deploy.memory_nav.fisheye_undistort import FisheyeUndistorter
+from memory_nav.fisheye_undistort import FisheyeUndistorter
 
 undistorter = FisheyeUndistorter.from_yaml("cam/params.yaml")
 # 批量去畸变 4 路相机图像
@@ -184,7 +180,6 @@ edge:
 
 | 场景 | pixel_target 来源 | action 来源 | memory_active |
 |------|-------------------|-------------|---------------|
-| 记忆关闭 + InternVLA 推理 | `output_pixel / 图像尺寸` | InternVLA 输出 | 不输出 |
 | 记忆开启 + 子图匹配成功 | `sub_image_match.match.center_pct` | coord_transform | `true` |
 | 记忆开启 + 子图匹配失败 | 延用上一帧缓存 | coord_transform | `true` |
 | 记忆开启 + Qwen3.5 兜底 | Qwen3.5 打点归一化坐标 | coord_transform | `true` |
@@ -336,7 +331,7 @@ python deploy/ws_proxy_with_memory.py
 ### Python API
 
 ```python
-from deploy.memory_nav import MemoryNavigator
+from memory_nav import MemoryNavigator
 
 # 自动使用 vpr_config.yaml 中的配置
 navigator = MemoryNavigator(vpr_method='selavpr', device='cuda:0')
@@ -477,7 +472,7 @@ python tests/test_memory_ws.py
 
 ### v2.0.0
 
-- **🆕 YOLOv8n 遮挡检测**：新增 `deploy/memory_nav/occlusion_detector.py`，VPR/子图匹配失败时自动检测视觉遮挡
+- **🆕 YOLOv8n 遮挡检测**：新增 `memory_nav/occlusion_detector.py`，VPR/子图匹配失败时自动检测视觉遮挡
   - 使用 YOLOv8n（6MB）检测 person、backpack、umbrella、handbag、suitcase 等近距离前景物体
   - 遮挡判定基于 bbox 面积占比（默认阈值 35%），GPU 推理 ~30ms
   - 遮挡时输出 `action: [0, 0, 0]` 原地等待，遮挡消除后自动恢复导航
@@ -509,11 +504,11 @@ python tests/test_memory_ws.py
 
 ### v1.8.0
 
-- **🆕 鱼眼去畸变**：新增 `deploy/memory_nav/fisheye_undistort.py`，移植自 `cam/tools/fisheye_undist_cpu.h`
+- **🆕 鱼眼去畸变**：新增 `memory_nav/fisheye_undistort.py`，移植自 `cam/tools/fisheye_undist_cpu.h`
   - 启动时自动从 `cam/params.yaml` 加载 4 路相机内参，预计算柱面投影 remap 表
   - 每帧推理前自动对输入图像进行去畸变，提升 VPR 及子图匹配精度
   - `params.yaml` 缺失时优雅降级，不影响服务正常运行
-- **🆕 像素→机器人坐标转换**：新增 `deploy/memory_nav/coord_transform.py`
+- **🆕 像素→机器人坐标转换**：新增 `memory_nav/coord_transform.py`
   - `pixel_target` 归一化坐标经柱面水平角、相机方位角、俯仰角估距完整管线，转换为 `[x_forward, y_lateral, 0.0]`
   - 覆盖全部三种导航决策路径（子图匹配成功、帧间缓存、Qwen3.5 兜底）
   - 转换调试信息（yaw、depression、distance、耗时）随响应返回

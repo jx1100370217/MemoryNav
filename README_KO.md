@@ -43,43 +43,34 @@ MemoryNav는 이동 로봇을 위한 시각적 기억 내비게이션 시스템�
 
 ```
 MemoryNav/
-├── cam/                            # 다안 어안 카메라 ROS2 노드
-│   ├── params.yaml                 # 카메라 내부·외부 파라미터 (T_ic, intrinsics, distortion)
-│   ├── fisheye_undist.h            # GPU 가속 어안 왜곡 보정 (CUDA)
-│   ├── main.cc / main.h            # ROS2 노드 메인 프로그램
-│   ├── video.h                     # V4L2 비디오 캡처
-│   └── tools/                      # 독립 툴 (ROS2/CUDA 불필요)
-│       ├── fisheye_undist_cpu.h    # CPU 버전 왜곡 보정 (numpy/cv2 포팅 기반)
-│       ├── fisheye_to_cylindrical.cpp  # 어안→원통형 CLI 툴
-│       └── batch_undistort.py      # 배치 왜곡 보정 스크립트
-├── deploy/                         # 배포 모듈
-│   ├── vpr_config.yaml             # VPR 통합 설정 파일
-│   ├── memory_nav/                 # 핵심 기억 내비게이션 패키지
-│   │   ├── vpr_config_loader.py    # 설정 로더
-│   │   ├── memory_models.py        # 데이터 모델 (Node, Edge, Plan, VPRResult)
-│   │   ├── memory_graph.py         # 위상 그래프 (BFS/Dijkstra)
-│   │   ├── memory_vpr.py           # VPR 매칭 엔진 (순환 시프트 + 순서 불변)
-│   │   ├── memory_builder.py       # 기억 구축기 (어노테이션 데이터에서 위상 생성)
-│   │   ├── memory_navigator.py     # 내비게이터 메인 인터페이스
-│   │   ├── sub_image_matcher.py    # 서브 이미지 매처 (DINOv3 고밀도 특징)
-│   │   ├── fisheye_undistort.py    # 🆕 어안 왜곡 보정 (cam/tools/fisheye_undist_cpu.h 포팅)
-│   │   ├── coord_transform.py      # 🆕 픽셀→로봇 좌표 변환 (원통형 투영 전체 파이프라인)
-│   │   ├── occlusion_detector.py    # 🆕 YOLOv8n 차폐 감지기
-│   │   ├── qwen35_point_grounder.py # Qwen3.5 그라운딩 래퍼 (폴백 모델)
-│   │   ├── qwen35_grounding_server.py # Qwen3.5 서브프로세스 추론 서버
-│   │   ├── vpr_factory.py          # VPR 추출기 팩토리
-│   │   ├── anyloc_extractor.py     # AnyLoc (DINOv2 + VLAD)
-│   │   ├── megaloc_extractor.py    # MegaLoc (DINOv2 + OT 집계)
-│   │   ├── effovpr_extractor.py    # EffoVPR (DINOv2 다층 CLS)
-│   │   └── selavpr_extractor.py    # SelaVPR++ (DINOv2 + MultiConv)
+├── memory_nav/                     # 핵심 메모리 내비게이션 모듈
+│   ├── memory_navigator.py         # 내비게이터 메인 인터페이스
+│   ├── memory_models.py            # 데이터 모델 (Node, Edge, Plan, VPRResult)
+│   ├── memory_graph.py             # 토폴로지 그래프 (BFS/Dijkstra)
+│   ├── memory_vpr.py               # VPR 매칭 엔진 (순환 시프트 + 순서 불변)
+│   ├── memory_builder.py           # 메모리 빌더
+│   ├── sub_image_matcher.py        # 서브 이미지 매처 (DINOv3 밀집 특징)
+│   ├── occlusion_detector.py       # YOLOv8n 차폐 검출기
+│   ├── fisheye_undistort.py        # 어안 왜곡 보정 (원통형 투영)
+│   ├── coord_transform.py          # 픽셀→로봇 좌표 변환
+│   ├── qwen35_point_grounder.py    # Qwen3.5 그라운딩 (폴백)
+│   ├── vpr_factory.py              # VPR 추출기 팩토리
+│   ├── vpr_config_loader.py        # 통합 설정 로더
+│   └── selavpr_model/              # SelaVPR++ 모델 코드
+├── deploy/                         # 배포 엔트리
 │   ├── ws_proxy_with_memory.py     # WebSocket 프록시 서비스 (메인 엔트리)
-│   └── build_memory.sh             # 기억 구축 스크립트
-├── internnav/                      # InternNav 내비게이션 프레임워크
+│   ├── vpr_config.yaml             # VPR 통합 설정 파일
+│   ├── pretrained/                 # 사전 학습 모델 (YOLOv8n 등)
+│   ├── build_memory.sh             # 메모리 구축 스크립트
+│   └── start_server.sh             # 서버 시작 스크립트
+├── cam/                            # 다안 어안 카메라
+│   ├── params.yaml                 # 카메라 파라미터
+│   └── tools/                      # 독립 도구
 ├── scripts/
-│   └── memory_visualization_server.py  # 기억 그래프 시각화 서비스 (서브 이미지 매칭 + 모델 그라운딩 + 차폐 감지)
+│   └── memory_visualization_server.py  # 시각화 서비스
+├── merged_labeled_data/            # 메모리 어노테이션 데이터
 ├── tests/
-│   ├── test_memory_nav.py          # 기억 모듈 유닛 테스트
-│   └── test_memory_ws.py           # WebSocket 통합 테스트 (상세 로그)
+│   └── test_memory_ws.py           # WebSocket 통합 테스트
 └── docs/
 ```
 
@@ -97,7 +88,7 @@ VPR 매칭 및 서브 이미지 매칭 전에 4채널 어안 이미지에 대해
 4. `cam/params.yaml` 없을 경우 왜곡 보정 스킵, 서비스 정상 동작 유지
 
 ```python
-from deploy.memory_nav.fisheye_undistort import FisheyeUndistorter
+from memory_nav.fisheye_undistort import FisheyeUndistorter
 
 undistorter = FisheyeUndistorter.from_yaml("cam/params.yaml")
 perspective_images = undistorter.undistort_batch(camera_images)
@@ -230,7 +221,7 @@ python deploy/ws_proxy_with_memory.py
 
 ### v2.0.0
 
-- **🆕 YOLOv8n 차폐 감지**：`deploy/memory_nav/occlusion_detector.py` 신설
+- **🆕 YOLOv8n 차폐 감지**：`memory_nav/occlusion_detector.py` 신설
   - YOLOv8n(6MB)으로 person, backpack, umbrella 등 근거리 전경 물체 감지, bbox 면적비 ≥ 35%로 차폐 판정
   - 차폐 시 `action: [0, 0, 0]`(정지 대기), 해소 후 자동 내비게이션 재개
   - 차폐 없을 경우 Qwen3.5 포인팅(landmark_name)으로 폴백 내비게이션
@@ -249,8 +240,8 @@ python deploy/ws_proxy_with_memory.py
 
 ### v1.8.0
 
-- **🆕 어안 왜곡 보정**：`deploy/memory_nav/fisheye_undistort.py` 추가（`cam/tools/fisheye_undist_cpu.h`에서 포팅）
-- **🆕 픽셀→로봇 좌표 변환**：`deploy/memory_nav/coord_transform.py` 추가（전체 원통형 투영 파이프라인）
+- **🆕 어안 왜곡 보정**：`memory_nav/fisheye_undistort.py` 추가（`cam/tools/fisheye_undist_cpu.h`에서 포팅）
+- **🆕 픽셀→로봇 좌표 변환**：`memory_nav/coord_transform.py` 추가（전체 원통형 투영 파이프라인）
 - **🆕 cam/ 디렉토리**：다안 어안 카메라 ROS2 노드 소스코드 및 `params.yaml` 추가
 
 ### v1.7.0

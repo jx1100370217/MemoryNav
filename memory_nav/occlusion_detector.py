@@ -94,7 +94,7 @@ class OcclusionDetector:
 
     def __init__(self,
                  device: str = "cuda:0",
-                 area_threshold: float = 0.35,
+                 area_threshold: float = 0.25,
                  confidence_threshold: float = 0.4,
                  model_name: str = None):
         """

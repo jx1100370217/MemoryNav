@@ -37,7 +37,6 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 # 添加项目根目录到sys.path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
-sys.path.insert(0, str(project_root / 'src/diffusion-policy'))
 
 # InternVLA 已移除，统一使用 Qwen3.5 打点兜底
 

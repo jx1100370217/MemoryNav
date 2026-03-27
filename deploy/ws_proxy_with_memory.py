@@ -12,6 +12,7 @@ InternNav WebSocket代理服务（带记忆导航）
 """
 
 import asyncio
+import math
 import websockets
 import json
 import logging

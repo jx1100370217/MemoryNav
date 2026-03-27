@@ -1266,6 +1266,7 @@ async def process_inference_with_memory(message_data, session_state,
         # ================================================================
         if memory_enabled and nav_state.plan is not None and nav_state.phase != 'completed':
             # ---- 打印当前位置与 from_node / to_node 的 VPR 相似度 ----
+            logger.info(f"─── 📋 当前步 [{nav_state.current_step_idx + 1}/{nav_state.plan.total_steps}] ───")
             _cur_step = nav_state.get_current_step()
             if _cur_step and nav_state.last_query_features and navigator and navigator.vpr:
                 _from_id = _cur_step.from_node_id
@@ -1277,6 +1278,7 @@ async def process_inference_with_memory(message_data, session_state,
                             f"sim={_sim_to:.4f}")
 
             # 执行子图匹配（供后续响应使用）
+            logger.info(f"── 🔍 当前步子图匹配: {_cur_step.from_node_name} → {_cur_step.to_node_name} ──" if _cur_step else "── 🔍 当前步子图匹配 ──")
             _sub_match = do_sub_image_match(memory_navigator, nav_state, camera_images) if camera_images else None
             # 帧间相似度使用 VPR 已提取的 DINOv2 特征（零额外开销）
             _cache_step = nav_state.get_current_step()
@@ -1288,6 +1290,7 @@ async def process_inference_with_memory(message_data, session_state,
             _next_step_idx = nav_state.current_step_idx + 1
             if _next_step_idx < len(nav_state.plan.steps) and camera_images:
                 _next_step = nav_state.plan.steps[_next_step_idx]
+                logger.info(f"── 🔭 下一步子图匹配: {_next_step.from_node_name} → {_next_step.to_node_name} ──")
                 try:
                     _next_sub_match = navigator.match_current_step(camera_images, step=_next_step)
                     nav_state.next_step_sub_match = _next_sub_match
@@ -1357,6 +1360,7 @@ async def process_inference_with_memory(message_data, session_state,
             target_node_id = step.to_node_id
             source_node_id = step.from_node_id
 
+            logger.info(f"─── ⚡ 决策 ───")
             logger.info(f"🧠 [Memory] 活跃计划: 步骤 {nav_state.current_step_idx + 1}/{nav_state.plan.total_steps}, "
                         f"{step.from_node_name}({source_node_id}) → {step.to_node_name}({target_node_id}), "
                         f"phase={nav_state.phase}, misses={nav_state.consecutive_misses}")

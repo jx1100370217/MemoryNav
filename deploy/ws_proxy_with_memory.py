@@ -674,10 +674,14 @@ def build_memory_response(
         _fallback_inst = None
         # ---- 像素→机器人坐标转换 (子图匹配) ----
         _match_cam = sub_image_match.get("camera_name") if sub_image_match else None
-        if _match_cam in ('camera_3', 'camera_4'):
-            # 侧面相机匹配成功 → 原地旋转 45° 让目标转到前方相机
-            _action = [[0.0, 0.0, 0.785]]
-            logger.info(f"🔄 [Memory] 侧面相机 {_match_cam} 匹配成功，输出旋转动作 [0,0,0.785]")
+        if _match_cam in ('camera_3', 'camera_4') and _pixel and len(_pixel) >= 2:
+            # 侧面相机匹配成功 → 通过坐标转换获取实际 yaw，原地旋转朝向目标
+            _action_vec, _coord_debug = _pixel_target_to_robot_action(_pixel[0], _pixel[1], _match_cam)
+            memory_info["coord_transform"] = _coord_debug
+            _yaw_deg = _coord_debug.get('yaw_global_deg', 0)
+            _yaw_rad = math.radians(_yaw_deg)
+            _action = [[0.0, 0.0, _yaw_rad]]
+            logger.info(f"🔄 [Memory] 侧面相机 {_match_cam} 匹配成功, yaw={_yaw_deg:.1f}° → {_yaw_rad:.3f}rad, action={_action[0]}")
         elif _pixel and _match_cam and len(_pixel) >= 2:
             _action_vec, _coord_debug = _pixel_target_to_robot_action(_pixel[0], _pixel[1], _match_cam)
             _action = [_action_vec]

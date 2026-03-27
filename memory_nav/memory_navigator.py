@@ -565,7 +565,7 @@ class MemoryNavigator:
         }
         
         if best_result.found:
-            camera_note = f" (记忆标注: {memory_camera})" if best_camera != memory_camera else ""
+            camera_note = ""
             logger.info(f"[MemoryNavigator] 子图匹配成功: camera={best_camera}{camera_note}, "
                        f"scale={best_scale}, "
                        f"confidence={best_result.confidence:.4f}, "

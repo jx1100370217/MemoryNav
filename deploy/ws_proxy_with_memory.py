@@ -1368,8 +1368,10 @@ async def process_inference_with_memory(message_data, session_state,
             if vpr_result is not None:
                 matched_id = vpr_result.matched_node_id
 
-                # ---- Case A: VPR 匹配到目标节点 → lookahead 双重确认后 advance ----
-                if matched_id == target_node_id:
+                # ---- Case A: VPR 匹配到目标节点 → 相似度阈值 + lookahead 双重确认后 advance ----
+                VPR_ARRIVE_THRESHOLD = 0.70  # 到达 to_node 的 VPR 相似度阈值
+                _sim_to_node = navigator.vpr.get_node_similarity(nav_state.last_query_features, target_node_id) if nav_state.last_query_features else 0.0
+                if matched_id == target_node_id and _sim_to_node >= VPR_ARRIVE_THRESHOLD:
                     is_last_step = (nav_state.current_step_idx + 1 >= len(nav_state.plan.steps))
 
                     # lookahead: 检查下一步子图匹配是否成功
@@ -1428,8 +1430,8 @@ async def process_inference_with_memory(message_data, session_state,
                             return resp
                     else:
                         # VPR 到了目标节点，但下一步子图匹配未成功，暂不 advance
-                        logger.info(f"⏳ [Memory] VPR 匹配到目标节点 {target_node_id} ({step.to_node_name})，"
-                                    f"但下一步子图匹配未成功，暂不切换")
+                        logger.info(f"⏳ [Memory] VPR 匹配到目标节点 {target_node_id} ({step.to_node_name}), "
+                                    f"sim_to={_sim_to_node:.4f}，但下一步子图匹配未成功，暂不切换")
                         nav_state.consecutive_misses = 0
                         nav_state.phase = 'verifying'
                         session_state['request_count'] += 1
@@ -1440,10 +1442,14 @@ async def process_inference_with_memory(message_data, session_state,
                         logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
                         return resp
 
-                # ---- Case B/C: VPR 匹配到非目标节点 → 继续当前步骤的记忆引导 ----
+                # ---- Case B/C: VPR 匹配到非目标节点 / 相似度不足 → 继续当前步骤 ----
                 else:
-                    logger.info(f"🔄 [Memory] VPR 匹配到非目标节点 {matched_id} "
-                                f"({vpr_result.matched_node_name}), 继续当前步骤")
+                    if matched_id == target_node_id:
+                        logger.info(f"🔄 [Memory] VPR 匹配到目标节点 {matched_id} ({vpr_result.matched_node_name}), "
+                                    f"但 sim_to={_sim_to_node:.4f} < {VPR_ARRIVE_THRESHOLD}, 继续当前步骤")
+                    else:
+                        logger.info(f"🔄 [Memory] VPR 匹配到非目标节点 {matched_id} "
+                                    f"({vpr_result.matched_node_name}), 继续当前步骤")
                     nav_state.consecutive_misses = 0
                     nav_state.phase = 'verifying'
                     session_state['request_count'] += 1

@@ -1551,45 +1551,45 @@ async def process_inference_with_memory(message_data, session_state,
                 _fb_landmark = step.landmark_name if step else ''
 
                 if _fb_landmark and nav_state.fallback_pixel_target:
-                        # 已有 Qwen3.5 打点结果（在上方子图匹配失败时已调用）
-                        _fb_pixel = nav_state.fallback_pixel_target
-                        _fb_cam = step.camera_name if step else None
-                        if _fb_pixel and _fb_cam and len(_fb_pixel) >= 2:
-                            _fb_vec, _fb_debug = _pixel_target_to_robot_action(_fb_pixel[0], _fb_pixel[1], _fb_cam)
-                            _fb_action = [_fb_vec]
-                        else:
-                            _fb_action = [[1.0, 0.0, 0.0]]  # 直行 1m
-                        logger.info(f"🤖 [Memory] 未遮挡，使用 Qwen3.5 打点结果导航: "
-                                    f"landmark='{_fb_landmark}', pixel={_fb_pixel}")
-                        session_state['request_count'] += 1
-                        session_state['last_instruction'] = instruction
-                        session_state['last_task'] = current_task
-                        resp = {
-                            "status": "success",
-                            "id": robot_id,
-                            "pts": pts,
-                            "task_status": "executing",
-                            "action": _fb_action,
-                            "pixel_target": _fb_pixel,
-                            "camera_name": _fb_cam,
-                            "landmark_name": _fb_landmark,
-                            "sub_image_match": _sub_match,
-                            "fallback_instruction": _fb_landmark,
-                            "memory_active": True,
-                            "memory_info": {
-                                "plan_path": nav_state.plan.path if nav_state.plan else [],
-                                "current_step": nav_state.current_step_idx,
-                                "total_steps": nav_state.plan.total_steps if nav_state.plan else 0,
-                                "from_node": step.from_node_name if step else "",
-                                "to_node": step.to_node_name if step else "",
-                                "phase": "qwen35_fallback",
-                                "consecutive_misses": nav_state.consecutive_misses,
-                            },
-                            "message": f"记忆导航: VPR丢失+未遮挡，Qwen3.5打点导航 (landmark={_fb_landmark})"
-                        }
-                        logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
-                        return resp
+                    # 已有 Qwen3.5 打点结果（在上方子图匹配失败时已调用）
+                    _fb_pixel = nav_state.fallback_pixel_target
+                    _fb_cam = step.camera_name if step else None
+                    if _fb_pixel and _fb_cam and len(_fb_pixel) >= 2:
+                        _fb_vec, _fb_debug = _pixel_target_to_robot_action(_fb_pixel[0], _fb_pixel[1], _fb_cam)
+                        _fb_action = [_fb_vec]
                     else:
+                        _fb_action = [[1.0, 0.0, 0.0]]  # 直行 1m
+                    logger.info(f"🤖 [Memory] 未遮挡，使用 Qwen3.5 打点结果导航: "
+                                f"landmark='{_fb_landmark}', pixel={_fb_pixel}")
+                    session_state['request_count'] += 1
+                    session_state['last_instruction'] = instruction
+                    session_state['last_task'] = current_task
+                    resp = {
+                        "status": "success",
+                        "id": robot_id,
+                        "pts": pts,
+                        "task_status": "executing",
+                        "action": _fb_action,
+                        "pixel_target": _fb_pixel,
+                        "camera_name": _fb_cam,
+                        "landmark_name": _fb_landmark,
+                        "sub_image_match": _sub_match,
+                        "fallback_instruction": _fb_landmark,
+                        "memory_active": True,
+                        "memory_info": {
+                            "plan_path": nav_state.plan.path if nav_state.plan else [],
+                            "current_step": nav_state.current_step_idx,
+                            "total_steps": nav_state.plan.total_steps if nav_state.plan else 0,
+                            "from_node": step.from_node_name if step else "",
+                            "to_node": step.to_node_name if step else "",
+                            "phase": "qwen35_fallback",
+                            "consecutive_misses": nav_state.consecutive_misses,
+                        },
+                        "message": f"记忆导航: VPR丢失+未遮挡，Qwen3.5打点导航 (landmark={_fb_landmark})"
+                    }
+                    logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
+                    return resp
+                else:
                         # Qwen3.5 打点也失败了 → 重发记忆引导
                         logger.info(f"🔄 [Memory] VPR丢失 + 未遮挡 + Qwen3.5无结果，重发记忆引导")
                         nav_state.phase = 'fallback'

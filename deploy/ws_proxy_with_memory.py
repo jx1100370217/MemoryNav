@@ -1454,12 +1454,24 @@ async def process_inference_with_memory(message_data, session_state,
                     return resp
 
             else:
-                # ---- Case D: VPR 丢失 + 子图匹配失败 → 遮挡检测 ----
+                # ---- Case D: VPR 丢失 ----
                 nav_state.consecutive_misses += 1
                 logger.info(f"❓ [Memory] VPR 丢失 ({nav_state.consecutive_misses})")
 
-                # 遮挡检测: 对子图匹配的最佳 camera (得分最高) 进行遮挡判断
-                _occ_camera = _sub_match.get('camera_name', '') if _sub_match else (step.camera_name if step else '')
+                # VPR 丢失但子图匹配成功 → 直接用子图匹配结果继续导航，跳过遮挡检测
+                if _sub_match is not None:
+                    logger.info(f"🔄 [Memory] VPR 丢失但子图匹配成功，继续当前步骤")
+                    nav_state.phase = 'verifying'
+                    nav_state.consecutive_occlusions = 0
+                    session_state['request_count'] += 1
+                    session_state['last_instruction'] = instruction
+                    session_state['last_task'] = current_task
+                    resp = build_memory_response(robot_id, pts, nav_state, nav_state.last_vpr_result, sub_image_match=_sub_match)
+                    logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
+                    return resp
+
+                # VPR 丢失 + 子图匹配也失败 → 遮挡检测
+                _occ_camera = step.camera_name if step else ''
                 _occ_occluded = False
                 _occ_result = None
 

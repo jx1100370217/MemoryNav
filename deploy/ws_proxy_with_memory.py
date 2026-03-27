@@ -655,7 +655,8 @@ def build_memory_response(
         _pixel = nav_state.fallback_pixel_target
         _fallback_inst = nav_state.fallback_instruction
         # ---- 像素→机器人坐标转换 (Qwen3.5 兜底) ----
-        _fb_cam = nav_state.fallback_camera_name or (step.camera_name if step else None)
+        # fallback_camera_name 来自Qwen3.5打点结果（真实相机）；预设step.camera_name不能用于决策
+        _fb_cam = nav_state.fallback_camera_name
         if _fb_cam in ('camera_3', 'camera_4'):
             # 侧面相机 → 原地旋转 45°
             _action = [[0.0, 0.0, 0.785]]
@@ -1281,8 +1282,8 @@ async def process_inference_with_memory(message_data, session_state,
             logger.info(f"── 🔍 当前步子图匹配: {_cur_step.from_node_name} → {_cur_step.to_node_name} ──" if _cur_step else "── 🔍 当前步子图匹配 ──")
             _sub_match = do_sub_image_match(memory_navigator, nav_state, camera_images) if camera_images else None
             # 帧间相似度使用 VPR 已提取的 DINOv2 特征（零额外开销）
-            _cache_step = nav_state.get_current_step()
-            _cache_cam_name = _cache_step.camera_name if _cache_step else None
+            # 帧间相似度比较用sub_match返回的相机（真实匹配/得分最高相机），不用预设camera
+            _cache_cam_name = _sub_match.get('camera_name') if _sub_match else None
             _sub_match = _cache_or_reuse_sub_match(nav_state, _sub_match, nav_state.last_query_features, _cache_cam_name)
             visualize_sub_image_match(camera_images, _sub_match, pts, cache_action=nav_state.last_cache_action)
 
@@ -1309,10 +1310,12 @@ async def process_inference_with_memory(message_data, session_state,
                 nav_state.next_step_sub_match = None
 
             # ---- 遮挡检测: 只要子图匹配失败就触发，不关心VPR ----
-            _occ_camera = (_cur_step.camera_name if _cur_step else '') if _sub_match is None else ''
+            _sub_match_found = _sub_match.get('match', {}).get('found', False) if _sub_match else False
+            # 只用子图匹配返回的最高得分相机；预设step.camera_name仅是采集时方向，不能用于决策
+            _occ_camera = _sub_match.get('camera_name', '') if (_sub_match and not _sub_match_found) else ''
             _occ_occluded = False
             _occ_result = None
-            if _sub_match is None and occlusion_detector is not None and _occ_camera and camera_images and camera_images.get(_occ_camera) is not None:
+            if not _sub_match_found and occlusion_detector is not None and _occ_camera and camera_images and camera_images.get(_occ_camera) is not None:
                 try:
                     _occ_result = await asyncio.to_thread(
                         occlusion_detector.detect,
@@ -1333,7 +1336,7 @@ async def process_inference_with_memory(message_data, session_state,
             nav_state.fallback_pixel_target = None
             nav_state.fallback_instruction = None
             nav_state.fallback_camera_name = None
-            if _sub_match is None and not _occ_occluded:
+            if not _sub_match_found and not _occ_occluded:
                 _fb_step = nav_state.get_current_step()
                 _fb_landmark = getattr(_fb_step, 'landmark_name', '') if _fb_step else ''
                 if _fb_landmark and navigator:
@@ -1553,7 +1556,8 @@ async def process_inference_with_memory(message_data, session_state,
                 if _fb_landmark and nav_state.fallback_pixel_target:
                     # 已有 Qwen3.5 打点结果（在上方子图匹配失败时已调用）
                     _fb_pixel = nav_state.fallback_pixel_target
-                    _fb_cam = step.camera_name if step else None
+                    # Qwen3.5打点结果的相机来自fallback_camera_name，不用预设step.camera_name
+                    _fb_cam = nav_state.fallback_camera_name
                     if _fb_pixel and _fb_cam and len(_fb_pixel) >= 2:
                         _fb_vec, _fb_debug = _pixel_target_to_robot_action(_fb_pixel[0], _fb_pixel[1], _fb_cam)
                         _fb_action = [_fb_vec]

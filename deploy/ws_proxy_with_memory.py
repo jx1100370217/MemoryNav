@@ -1403,6 +1403,9 @@ async def process_inference_with_memory(message_data, session_state,
                                 logger.info(f"🔀 [Memory] advance 后使用 lookahead 结果驱动新步骤: "
                                             f"camera={_lookahead_sub_match.get('camera_name')}, "
                                             f"conf={_lookahead_sub_match.get('match', {}).get('confidence', 0):.4f}")
+                                # 保存 lookahead（新步骤）子图匹配可视化，文件名加 _advance 后缀以区分
+                                visualize_sub_image_match(camera_images, _lookahead_sub_match, f"{pts}_advance",
+                                                          cache_action='accepted')
                             resp = build_memory_response(robot_id, pts, nav_state, vpr_result, sub_image_match=_lookahead_sub_match, message=_adv_msg)
                             logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
                             return resp

@@ -1513,7 +1513,10 @@ async def process_inference_with_memory(message_data, session_state,
                 if _occ_occluded:
                     # ---- 判定为遮挡 → 停止等待 ----
                     nav_state.consecutive_occlusions += 1
-                    logger.info(f"🚧 [Memory] 遮挡! 原地等待 "
+                    # 遮挡期间清除子图匹配缓存，防止遮挡物静止时帧相似度高导致复用旧匹配框继续走
+                    nav_state.last_good_sub_match = None
+                    nav_state.last_good_query_features = None
+                    logger.info(f"🚧 [Memory] 遮挡! 原地等待，清除子图缓存 "
                                 f"(连续遮挡 {nav_state.consecutive_occlusions} 次)")
                     session_state['request_count'] += 1
                     session_state['last_instruction'] = instruction

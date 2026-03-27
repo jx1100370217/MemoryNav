@@ -1384,6 +1384,8 @@ async def process_inference_with_memory(message_data, session_state,
                     if is_last_step or _next_match_ok:
                         # 双重确认通过（最后一步无需 lookahead / 下一步子图匹配成功）
                         _reason = "最后一步" if is_last_step else f"下一步子图匹配成功(conf={nav_state.next_step_sub_match.get('match', {}).get('confidence', 0):.4f})"
+                        # advance 前保存 lookahead 结果，advance 后用它作为新步骤的子图匹配
+                        _lookahead_sub_match = nav_state.next_step_sub_match if not is_last_step else None
                         logger.info(f"✅ [Memory] VPR 匹配到目标节点 {target_node_id} + {_reason}! 前进到下一步")
                         has_next = nav_state.advance()
 
@@ -1393,7 +1395,15 @@ async def process_inference_with_memory(message_data, session_state,
                             session_state['last_instruction'] = instruction
                             session_state['last_task'] = current_task
                             _adv_msg = f"记忆导航: 步骤前进 ({_reason})"
-                            resp = build_memory_response(robot_id, pts, nav_state, vpr_result, sub_image_match=_sub_match, message=_adv_msg)
+                            # 使用 lookahead 结果作为新步骤的子图匹配，避免用旧步骤的匹配点走过头
+                            # lookahead 为 None 时传 None → build_memory_response 输出 [0,0,0] 原地等待下一帧
+                            if _lookahead_sub_match is None:
+                                logger.info(f"⏸️ [Memory] advance 后无 lookahead 结果，本帧原地等待")
+                            else:
+                                logger.info(f"🔀 [Memory] advance 后使用 lookahead 结果驱动新步骤: "
+                                            f"camera={_lookahead_sub_match.get('camera_name')}, "
+                                            f"conf={_lookahead_sub_match.get('match', {}).get('confidence', 0):.4f}")
+                            resp = build_memory_response(robot_id, pts, nav_state, vpr_result, sub_image_match=_lookahead_sub_match, message=_adv_msg)
                             logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
                             return resp
                         else:

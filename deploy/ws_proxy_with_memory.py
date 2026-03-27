@@ -1265,6 +1265,17 @@ async def process_inference_with_memory(message_data, session_state,
         # 3. 有活跃记忆计划时: VPR 验证 + 响应
         # ================================================================
         if memory_enabled and nav_state.plan is not None and nav_state.phase != 'completed':
+            # ---- 打印当前位置与 from_node / to_node 的 VPR 相似度 ----
+            _cur_step = nav_state.get_current_step()
+            if _cur_step and nav_state.last_query_features and navigator and navigator.vpr:
+                _from_id = _cur_step.from_node_id
+                _to_id = _cur_step.to_node_id
+                _sim_from = navigator.vpr.get_node_similarity(nav_state.last_query_features, _from_id)
+                _sim_to = navigator.vpr.get_node_similarity(nav_state.last_query_features, _to_id)
+                logger.info(f"📊 [VPR Similarity] 当前位置 vs from_node({_cur_step.from_node_name}, {_from_id}): "
+                            f"sim={_sim_from:.4f} | 当前位置 vs to_node({_cur_step.to_node_name}, {_to_id}): "
+                            f"sim={_sim_to:.4f}")
+
             # 执行子图匹配（供后续响应使用）
             _sub_match = do_sub_image_match(memory_navigator, nav_state, camera_images) if camera_images else None
             # 帧间相似度使用 VPR 已提取的 DINOv2 特征（零额外开销）

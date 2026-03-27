@@ -1308,12 +1308,32 @@ async def process_inference_with_memory(message_data, session_state,
             else:
                 nav_state.next_step_sub_match = None
 
-            # ---- Qwen3.5 兜底打点: 子图匹配失败且无缓存时 ----
+            # ---- 遮挡检测: 只要子图匹配失败就触发，不关心VPR ----
+            _occ_camera = (_cur_step.camera_name if _cur_step else '') if _sub_match is None else ''
+            _occ_occluded = False
+            _occ_result = None
+            if _sub_match is None and occlusion_detector is not None and _occ_camera and camera_images and camera_images.get(_occ_camera) is not None:
+                try:
+                    _occ_result = await asyncio.to_thread(
+                        occlusion_detector.detect,
+                        camera_images[_occ_camera],
+                        _occ_camera
+                    )
+                    _occ_occluded = _occ_result.occluded
+                    nav_state.last_occlusion_result = _occ_result.to_dict()
+                    logger.info(f"🔍 [Memory] 遮挡检测: camera={_occ_camera}, "
+                                f"occluded={_occ_occluded}, "
+                                f"max_area={_occ_result.max_area_ratio:.4f}, "
+                                f"reason={_occ_result.reason}")
+                except Exception as e:
+                    logger.warning(f"[Memory] 遮挡检测异常: {e}")
+
+            # ---- Qwen3.5 兜底打点: 子图匹配失败且未遮挡时 ----
             nav_state.fallback_action = None
             nav_state.fallback_pixel_target = None
             nav_state.fallback_instruction = None
             nav_state.fallback_camera_name = None
-            if _sub_match is None:
+            if _sub_match is None and not _occ_occluded:
                 _fb_step = nav_state.get_current_step()
                 _fb_landmark = getattr(_fb_step, 'landmark_name', '') if _fb_step else ''
                 if _fb_landmark and navigator:
@@ -1364,6 +1384,43 @@ async def process_inference_with_memory(message_data, session_state,
             logger.info(f"🧠 [Memory] 活跃计划: 步骤 {nav_state.current_step_idx + 1}/{nav_state.plan.total_steps}, "
                         f"{step.from_node_name}({source_node_id}) → {step.to_node_name}({target_node_id}), "
                         f"phase={nav_state.phase}, misses={nav_state.consecutive_misses}")
+
+            # ---- 遮挡优先: 子图匹配失败且检测到遮挡 → 原地等待，不关心VPR ----
+            if _occ_occluded:
+                nav_state.consecutive_occlusions += 1
+                nav_state.last_good_sub_match = None
+                nav_state.last_good_query_features = None
+                logger.info(f"🚧 [Memory] 遮挡! 原地等待，清除子图缓存 "
+                            f"(连续遮挡 {nav_state.consecutive_occlusions} 次)")
+                session_state['request_count'] += 1
+                session_state['last_instruction'] = instruction
+                session_state['last_task'] = current_task
+                resp = {
+                    "status": "success",
+                    "id": robot_id,
+                    "pts": pts,
+                    "task_status": "executing",
+                    "action": [[0.0, 0.0, 0.0]],
+                    "pixel_target": None,
+                    "camera_name": _occ_camera,
+                    "landmark_name": step.landmark_name if step else None,
+                    "sub_image_match": None,
+                    "memory_active": True,
+                    "memory_info": {
+                        "plan_path": nav_state.plan.path if nav_state.plan else [],
+                        "current_step": nav_state.current_step_idx,
+                        "total_steps": nav_state.plan.total_steps if nav_state.plan else 0,
+                        "from_node": step.from_node_name if step else "",
+                        "to_node": step.to_node_name if step else "",
+                        "phase": "occluded",
+                        "consecutive_misses": nav_state.consecutive_misses,
+                        "consecutive_occlusions": nav_state.consecutive_occlusions,
+                        "occlusion": nav_state.last_occlusion_result,
+                    },
+                    "message": f"记忆导航: 检测到遮挡 ({_occ_result.reason if _occ_result else ''}), 原地等待"
+                }
+                logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
+                return resp
 
             if vpr_result is not None:
                 matched_id = vpr_result.matched_node_id
@@ -1489,71 +1546,11 @@ async def process_inference_with_memory(message_data, session_state,
                     logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
                     return resp
 
-                # VPR 丢失 + 子图匹配也失败 → 遮挡检测
-                _occ_camera = step.camera_name if step else ''
-                _occ_occluded = False
-                _occ_result = None
+                # VPR 丢失 + 子图匹配失败（遮挡已在决策前处理）→ Qwen3.5 打点继续导航
+                nav_state.consecutive_occlusions = 0
+                _fb_landmark = step.landmark_name if step else ''
 
-                if occlusion_detector is not None and _occ_camera and camera_images.get(_occ_camera) is not None:
-                    try:
-                        _occ_result = await asyncio.to_thread(
-                            occlusion_detector.detect,
-                            camera_images[_occ_camera],
-                            _occ_camera
-                        )
-                        _occ_occluded = _occ_result.occluded
-                        nav_state.last_occlusion_result = _occ_result.to_dict()
-                        logger.info(f"🔍 [Memory] 遮挡检测: camera={_occ_camera}, "
-                                    f"occluded={_occ_occluded}, "
-                                    f"max_area={_occ_result.max_area_ratio:.4f}, "
-                                    f"reason={_occ_result.reason}")
-                    except Exception as e:
-                        logger.warning(f"[Memory] 遮挡检测异常: {e}")
-
-                if _occ_occluded:
-                    # ---- 判定为遮挡 → 停止等待 ----
-                    nav_state.consecutive_occlusions += 1
-                    # 遮挡期间清除子图匹配缓存，防止遮挡物静止时帧相似度高导致复用旧匹配框继续走
-                    nav_state.last_good_sub_match = None
-                    nav_state.last_good_query_features = None
-                    logger.info(f"🚧 [Memory] 遮挡! 原地等待，清除子图缓存 "
-                                f"(连续遮挡 {nav_state.consecutive_occlusions} 次)")
-                    session_state['request_count'] += 1
-                    session_state['last_instruction'] = instruction
-                    session_state['last_task'] = current_task
-                    resp = {
-                        "status": "success",
-                        "id": robot_id,
-                        "pts": pts,
-                        "task_status": "executing",
-                        "action": [[0.0, 0.0, 0.0]],
-                        "pixel_target": None,
-                        "camera_name": _occ_camera,
-                        "landmark_name": step.landmark_name if step else None,
-                        "sub_image_match": _sub_match,
-                        "memory_active": True,
-                        "memory_info": {
-                            "plan_path": nav_state.plan.path if nav_state.plan else [],
-                            "current_step": nav_state.current_step_idx,
-                            "total_steps": nav_state.plan.total_steps if nav_state.plan else 0,
-                            "from_node": step.from_node_name if step else "",
-                            "to_node": step.to_node_name if step else "",
-                            "phase": "occluded",
-                            "consecutive_misses": nav_state.consecutive_misses,
-                            "consecutive_occlusions": nav_state.consecutive_occlusions,
-                            "occlusion": nav_state.last_occlusion_result,
-                        },
-                        "message": f"记忆导航: 检测到遮挡 ({_occ_result.reason if _occ_result else ''}), 原地等待"
-                    }
-                    logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
-                    return resp
-
-                else:
-                    # ---- 未遮挡 → Qwen3.5 打点继续导航 ----
-                    nav_state.consecutive_occlusions = 0  # 重置连续遮挡计数
-                    _fb_landmark = step.landmark_name if step else ''
-
-                    if _fb_landmark and nav_state.fallback_pixel_target:
+                if _fb_landmark and nav_state.fallback_pixel_target:
                         # 已有 Qwen3.5 打点结果（在上方子图匹配失败时已调用）
                         _fb_pixel = nav_state.fallback_pixel_target
                         _fb_cam = step.camera_name if step else None

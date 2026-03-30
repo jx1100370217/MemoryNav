@@ -658,10 +658,14 @@ def build_memory_response(
         # ---- 像素→机器人坐标转换 (Qwen3.5 兜底) ----
         # fallback_camera_name 来自Qwen3.5打点结果（真实相机）；预设step.camera_name不能用于决策
         _fb_cam = nav_state.fallback_camera_name
-        if _fb_cam in ('camera_3', 'camera_4'):
-            # 侧面相机 → 原地旋转 45°
-            _action = [[0.0, 0.0, 0.785]]
-            logger.info(f"🔄 [Memory] Qwen3.5 兜底侧面相机 {_fb_cam}，输出旋转动作 [0,0,0.785]")
+        if _fb_cam in ('camera_3', 'camera_4') and _pixel and len(_pixel) >= 2:
+            # 侧面相机 → 通过坐标转换获取实际 yaw，原地旋转朝向目标
+            _action_vec, _coord_debug = _pixel_target_to_robot_action(_pixel[0], _pixel[1], _fb_cam)
+            memory_info["coord_transform"] = _coord_debug
+            _yaw_deg = _coord_debug.get('yaw_global_deg', 0)
+            _yaw_rad = math.radians(_yaw_deg)
+            _action = [[0.0, 0.0, _yaw_rad]]
+            logger.info(f"🔄 [Memory] Qwen3.5 兜底侧面相机 {_fb_cam}, yaw={_yaw_deg:.1f}° → {_yaw_rad:.3f}rad, action={_action[0]}")
         elif _pixel and _fb_cam and len(_pixel) >= 2:
             _action_vec, _coord_debug = _pixel_target_to_robot_action(_pixel[0], _pixel[1], _fb_cam)
             _action = [_action_vec]

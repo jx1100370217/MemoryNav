@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-2.0.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.0.0)
+[![Version](https://img.shields.io/badge/Version-2.1.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.1.0)
 
 基于视觉位置识别（VPR）和拓扑地图的机器人记忆导航系统
 
@@ -26,14 +26,15 @@ MemoryNav 是一个面向移动机器人的视觉记忆导航系统。系统通�
 - **🔍 多方案 VPR 定位**：支持 4 种 SOTA 视觉位置识别方案，统一配置文件一键切换
 - **🗺️ 拓扑记忆图**：自动从标注数据构建节点-边拓扑图，支持最短路径规划
 - **🔄 循环移位匹配**：4 相机循环移位算法，支持任意朝向下的定位与偏转角估计
-- **🎯 DINOv3 子图匹配**：基于 DINOv3 密集 patch 特征的子图定位，滑动窗口余弦相似度匹配，实时在相机图中定位导航目标
-- **💾 子图匹配缓存**：匹配失败时自动延用上一帧的成功结果，提升导航连续性
+- **🎯 DINOv3 子图匹配**：基于 DINOv3 密集 patch 特征的子图定位，三级级联匹配（small→mid→big）+ 全相机遍历，滑动窗口余弦相似度匹配
+- **💾 帧间缓存复用**：基于 DINOv2 VPR 特征的帧间相似度判断（零额外推理成本），匹配失败时智能复用上一帧成功结果
 - **🔭 Lookahead 双重确认**：步骤切换时同时验证 VPR 定位和下一步子图匹配，避免过早 advance
 - **📤 统一输出格式**：记忆模式开关两种状态下输出格式一致，始终提供 `pixel_target`
-- **🚧 YOLOv8n 遮挡检测**：VPR/子图匹配失败时自动检测相机画面是否被遮挡（行人、物体等），遮挡时原地等待，消除后继续导航
-- **🤖 Qwen3.5 兜底打点**：VPR/子图匹配失败且未遮挡时自动切换 Qwen3.5-9B 视觉语言模型打点定位，直接使用中文地标名称
+- **🚧 YOLOv8n 遮挡检测**：子图匹配失败时自动检测注意力相机画面是否被遮挡（行人、物体等），遮挡时原地等待，消除后继续导航
+- **🤖 Qwen3.5 兜底打点**：子图匹配失败且未遮挡时自动切换 Qwen3.5-9B 视觉语言模型打点定位，两步推理法（存在性检测 + 条件打点）
 - **📷 鱼眼去畸变**：自动从 `cam/params.yaml` 加载相机内参，对输入图像做柱面投影去畸变，提升 VPR 及子图匹配精度
 - **🧭 像素→机器人坐标转换**：将 `pixel_target` 归一化坐标经柱面角度、相机方位角、俯仰角估距完整管线，转换为机器人运动坐标 `[x_forward, y_lateral, 0.0]`
+- **🔄 侧面相机旋转处理**：camera_3/camera_4 匹配成功时自动输出原地旋转动作，引导机器人朝向目标
 - **🌐 WebSocket 服务**：实时流式接收图像、返回导航指令
 - **⚙️ 统一配置管理**：所有 VPR 参数集中在 `deploy/vpr_config.yaml`，一处修改全局生效
 
@@ -114,6 +115,10 @@ y_norm → 柱面垂直角 → 俯仰角 → 距离估算（相机高度 + pitch
 yaw + distance → (x_forward, y_lateral)
 ```
 
+### 侧面相机旋转处理
+
+当 camera_3 或 camera_4 匹配成功时（朝向后方），系统不输出前进动作，而是通过坐标转换获取实际 yaw 角度，输出原地旋转动作 `[0, 0, yaw_rad]`，引导机器人先转向目标方向。Qwen3.5 兜底打点时，侧面相机同样输出旋转动作 `[0, 0, 0.785]`（约45°）。
+
 ### 参数配置（`coord_transform.py`）
 
 | 参数 | 默认值 | 说明 |
@@ -157,12 +162,12 @@ yaw + distance → (x_forward, y_lateral)
 
 ### 工作原理
 
-1. **记忆构建时**：为每条边标注 `camera_name`（目标所在相机）和 `crop_image`（注意力子图）
-2. **导航执行时**：从记忆中取出 crop 子图，在当前对应相机的实时画面中进行密集特征匹配
+1. **记忆构建时**：为每条边标注 `camera_name`（目标所在相机）和三级 `crop_image`（big/mid/small 注意力子图）
+2. **导航执行时**：遍历所有 4 个相机，每个相机执行 small→mid→big 三级级联匹配，选择全局最高 confidence 的结果
 3. **目标定位**：DINOv3 ViT-B/16 提取密集 patch token → 滑动窗口 + unfold 加速 → 余弦相似度最大位置 → 输出为 `pixel_target`
-4. **匹配阈值**：置信度 ≥ 0.6 视为匹配成功
-5. **缓存机制**：匹配失败时自动延用上一帧的成功匹配结果，步骤切换时清空缓存
-6. **回退机制**：匹配失败且无缓存时，使用记忆中的 `pixel_box` 作为估计值
+4. **匹配阈值**：置信度 ≥ `SUB_MATCH_CONFIDENCE_THRESHOLD`（当前 **0.60**）视为匹配成功
+5. **帧间缓存**：匹配失败时基于 DINOv2 VPR 特征的帧间相似度判断（阈值 **0.70**），若场景变化小则复用上一帧成功结果，步骤切换时清空缓存
+6. **回退机制**：缓存也无法复用时，触发 Qwen3.5 兜底打点
 
 ### 边数据结构
 
@@ -170,8 +175,10 @@ yaw + distance → (x_forward, y_lateral)
 edge:
   camera_name: "camera_2"              # 目标所在相机
   landmark_name: "电梯"                 # 地标名称
-  pixel_box: [120, 80, 200, 160]       # (x, y, w, h) 像素框
-  crop_image_path: "crop_elevator.jpg"  # 注意力子图
+  crop_image_paths:                     # 三级注意力子图
+    big: "path/to/big.jpg"
+    mid: "path/to/mid.jpg"
+    small: "path/to/small.jpg"
 ```
 
 ### 输出格式
@@ -181,36 +188,51 @@ edge:
 | 场景 | pixel_target 来源 | action 来源 | memory_active |
 |------|-------------------|-------------|---------------|
 | 记忆开启 + 子图匹配成功 | `sub_image_match.match.center_pct` | coord_transform | `true` |
-| 记忆开启 + 子图匹配失败 | 延用上一帧缓存 | coord_transform | `true` |
+| 记忆开启 + 帧间缓存复用 | 延用上一帧缓存 | coord_transform | `true` |
 | 记忆开启 + Qwen3.5 兜底 | Qwen3.5 打点归一化坐标 | coord_transform | `true` |
 | 记忆开启 + 遮挡检测 | 无（原地等待） | `[0, 0, 0]` | `true` |
+| 记忆开启 + 侧面相机匹配 | `sub_image_match.match.center_pct` | 原地旋转 `[0, 0, yaw]` | `true` |
 
 ---
 
 ## 🚧 遮挡检测
 
-当 VPR 匹配失败且子图匹配失败时，系统自动对注意力相机执行遮挡检测，判断是否因视觉遮挡导致：
+当子图匹配失败时（无论 VPR 是否成功），系统自动对注意力相机执行遮挡检测，判断是否因视觉遮挡导致：
 
 ### 工作原理
 
-1. **遮挡检测相机选择**：使用子图匹配得分最高（但低于阈值）的 camera，而非静态的 `step.camera_name`，更准确反映注意力区域实际所在
-2. **YOLOv8n 推理**：检测画面中的近距离前景物体（person、backpack、umbrella 等），计算 bbox 面积占比
-3. **遮挡判定**：单个遮挡物面积占比 ≥ 35% → 判定为遮挡
-4. **遮挡时行为**：输出 `action: [0, 0, 0]`（原地等待），下一帧继续检测
-5. **未遮挡时行为**：使用 Qwen3.5 打点（landmark_name）继续导航
+1. **遮挡检测触发**：子图匹配失败即触发，不依赖 VPR 结果
+2. **遮挡检测相机选择**：使用子图匹配得分最高（但低于阈值）的 camera，而非静态的 `step.camera_name`，更准确反映注意力区域实际所在
+3. **YOLOv8n 推理**：检测画面中的近距离前景物体（person、backpack、umbrella、handbag、suitcase），计算 bbox 面积占比
+4. **遮挡判定**：单个遮挡物面积占比 ≥ **25%**（默认阈值）→ 判定为遮挡
+5. **遮挡时行为**：输出 `action: [0, 0, 0]`（原地等待），清除子图匹配缓存，下一帧继续检测
+6. **未遮挡时行为**：使用 Qwen3.5 打点（landmark_name）继续导航
 
 ### 导航决策流程
 
 ```
-VPR 匹配成功:
-  ├─ 匹配到目标节点 → Lookahead 双重确认 → advance
-  └─ 匹配到其他节点 → 继续当前步骤记忆引导
-
-VPR 匹配失败:
-  ├─ YOLOv8n 遮挡检测 (对子图匹配得分最高的 camera)
-  │   ├─ 遮挡 → action=[0,0,0] 原地等待
-  │   └─ 未遮挡 → Qwen3.5 打点(landmark_name) 继续导航
-  │              └─ 打点也失败 → 重发记忆引导
+每帧处理:
+  ├─ 子图匹配 (全4相机 × 3级cascade)
+  ├─ Lookahead 下一步子图匹配
+  │
+  ├─ 子图匹配失败时:
+  │   ├─ YOLOv8n 遮挡检测 (对子图匹配得分最高的 camera)
+  │   │   ├─ 遮挡 → action=[0,0,0] 原地等待，清除子图缓存
+  │   │   └─ 未遮挡 → Qwen3.5 打点(landmark_name) 继续导航
+  │   │              └─ 打点也失败 → 重发记忆引导
+  │   └─ (遮挡检测与VPR结果无关)
+  │
+  ├─ VPR 匹配成功:
+  │   ├─ 匹配到目标节点 + sim≥0.70:
+  │   │   ├─ 最后一步 → 直接 advance
+  │   │   ├─ 下一步子图匹配成功 → Lookahead 确认 → advance
+  │   │   └─ 下一步子图匹配未成功 → VPR HELD，暂不切换
+  │   └─ 匹配到其他节点 / sim<0.70 → 继续当前步骤
+  │
+  └─ VPR 匹配失败:
+      ├─ 子图匹配成功 → 继续用子图匹配结果导航
+      ├─ 子图匹配失败 + Qwen3.5 有结果 → 用打点结果导航
+      └─ 子图匹配失败 + Qwen3.5 无结果 → 重发记忆引导
 ```
 
 ### 响应新增字段
@@ -223,12 +245,12 @@ VPR 匹配失败:
     "consecutive_occlusions": 3,
     "occlusion": {
         "occluded": true,
-        "max_area_ratio": 0.42,
-        "total_area_ratio": 0.42,
+        "max_area_ratio": 0.32,
+        "total_area_ratio": 0.32,
         "detections": [
-            {"class_name": "person", "confidence": 0.87, "area_ratio": 0.42}
+            {"class_name": "person", "confidence": 0.87, "area_ratio": 0.32}
         ],
-        "reason": "person 占画面 42.0% (>= 35% 阈值)"
+        "reason": "person 占画面 32.0% (>= 25% 阈值)"
     }
 }
 ```
@@ -258,6 +280,15 @@ vpr_method: selavpr
 
 # GPU 设备
 device: "cuda:0"
+
+# 匹配模式 (各方案独立设置)
+# false: 循环移位匹配 + 朝向估计 (SelaVPR++)
+# true: 无序贪心匹配 (AnyLoc/MegaLoc/EffoVPR)
+order_invariant:
+  selavpr: false
+  megaloc: true
+  effovpr: true
+  anyloc: true
 
 # VPR 相似度阈值 (各方案独立设置)
 similarity_threshold:
@@ -299,7 +330,7 @@ anyloc:
 ```bash
 git clone https://github.com/jx1100370217/MemoryNav.git
 cd MemoryNav
-pip install -r requirements/base.txt
+pip install -r requirements/core_requirements.txt
 pip install -e .
 ```
 
@@ -335,7 +366,7 @@ from memory_nav import MemoryNavigator
 
 # 自动使用 vpr_config.yaml 中的配置
 navigator = MemoryNavigator(vpr_method='selavpr', device='cuda:0')
-navigator.load_memory(path='memory_cache.pkl', data_dir='merged_labeled_data')
+navigator.load_memory(path='memory_nav/memory_cache', data_dir='merged_labeled_data')
 
 # VPR 定位
 images = {'camera_1': img1, 'camera_2': img2, 'camera_3': img3, 'camera_4': img4}
@@ -388,26 +419,14 @@ if match and match['match']['found']:
     "memory_active": true,
     "camera_name": "camera_2",
     "landmark_name": "电梯",
-    "memory_info": {
-        "phase": "verifying",
-        "current_step": 1,
-        "total_steps": 3,
-        "from_node": "大厅",
-        "to_node": "前台",
-        "vpr_similarity": 0.85,
-        "vpr_confidence": 0.85,
-        "vpr_matched_node": "node_5",
-        "heading_offset": -37.5,
-        "consecutive_misses": 0,
-        "lookahead_conf": 0.68,
-        "lookahead_found": true,
-        "coord_transform": {
-            "yaw_global_deg": -12.3,
-            "depression_deg": 8.5,
-            "distance": 2.4,
-            "elapsed_ms": 0.3
-        }
+    "landmark_name_eng": "elevator",
+    "position_name_eng": "C8 front desk",
+    "crop_image_paths": {
+        "big": "path/to/big.jpg",
+        "mid": "path/to/mid.jpg",
+        "small": "path/to/small.jpg"
     },
+    "crop_image_path": "path/to/big.jpg",
     "sub_image_match": {
         "camera_name": "camera_2",
         "landmark_name": "电梯",
@@ -417,8 +436,36 @@ if match and match['match']['found']:
             "center_pct": {"x": 0.485, "y": 0.521},
             "top_left_pct": {"x": 0.302, "y": 0.358},
             "bottom_right_pct": {"x": 0.668, "y": 0.684}
+        },
+        "matched_scale": "mid",
+        "memory_camera": "camera_2"
+    },
+    "fallback_instruction": null,
+    "memory_info": {
+        "frame_similarity": 0.85,
+        "cache_action": "accepted",
+        "plan_path": ["12", "8", "4"],
+        "current_step": 1,
+        "total_steps": 3,
+        "from_node": "大厅",
+        "to_node": "前台",
+        "vpr_similarity": 0.85,
+        "vpr_confidence": 0.85,
+        "vpr_matched_node": "node_5",
+        "heading_offset": -37.5,
+        "consecutive_misses": 0,
+        "consecutive_occlusions": 0,
+        "occlusion": null,
+        "lookahead_conf": 0.68,
+        "lookahead_found": true,
+        "coord_transform": {
+            "yaw_global_deg": -12.3,
+            "depression_deg": 8.5,
+            "distance": 2.4,
+            "elapsed_ms": 0.3
         }
-    }
+    },
+    "message": "记忆导航: 大厅 → 前台 (步骤1/3)"
 }
 ```
 
@@ -428,8 +475,8 @@ if match and match['match']['found']:
 |------|------|
 | `reset` | 重置 Agent 和记忆状态 |
 | `toggle_memory` | 切换记忆导航开关 |
-| `memory_status` | 查看记忆导航详情 |
-| `reset_memory` | 仅重置记忆状态 |
+| `memory_status` | 查看记忆导航详情（含可用目的地列表） |
+| `reset_memory` | 仅重置记忆状态（Agent 历史保留） |
 | `session_status` | 查看会话状态 |
 
 ---
@@ -456,7 +503,7 @@ if match and match['match']['found']:
 
 ```bash
 # 单元测试
-python -m pytest tests/test_memory_nav.py -v
+python -m pytest tests/unit_test/test_basic.py -v
 
 # WebSocket 集成测试 (含逐帧决策日志 + 统计报告)
 python tests/test_memory_ws.py
@@ -470,11 +517,20 @@ python tests/test_memory_ws.py
 
 ## 📋 更新日志
 
+### v2.1.0 (文档同步)
+
+- **📝 文档与代码对齐**：遮挡面积阈值 35% → **25%**（匹配代码默认值）
+- **📝 子图匹配阈值修正**：0.65 → **0.60**（匹配 `SUB_MATCH_CONFIDENCE_THRESHOLD`）
+- **📝 遮挡触发条件修正**：不再描述为"VPR失败时触发"，实际为**子图匹配失败即触发**（不依赖VPR结果）
+- **📝 新增侧面相机旋转处理**：文档补充 camera_3/camera_4 匹配时的旋转动作逻辑
+- **📝 新增 VPR 到达阈值**：`VPR_ARRIVE_THRESHOLD = 0.70`
+- **📝 新增无序匹配模式**：`order_invariant` 配置项说明
+
 ### v2.0.0
 
-- **🆕 YOLOv8n 遮挡检测**：新增 `memory_nav/occlusion_detector.py`，VPR/子图匹配失败时自动检测视觉遮挡
+- **🆕 YOLOv8n 遮挡检测**：新增 `memory_nav/occlusion_detector.py`，子图匹配失败时自动检测视觉遮挡
   - 使用 YOLOv8n（6MB）检测 person、backpack、umbrella、handbag、suitcase 等近距离前景物体
-  - 遮挡判定基于 bbox 面积占比（默认阈值 35%），GPU 推理 ~30ms
+  - 遮挡判定基于 bbox 面积占比（默认阈值 25%），GPU 推理 ~30ms
   - 遮挡时输出 `action: [0, 0, 0]` 原地等待，遮挡消除后自动恢复导航
   - 未遮挡时使用 Qwen3.5 打点（landmark_name）继续导航
 - **🔄 导航决策简化**：移除旧的趋势判断方案（Case B 跳步 / Case C 重规划 / Case D 相似度趋势检测）
@@ -489,70 +545,47 @@ python tests/test_memory_ws.py
 
 - **🔭 Lookahead 双重确认**：步骤切换条件从单一 VPR 匹配升级为 VPR + 下一步子图匹配双重确认
   - 每帧对当前步骤和下一步同时做子图匹配（lookahead 不走缓存逻辑）
-  - VPR 匹配到目标节点时，需下一步子图匹配成功（`conf >= threshold`）才 advance
+  - VPR 匹配到目标节点时，需下一步子图匹配成功（`conf >= 0.60`）才 advance
   - 最后一步无需 lookahead，直接 advance
   - 新增 `VPR HELD` 状态：VPR 到了但 lookahead 未确认，暂缓切换
-- **🎯 子图匹配阈值统一**：`SUB_MATCH_CONFIDENCE_THRESHOLD` 作为唯一真相源
+- **🎯 子图匹配阈值统一**：`SUB_MATCH_CONFIDENCE_THRESHOLD = 0.60` 作为唯一真相源
   - 服务端 → `MemoryNavigator` → `SubImageMatcher` 全链路传参
   - 测试端通过 `from deploy.ws_proxy_with_memory import SUB_MATCH_CONFIDENCE_THRESHOLD` 引用
-  - 改一处，服务/匹配器/测试全部同步生效
-- **📊 测试日志增强**：
-  - 表头新增 `la_conf` 列（lookahead 子图匹配置信度）
-  - advance 事件标注 `🔭 lookahead确认`
-  - 统计报告新增【Lookahead 双重确认】小节（触发次数、暂缓次数、通过率）
-  - 修复 advance 日志中目标节点显示错误（之前显示的是 advance 后新步骤的目标）
 
 ### v1.8.0
 
 - **🆕 鱼眼去畸变**：新增 `memory_nav/fisheye_undistort.py`，移植自 `cam/tools/fisheye_undist_cpu.h`
-  - 启动时自动从 `cam/params.yaml` 加载 4 路相机内参，预计算柱面投影 remap 表
-  - 每帧推理前自动对输入图像进行去畸变，提升 VPR 及子图匹配精度
-  - `params.yaml` 缺失时优雅降级，不影响服务正常运行
 - **🆕 像素→机器人坐标转换**：新增 `memory_nav/coord_transform.py`
-  - `pixel_target` 归一化坐标经柱面水平角、相机方位角、俯仰角估距完整管线，转换为 `[x_forward, y_lateral, 0.0]`
-  - 覆盖全部三种导航决策路径（子图匹配成功、帧间缓存、Qwen3.5 兜底）
-  - 转换调试信息（yaw、depression、distance、耗时）随响应返回
 - **🆕 cam/ 目录**：纳入多目鱼眼相机 ROS2 节点源码及相机参数配置
-  - `cam/params.yaml`：4 路相机完整内参、外参（T_ic）、畸变系数
-  - `cam/tools/`：独立鱼眼转柱面命令行工具（无 ROS2/CUDA 依赖）
-- **启动日志新增**：显示鱼眼去畸变状态（`✅ 已启用` / `❌ 未加载`）和坐标转换模块状态
 
 ### v1.7.0
 
-- **Qwen3.5 兜底打点**：新增基于 Qwen3.5-9B VLM 的打点方案替代 InternVLA 兜底模型
-  - 直接使用中文 `landmark_name`（无需英文翻译或 "Go to the ..." 前缀）
-  - 子进程模式运行（qwen3 conda 环境），避免 transformers 版本冲突
-  - 支持单图打点和多相机遍历打点
-- **InternVLA 按需加载**：InternVLA 模型默认不加载，需要时按需启动，节省 GPU 显存
-- **可视化新增模型打点模块**：`memory_visualization_server.py` 新增🎯模型打点 Tab，上传图片+输入地标即可验证打点效果
-- **模型加载优化**：Qwen3.5 在 ws_proxy 启动时统一加载，visualization_server 复用同一实例
+- **Qwen3.5 兜底打点**：新增基于 Qwen3.5-9B VLM 的两步推理打点方案（存在性检测 + 条件打点）
+- **InternVLA 按需加载**：InternVLA 模型默认不加载，需要时按需启动
 
 ### v1.6.0
 
 - **子图匹配精简**：移除 SuperPoint+LightGlue 和 Qwen3.5 方案，仅保留 **DINOv3** 密集特征匹配
-- **匹配阈值统一**：置信度阈值统一为 `SUB_MATCH_CONFIDENCE_THRESHOLD`（当前 0.65）
+- **匹配阈值统一**：置信度阈值统一为 `SUB_MATCH_CONFIDENCE_THRESHOLD`（0.60）
 - **帧间相似度升级**：SSIM 替换为 DINOv2 帧间相似度，阈值 0.70
-- **三级 crop 级联匹配**：small/mid/big 三种裁剪尺度级联匹配 + 全相机遍历，提升匹配鲁棒性
+- **三级 crop 级联匹配**：small/mid/big 三种裁剪尺度级联匹配 + 全相机遍历
 
 ### v1.5.0
 
-- **输出格式统一**：记忆关闭时输出与 `ws_proxy.py` 完全一致，始终包含 `pixel_target`，不输出 `memory_active` 等额外字段
-- **子图匹配缓存**：置信度低于阈值时自动延用上一帧成功结果，步骤切换或任务重置时清空
+- **输出格式统一**：记忆关闭时输出与 `ws_proxy.py` 完全一致，始终包含 `pixel_target`
+- **子图匹配缓存**：置信度低于阈值时自动延用上一帧成功结果
 
 ### v1.4.0
 
 - **子图匹配导航**：从角度导航升级到 SuperPoint + LightGlue 子图匹配
-- **边模型重构**：从 `angle + pixel_position` 改为 `camera_name + crop_image + pixel_box`
 
 ### v1.3.0
 
 - **统一配置管理**：所有 VPR 参数集中到 `deploy/vpr_config.yaml`
-- **内嵌模型代码**：SelaVPR++ 和 MegaLoc 模型代码内嵌，移除外部依赖
 
 ### v1.2.0
 
 - **多 VPR 方案支持**：新增 SelaVPR++、MegaLoc、EffoVPR 三种方案
-- **VPR 工厂模式**：统一提取器接口，一键切换
 
 ### v1.1.0
 
@@ -561,7 +594,6 @@ python tests/test_memory_ws.py
 ### v1.0.0
 
 - **基础框架**：拓扑记忆图、AnyLoc VPR、InternVLA 推理
-- **循环移位匹配**：4 相机朝向无关定位算法
 
 ---
 

@@ -178,7 +178,7 @@ When sub-image matching fails (regardless of VPR result), the system automatical
 3. **YOLOv8n Inference**: Detects nearby foreground objects (person, backpack, umbrella, handbag, suitcase), computes bbox area ratio
 4. **Occlusion Criteria**: Single object area ratio ≥ **25%** (default) → judged as occluded
 5. **When Occluded**: Outputs `action: [0, 0, 0]` (wait in place), clears sub-image match cache
-6. **When Not Occluded**: Falls back to Qwen3.5 grounding with landmark_name
+6. **When Not Occluded**: Falls back to Qwen3.5 grounding with fixed "center of corridor + depth" wayfinding strategy
 
 ### Navigation Decision Flow
 
@@ -190,7 +190,7 @@ Per-frame processing:
   ├─ When sub-image matching fails:
   │   ├─ YOLOv8n occlusion detection (on highest-scoring camera)
   │   │   ├─ Occluded → action=[0,0,0], wait, clear cache
-  │   │   └─ Not occluded → Qwen3.5 grounding (landmark_name)
+  │   │   └─ Not occluded → Qwen3.5 grounding (wayfinding: center of corridor + depth)
   │   │                     └─ Also fails → resend memory guidance
   │   └─ (independent of VPR result)
   │
@@ -420,7 +420,7 @@ python tests/test_memory_ws.py
   - Detects person, backpack, umbrella, handbag, suitcase using YOLOv8n (6MB, ~30ms GPU)
   - Occlusion = single object bbox area ratio ≥ 25% of frame
   - Occluded → `action: [0, 0, 0]` (wait); cleared → resume
-  - Not occluded → Qwen3.5 grounding with landmark_name
+  - Not occluded → Qwen3.5 grounding (fixed "center of corridor + depth" wayfinding)
 - **🔄 Simplified Navigation Logic**: Removed legacy trend-based detection
 - **🎯 best_fail_camera**: Tracks highest-scoring camera even on failure
 - **🖥️ Occlusion Detection Tab**: Added in visualization server

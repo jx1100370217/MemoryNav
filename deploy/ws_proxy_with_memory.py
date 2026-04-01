@@ -1347,10 +1347,12 @@ async def process_inference_with_memory(message_data, session_state,
             nav_state.fallback_camera_name = None
             if not _sub_match_found and not _occ_occluded:
                 _fb_step = nav_state.get_current_step()
-                _fb_landmark = getattr(_fb_step, 'landmark_name', '') if _fb_step else ''
-                if _fb_landmark and navigator:
+                _fb_landmark_orig = getattr(_fb_step, 'landmark_name', '') if _fb_step else ''
+                # Qwen3.5 兜底打点统一使用找路策略，避免找不到参照物时瞎指方向
+                _fb_landmark = '通道正中间位置+景深'
+                if _fb_landmark_orig and navigator:
                     nav_state.fallback_instruction = _fb_landmark
-                    logger.info(f"🤖 [Memory] 子图匹配无结果，启动 Qwen3.5 兜底打点: '{_fb_landmark}'")
+                    logger.info(f"🤖 [Memory] 子图匹配无结果，启动 Qwen3.5 兜底打点(找路模式): '{_fb_landmark}' (原landmark: '{_fb_landmark_orig}')")
                     try:
                         _fb_target_camera = getattr(_fb_step, 'camera_name', None)
                         _fb_start = time.time()
@@ -1716,7 +1718,7 @@ async def process_inference_with_memory(message_data, session_state,
 
         if navigator and camera_images:
             try:
-                _fb_landmark = current_task  # 直接用 task 作为 landmark
+                _fb_landmark = '通道正中间位置+景深'  # 统一找路策略，避免找不到参照物时瞎指方向
                 logger.info(f"🤖 [Qwen3.5] 启动打点: '{_fb_landmark}'")
                 _fb_start = time.time()
                 _fb_result = await asyncio.to_thread(

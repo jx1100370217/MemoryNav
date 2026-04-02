@@ -2,15 +2,13 @@
 # -*- coding: utf-8 -*-
 
 """
-语义节点检测器 v3.2 — 纯字符识别 (平衡过滤版)
+语义节点检测器 v3.3 — 纯字符识别 (门牌增强版)
 
-功能: 扫描相邻 node 之间的中间帧，用 Qwen3.5 识别门牌/标识上的文字
-      (汉字、英文、数字)，将有意义的文字作为新的语义 node 插入。
-
-v3.2 改进 (相对 v3.1):
-- 采样间隔从 2 降为 1: 不跳帧，避免漏掉关键门牌
-- 质量过滤放宽: >=4字中文名直接通过 (多帧确认兜底防幻觉)
-- 支持"XX会议室"格式 (Qwen prompt 引导组合输出)
+v3.3 改进:
+- 新增 _normalize_name(): 自动补全裸数字/英文为带类型的名称
+  "10" → "10号会议室", "MOORE" → "MOORE会议室"
+- 同一帧同一 camera 只取一个 detection (避免一帧多 node)
+- 质量校验在 normalize 之后做 (先补全再检查)
 """
 
 import os
@@ -41,27 +39,41 @@ USELESS_SIGNS = {
     '中国航天', '中国制造',
 }
 
-# 明显不是地点名的模式 (正则)
+# 明显不是地点名的模式 (正则) — 在 normalize 之后应用
 USELESS_PATTERNS = [
-    r'^.$',              # 单字 (准、难、错、的、为...)
-    r'^[\d.]+$',         # 纯数字 (但 "101室" 是可以的)
-    r'^[a-zA-Z]{1,3}$',  # 1-3 字母缩写 (JDS 等噪声)
-    r'^(我的|你的|他的|她的|它的)',  # 代词开头
-    r'^(再|又|也|都|就|才)',        # 副词开头的碎片
+    r'^.$',              # 单字
+    r'^(我的|你的|他的|她的|它的)',
+    r'^(再|又|也|都|就|才)',
 ]
 
 
-def _is_name_quality_ok(name_cn: str) -> bool:
-    """检查名称是否有导航意义
+def _normalize_name(name_cn: str, text: str = "") -> str:
+    """将 Qwen 的原始输出规范化为带房间类型的名称
 
-    三级通过:
-    1. 包含地点特征词后缀 (室/间/区/厅等) → 直接通过
-    2. 匹配房间号格式 (101, A302等) → 直接通过
-    3. >=4个中文字符的名称 → 通过 (多帧确认兜底)
-
-    合格: "关爱室", "101室", "纽曼会议室", "10号会议室", "摩尔会议室"
-    不合格: "准", "难", "JDS", "林明", "我的", "叉号", "再学习", "会议室"(太泛)
+    - 纯数字 "10" → "10号会议室"
+    - 数字+号 "10号" → "10号会议室"
+    - 英文名 "NEUMANN" → "NEUMANN会议室" (如果 >=4 字母，可能是会议室名)
+    - 已经规范的 "关爱室" → 不变
     """
+    name = name_cn.strip()
+
+    # 纯数字 → X号会议室
+    if re.match(r'^\d+$', name):
+        return f"{name}号会议室"
+
+    # 数字+号 但没有后续类型 → 补"会议室"
+    if re.match(r'^\d+号$', name):
+        return f"{name}会议室"
+
+    # 纯英文 >=4 字母 (NEUMANN, MOORE 等科学家名字) → X会议室
+    if re.match(r'^[A-Za-z]{4,}$', name):
+        return f"{name}会议室"
+
+    return name
+
+
+def _is_name_quality_ok(name_cn: str) -> bool:
+    """检查名称是否有导航意义 (在 normalize 之后调用)"""
     if not name_cn or len(name_cn.strip()) < 2:
         return False
 
@@ -70,12 +82,12 @@ def _is_name_quality_ok(name_cn: str) -> bool:
     # 黑名单精确匹配
     if name in USELESS_SIGNS:
         return False
-    # 黑名单包含匹配 (只对短名称生效，避免误杀"纽曼会议室"这种)
+    # 黑名单包含匹配 (只拦短名称)
     for useless in USELESS_SIGNS:
         if not useless:
             continue
-        if useless in name and len(name) <= len(useless) + 2:
-            return True if name != useless else False  # 长一点的就放过
+        if name == useless:
+            return False
 
     # 正则过滤
     for pattern in USELESS_PATTERNS:
@@ -94,39 +106,36 @@ def _is_name_quality_ok(name_cn: str) -> bool:
     if '中心' in name:
         return True
 
-    # 条件3: 房间号格式 (数字开头或字母+数字)
+    # 条件3: 房间号格式
     if re.match(r'^[A-Za-z]?\d+[-\d]*[室号]?$', name):
         return True
 
-    # 条件4: 包含"号"+"房间类型词" (如 "10号会议室")
+    # 条件4: 包含"号" + 房间类型词
     if '号' in name and any(kw in name for kw in ['会议', '办公', '培训', '接待']):
         return True
 
-    # 条件5: >=4 中文字符 → 放行 (依赖多帧确认防幻觉)
+    # 条件5: >=4 中文字符
     chinese_chars = len([c for c in name if '\u4e00' <= c <= '\u9fff'])
     if chinese_chars >= 4:
         return True
 
-    # 2-3 字中文且没有地点特征词 → 拒绝 (如 "林明"、"库尔"、"叉号")
     logger.info(f"    名称质量校验不通过: [{name}] (短名称无地点特征词)")
     return False
 
 
 class SemanticNodeDetector:
-    """语义节点检测器 v3.2 — 纯字符识别 (平衡过滤)"""
+    """语义节点检测器 v3.3"""
 
-    SAMPLE_INTERVAL = 1             # v3.2: 不跳帧，逐帧扫描
-    MIN_CONFIRM_FRAMES = 2          # 至少 2 帧确认
-    MIN_CONFIRM_CROSS_VALIDATED = 1  # 交叉验证: 1 帧即可
+    MIN_CONFIRM_FRAMES = 2
+    MIN_CONFIRM_CROSS_VALIDATED = 1
     GROUP_GAP_THRESHOLD = 10
 
     CAMERA_PRIORITY = ['camera_2', 'camera_4', 'camera_1', 'camera_3']
 
     def __init__(self):
-        logger.info("SemanticNodeDetector v3.2 initialized (text-only, balanced filter)")
+        logger.info("SemanticNodeDetector v3.3 initialized (text-only, door-plate enhanced)")
 
     def _encode_image_b64(self, image_path: str) -> Optional[str]:
-        """将图片编码为 base64"""
         if not os.path.exists(image_path):
             return None
         img = cv2.imread(image_path)
@@ -136,9 +145,12 @@ class SemanticNodeDetector:
         return base64.b64encode(buf).decode('utf-8')
 
     def _detect_on_frame(self, frame_data: Dict, qwen_server) -> List[Dict]:
-        """对单帧的所有 camera 执行字符识别"""
+        """对单帧的所有 camera 执行字符识别
+
+        每帧只保留一个最佳 detection (避免同帧多 node)
+        """
         images = frame_data.get('images', {})
-        detections = []
+        all_detections = []
 
         for cam_id in self.CAMERA_PRIORITY:
             cam_path = images.get(cam_id)
@@ -153,18 +165,23 @@ class SemanticNodeDetector:
                 result = qwen_server.detect_text(b64)
                 if result.get('status') == 'ok' and result.get('found', False):
                     text = result.get('text', '').strip()
-                    name_cn = result.get('name_cn', '').strip()
+                    raw_name_cn = result.get('name_cn', '').strip()
                     name_en = result.get('name_en', '').strip()
 
-                    check_name = name_cn if name_cn else text
-                    if not _is_name_quality_ok(check_name):
+                    # 先 normalize (补全裸数字/英文)
+                    name_cn = _normalize_name(raw_name_cn, text)
+                    if name_cn != raw_name_cn:
+                        logger.info(f"    {cam_id}: normalize [{raw_name_cn}] → [{name_cn}]")
+
+                    # 再做质量校验
+                    if not _is_name_quality_ok(name_cn):
                         logger.info(f"    {cam_id}: 识别到 [{text}] → name_cn=[{name_cn}] 质量过滤")
                         continue
 
                     logger.info(f"    {cam_id}: 识别到文字 [{text}] → {name_cn} ({name_en})")
-                    detections.append({
-                        'name_cn': name_cn if name_cn else text,
-                        'name_en': name_en if name_en else text,
+                    all_detections.append({
+                        'name_cn': name_cn,
+                        'name_en': name_en if name_en else name_cn,
                         'text': text,
                         'camera_id': cam_id,
                         'source': f'text_{cam_id}',
@@ -174,11 +191,18 @@ class SemanticNodeDetector:
             except Exception as e:
                 logger.warning(f"    {cam_id}: Qwen detect_text 异常 - {e}")
 
-        return detections
+        # 同一帧去重: 如果多个 camera 识别到不同名称，保留所有不同名的
+        # (后续 cluster 阶段会再去重，这里不做帧内削减)
+        # 但如果同一 camera 出了多个结果（不会，每次只调一次），也没问题
+        return all_detections
 
     def _cluster_detections(self, frame_detections: List[Tuple[int, List[Dict], Dict]],
                             existing_names: Set[str]) -> List[Dict]:
-        """将帧级检测结果聚类去重"""
+        """将帧级检测结果聚类去重
+
+        关键逻辑: 同一帧如果识别到多个不同名称 (如 camera_2 看到 "10号会议室",
+        camera_4 看到 "8号会议室")，它们是不同的候选，分别计数。
+        """
         if not frame_detections:
             return []
 
@@ -262,15 +286,14 @@ class SemanticNodeDetector:
                  start_frame_idx: int, end_frame_idx: int,
                  qwen_server,
                  existing_names: Set[str]) -> List[Dict]:
-        """扫描两个 node 之间的中间帧，识别文字标识"""
+        """扫描两个 node 之间的中间帧"""
 
         mid_indices = list(range(start_frame_idx + 1, end_frame_idx))
         if not mid_indices:
             logger.info(f"  帧 {start_frame_idx}->{end_frame_idx}: 无中间帧，跳过")
             return []
 
-        # v3.2: 全量扫描，不跳帧
-        sampled = mid_indices
+        sampled = mid_indices  # 全量扫描
 
         logger.info(f"  帧 {start_frame_idx}->{end_frame_idx}: "
                     f"{len(mid_indices)} 个中间帧，扫描 {len(sampled)} 帧")

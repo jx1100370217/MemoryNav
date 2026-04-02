@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 
 """
-自动地标命名器 v11 — 纯命名功能
+自动地标命名器 v12 — 命名 + 字符识别
 
-只保留: describe_scene + identify_landmark
+功能: describe_scene + identify_landmark + detect_text(语义增补用)
 打点功能已移至 AutoSubImageExtractor (使用 Qwen35PointGrounder)
 """
 
@@ -91,6 +91,30 @@ for line in sys.stdin:
             else: print(json.dumps({"status":"ok","name_cn":"方向标记","name_en":"marker"}),flush=True)
         except Exception as e: print(json.dumps({"status":"error","error":str(e)}),flush=True)
 
+    elif action == "detect_text":
+        try:
+            img = decode_img(req["image_b64"])
+            prompt = ("Look at this indoor image carefully. "
+                      "Is there any visible text on signs, door plates, wall labels, room numbers, or nameplates? "
+                      "Text includes Chinese characters, English words, and numbers/digits. "
+                      "Ignore: exit signs, fire safety signs, no-smoking signs, evacuation signs, safety channel signs. "
+                      "If you see meaningful text (e.g. room name, room number, area label), output JSON: "
+                      "{\"found\": true, \"text\": \"the exact text you see\", "
+                      "\"name_cn\": \"a short Chinese name based on the text (2-6 chars)\", "
+                      "\"name_en\": \"English translation\"} "
+                      "If no meaningful text is visible, output: {\"found\": false}")
+            raw = clean(infer(img, prompt, max_tokens=120))
+            d = parse_json(raw)
+            if d and d.get("found"):
+                print(json.dumps({"status":"ok","found":True,
+                    "text":d.get("text",""),
+                    "name_cn":d.get("name_cn",""),
+                    "name_en":d.get("name_en","")},ensure_ascii=False),flush=True)
+            else:
+                print(json.dumps({"status":"ok","found":False}),flush=True)
+        except Exception as e:
+            print(json.dumps({"status":"error","error":str(e)}),flush=True)
+
     else:
         print(json.dumps({"status":"error","error":f"unknown:{action}"}),flush=True)
 '''
@@ -107,12 +131,12 @@ class QwenNamingServer:
 
     def start(self):
         if self.is_ready: return
-        script_path = "/tmp/_qwen_naming_v11.py"
+        script_path = "/tmp/_qwen_naming_v12.py"
         with open(script_path,'w') as f: f.write(_QWEN_SERVER)
         conda_base = os.environ.get("CONDA_PREFIX","").rsplit("/envs/",1)[0] or os.path.expanduser("~/miniconda3")
         cmd = (f"source {conda_base}/etc/profile.d/conda.sh && conda activate {self.CONDA_ENV} && "
                f"CUDA_VISIBLE_DEVICES={self.gpu} python {script_path}")
-        logger.info(f"[QwenServer v11] Starting GPU={self.gpu}")
+        logger.info(f"[QwenServer v12] Starting GPU={self.gpu}")
         self._process = subprocess.Popen(["bash","-c",cmd],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
         t0 = time.time()
@@ -124,7 +148,7 @@ class QwenNamingServer:
             try: msg = json.loads(line)
             except: continue
             if msg.get("status")=="ready":
-                logger.info(f"[QwenServer v11] Ready, {msg.get('load_time')}s"); self._ready=True; return
+                logger.info(f"[QwenServer v12] Ready, {msg.get('load_time')}s"); self._ready=True; return
             elif msg.get("status")=="loading": logger.info(f"[QwenServer] {msg.get('message','...')}")
         raise TimeoutError(f"Timeout ({self.timeout}s)")
 
@@ -143,6 +167,7 @@ class QwenNamingServer:
 
     def describe_scene(self,b64): return self._send({"action":"describe_scene","image_b64":b64})
     def identify_landmark(self,b64): return self._send({"action":"identify_landmark","image_b64":b64})
+    def detect_text(self,b64): return self._send({"action":"detect_text","image_b64":b64})
     def __del__(self): self.stop()
 
 
@@ -152,7 +177,7 @@ class AutoLandmarkNamer:
         if use_qwen:
             try:
                 self._qwen_server=QwenNamingServer(gpu=gpu); self._qwen_server.start()
-                logger.info("[AutoLandmarkNamer v11] Qwen3.5 naming started")
+                logger.info("[AutoLandmarkNamer v12] Qwen3.5 naming started")
             except Exception as e:
                 logger.error(f"[AutoLandmarkNamer] Failed: {e}"); self._qwen_server=None; self.use_qwen=False
 

@@ -2,19 +2,15 @@
 # -*- coding: utf-8 -*-
 
 """
-语义节点检测器 v3.1 — 纯字符识别 (严格过滤版)
+语义节点检测器 v3.2 — 纯字符识别 (平衡过滤版)
 
 功能: 扫描相邻 node 之间的中间帧，用 Qwen3.5 识别门牌/标识上的文字
       (汉字、英文、数字)，将有意义的文字作为新的语义 node 插入。
 
-不识别: 物体(沙发、椅子等)、场景类型
-只识别: 墙面/门牌/标识上的可读文字
-
-v3.1 修复 (相对 v3):
-- 提高 MIN_CONFIRM_FRAMES 到 2: 单帧检测不可靠，至少 2 帧确认
-- 新增名称质量校验: 过滤单字、纯数字、人名等无导航意义的识别结果
-- 扩充黑名单: 覆盖更多常见误识别
-- 新增长度限制: name_cn 必须 >= 2 字符
+v3.2 改进 (相对 v3.1):
+- 采样间隔从 2 降为 1: 不跳帧，避免漏掉关键门牌
+- 质量过滤放宽: >=4字中文名直接通过 (多帧确认兜底防幻觉)
+- 支持"XX会议室"格式 (Qwen prompt 引导组合输出)
 """
 
 import os
@@ -39,7 +35,7 @@ USELESS_SIGNS = {
     # 太泛的通用名
     '走廊', '办公区', '通道', '过道', '走廊通道', '办公工位区', '工位区',
     '未知', '未知位置', '无', '标识', '标识牌', '门牌', '房间标识',
-    '开放空间', '办公室', '工位',
+    '开放空间', '办公室', '工位', '会议室',
     # 非地点类
     '企业文化', '公告栏', '宣传栏', '展示墙', '文化墙',
     '中国航天', '中国制造',
@@ -58,58 +54,76 @@ USELESS_PATTERNS = [
 def _is_name_quality_ok(name_cn: str) -> bool:
     """检查名称是否有导航意义
 
-    合格: "关爱室", "101室", "103-2006室", "会议室A", "茶水间", "强电井"
-    不合格: "准", "难", "JDS", "林明", "我的", "叉号", "再学习"
+    三级通过:
+    1. 包含地点特征词后缀 (室/间/区/厅等) → 直接通过
+    2. 匹配房间号格式 (101, A302等) → 直接通过
+    3. >=4个中文字符的名称 → 通过 (多帧确认兜底)
+
+    合格: "关爱室", "101室", "纽曼会议室", "10号会议室", "摩尔会议室"
+    不合格: "准", "难", "JDS", "林明", "我的", "叉号", "再学习", "会议室"(太泛)
     """
     if not name_cn or len(name_cn.strip()) < 2:
         return False
 
     name = name_cn.strip()
 
-    # 黑名单
+    # 黑名单精确匹配
     if name in USELESS_SIGNS:
         return False
+    # 黑名单包含匹配 (只对短名称生效，避免误杀"纽曼会议室"这种)
     for useless in USELESS_SIGNS:
+        if not useless:
+            continue
         if useless in name and len(name) <= len(useless) + 2:
-            return False
+            return True if name != useless else False  # 长一点的就放过
 
     # 正则过滤
     for pattern in USELESS_PATTERNS:
         if re.match(pattern, name):
             return False
 
-    # 必须包含"地点特征词"或"房间号格式"才算有效
-    # 地点特征词: 室、间、区、厅、房、井、台、梯、所、处、站、库、廊、堂、馆
-    location_keywords_suffix = ['室', '间', '区', '厅', '房', '井', '台', '梯',
-                         '所', '处', '站', '库', '廊', '堂', '馆']
-    # 用词尾匹配: '关爱室'→匹配'室', '库尔'→不匹配'库'
-    has_location_keyword = any(name.endswith(kw) for kw in location_keywords_suffix)
-    # 也匹配含'中心'的 (如'服务中心')
-    has_location_keyword = has_location_keyword or '中心' in name
+    # === 通过条件 ===
 
-    # 房间号格式: 数字+室, 或纯数字+字母(如 A101)
-    room_number_pattern = re.match(r'^[A-Za-z]?\d+[-\d]*[室号]?$', name)
-
-    if has_location_keyword or room_number_pattern:
+    # 条件1: 地点特征词后缀
+    location_suffixes = ['室', '间', '区', '厅', '房', '井', '台', '梯',
+                         '所', '处', '站', '廊', '堂', '馆']
+    if any(name.endswith(kw) for kw in location_suffixes):
         return True
 
-    # 都不满足 → 拒绝 (宁可漏掉也不要垃圾)
-    logger.info(f"    名称质量校验不通过: [{name}] (无地点特征词)")
+    # 条件2: 包含"中心"
+    if '中心' in name:
+        return True
+
+    # 条件3: 房间号格式 (数字开头或字母+数字)
+    if re.match(r'^[A-Za-z]?\d+[-\d]*[室号]?$', name):
+        return True
+
+    # 条件4: 包含"号"+"房间类型词" (如 "10号会议室")
+    if '号' in name and any(kw in name for kw in ['会议', '办公', '培训', '接待']):
+        return True
+
+    # 条件5: >=4 中文字符 → 放行 (依赖多帧确认防幻觉)
+    chinese_chars = len([c for c in name if '\u4e00' <= c <= '\u9fff'])
+    if chinese_chars >= 4:
+        return True
+
+    # 2-3 字中文且没有地点特征词 → 拒绝 (如 "林明"、"库尔"、"叉号")
+    logger.info(f"    名称质量校验不通过: [{name}] (短名称无地点特征词)")
     return False
 
 
 class SemanticNodeDetector:
-    """语义节点检测器 v3.1 — 纯字符识别 (严格过滤)"""
+    """语义节点检测器 v3.2 — 纯字符识别 (平衡过滤)"""
 
-    SAMPLE_INTERVAL = 2
-    MIN_CONFIRM_FRAMES = 2          # v3.1: 至少 2 帧确认，避免幻觉
-    MIN_CONFIRM_CROSS_VALIDATED = 1  # 交叉验证(同帧多camera): 1 帧即可
+    SAMPLE_INTERVAL = 1             # v3.2: 不跳帧，逐帧扫描
+    MIN_CONFIRM_FRAMES = 2          # 至少 2 帧确认
+    MIN_CONFIRM_CROSS_VALIDATED = 1  # 交叉验证: 1 帧即可
     GROUP_GAP_THRESHOLD = 10
 
     CAMERA_PRIORITY = ['camera_2', 'camera_4', 'camera_1', 'camera_3']
 
     def __init__(self):
-        logger.info("SemanticNodeDetector v3.1 initialized (text-only, strict filter)")
+        logger.info("SemanticNodeDetector v3.2 initialized (text-only, balanced filter)")
 
     def _encode_image_b64(self, image_path: str) -> Optional[str]:
         """将图片编码为 base64"""
@@ -122,10 +136,7 @@ class SemanticNodeDetector:
         return base64.b64encode(buf).decode('utf-8')
 
     def _detect_on_frame(self, frame_data: Dict, qwen_server) -> List[Dict]:
-        """对单帧的所有 camera 执行字符识别
-
-        调用 qwen_server.detect_text() 识别门牌/标识上的文字
-        """
+        """对单帧的所有 camera 执行字符识别"""
         images = frame_data.get('images', {})
         detections = []
 
@@ -145,10 +156,9 @@ class SemanticNodeDetector:
                     name_cn = result.get('name_cn', '').strip()
                     name_en = result.get('name_en', '').strip()
 
-                    # 名称质量校验
                     check_name = name_cn if name_cn else text
                     if not _is_name_quality_ok(check_name):
-                        logger.info(f"    {cam_id}: 识别到 [{text}] → 质量过滤")
+                        logger.info(f"    {cam_id}: 识别到 [{text}] → name_cn=[{name_cn}] 质量过滤")
                         continue
 
                     logger.info(f"    {cam_id}: 识别到文字 [{text}] → {name_cn} ({name_en})")
@@ -168,29 +178,21 @@ class SemanticNodeDetector:
 
     def _cluster_detections(self, frame_detections: List[Tuple[int, List[Dict], Dict]],
                             existing_names: Set[str]) -> List[Dict]:
-        """将帧级检测结果聚类去重
-
-        同帧多 camera 交叉验证:
-        - 同帧 2+ camera 检测到同名 → cross_validated=True → 1 帧即可
-        - 单 camera 检测 → 需要 MIN_CONFIRM_FRAMES 帧 (>=2)
-        """
+        """将帧级检测结果聚类去重"""
         if not frame_detections:
             return []
 
-        # 统计每个 name_cn 在哪些帧出现、是否交叉验证
         name_info = defaultdict(lambda: {
             'frames': [],
             'cross_validated': False,
         })
 
         for frame_idx, dets_in_frame, frame_data in frame_detections:
-            # 按 name_cn 分组
             name_counts = defaultdict(list)
             for det in dets_in_frame:
                 name_counts[det['name_cn']].append(det)
 
             for name_cn, det_list in name_counts.items():
-                # 选最佳 det (名称更长的优先)
                 best = det_list[0]
                 for d in det_list[1:]:
                     if len(d.get('name_en', '')) > len(best.get('name_en', '')):
@@ -199,20 +201,17 @@ class SemanticNodeDetector:
                 info = name_info[name_cn]
                 info['frames'].append((frame_idx, frame_data, best))
 
-                # 同帧 2+ camera 检测到 → 交叉验证
                 unique_cameras = set(d['camera_id'] for d in det_list)
                 if len(unique_cameras) >= 2:
                     info['cross_validated'] = True
                     logger.info(f"    [{name_cn}] 帧 {frame_idx}: "
                                 f"{len(unique_cameras)} 个 camera 交叉验证 ✓")
 
-        # 生成候选
         candidates = []
         for name_cn, info in name_info.items():
             frames = info['frames']
             cross_validated = info['cross_validated']
 
-            # 按位置拆分 (间隔大的视为不同位置)
             frames.sort(key=lambda x: x[0])
             groups = [[frames[0]]]
             for i in range(1, len(frames)):
@@ -237,7 +236,6 @@ class SemanticNodeDetector:
                     logger.info(f"  [{name_cn}] 已存在同名 node，跳过")
                     continue
 
-                # 取居中帧
                 mid_idx = len(group) // 2
                 rep_frame_idx, rep_frame_data, rep_det = group[mid_idx]
 
@@ -271,15 +269,12 @@ class SemanticNodeDetector:
             logger.info(f"  帧 {start_frame_idx}->{end_frame_idx}: 无中间帧，跳过")
             return []
 
-        if len(mid_indices) > 3:
-            sampled = mid_indices[::self.SAMPLE_INTERVAL]
-        else:
-            sampled = mid_indices
+        # v3.2: 全量扫描，不跳帧
+        sampled = mid_indices
 
         logger.info(f"  帧 {start_frame_idx}->{end_frame_idx}: "
-                    f"{len(mid_indices)} 个中间帧，采样 {len(sampled)} 帧")
+                    f"{len(mid_indices)} 个中间帧，扫描 {len(sampled)} 帧")
 
-        # 逐帧检测
         frame_detections = []
         for idx in sampled:
             if idx >= len(all_frames):

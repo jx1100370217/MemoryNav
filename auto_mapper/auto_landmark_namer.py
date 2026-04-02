@@ -94,15 +94,20 @@ for line in sys.stdin:
     elif action == "detect_text":
         try:
             img = decode_img(req["image_b64"])
-            prompt = ("Look at this indoor image carefully. "
-                      "Is there any visible text on signs, door plates, wall labels, room numbers, or nameplates? "
-                      "Text includes Chinese characters, English words, and numbers/digits. "
-                      "Ignore: exit signs, fire safety signs, no-smoking signs, evacuation signs, safety channel signs. "
-                      "If you see meaningful text (e.g. room name, room number, area label), output JSON: "
-                      "{\"found\": true, \"text\": \"the exact text you see\", "
-                      "\"name_cn\": \"a short Chinese name based on the text (2-6 chars)\", "
+            prompt = ("This is an indoor navigation robot camera image. "
+                      "Look ONLY for text that identifies a ROOM or PLACE — specifically: "
+                      "(1) Door plates or room number signs mounted on/beside doors (e.g. '101', '会议室3', 'Room 302') "
+                      "(2) Room name plates on or beside doors (e.g. '关爱室', '母婴室', '茶水间', '强电井') "
+                      "(3) Store or shop name signs above entrances (e.g. '星巴克', '便利店') "
+                      "DO NOT report text from: posters, decorations, paintings, bulletin boards, "
+                      "company slogans, corporate culture walls, safety/exit/fire signs, computer screens, "
+                      "whiteboards, banners, advertisements, personal nameplates on desks, "
+                      "or ANY text that is NOT identifying a room/place/door. "
+                      "If you see a room/place identifying sign, output JSON: "
+                      "{\"found\": true, \"text\": \"exact text on the sign\", "
+                      "\"name_cn\": \"short Chinese place name (2-6 chars)\", "
                       "\"name_en\": \"English translation\"} "
-                      "If no meaningful text is visible, output: {\"found\": false}")
+                      "If NO room/place sign is visible, output: {\"found\": false}")
             raw = clean(infer(img, prompt, max_tokens=120))
             d = parse_json(raw)
             if d and d.get("found"):

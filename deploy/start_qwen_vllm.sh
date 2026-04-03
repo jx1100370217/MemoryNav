@@ -18,8 +18,8 @@ conda activate ${CONDA_ENV}
 # 确保使用 conda 环境的 libstdc++ (解决 CXXABI_1.3.15 问题)
 export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib:${LD_LIBRARY_PATH}"
 
-# 使用 vLLM 自带的 attention 后端，不依赖 flash_attn 包
-export VLLM_ATTENTION_BACKEND=FLASHINFER
+# FlashAttention v2 已由 vLLM v0.18.1 自动启用
+# VLLM_ATTENTION_BACKEND 在 v0.18.1 已废弃，vLLM 自动选择 FLASH_ATTN
 
 CUDA_VISIBLE_DEVICES=${GPU_ID} vllm serve "${MODEL_PATH}" \
     --port ${PORT} \

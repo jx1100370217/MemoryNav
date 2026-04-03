@@ -197,9 +197,9 @@ class QwenNamingServer:
             d = _parse_json(raw)
             if d:
                 return {"status": "ok",
-                        "name_cn": d.get("name_cn", "方向标记"),
-                        "name_en": d.get("name_en", "marker")}
-            return {"status": "ok", "name_cn": "方向标记", "name_en": "marker"}
+                        "name_cn": d.get("name_cn", " "),
+                        "name_en": d.get("name_en", " ")}
+            return {"status": "ok", "name_cn": " ", "name_en": " "}
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
@@ -251,14 +251,14 @@ class AutoLandmarkNamer:
 
     def qwen_identify_landmark(self, img):
         if not self._qwen_server or not self._qwen_server.is_ready:
-            return "方向标记", "direction_marker"
+            return " ", " "
         try:
             r = self._qwen_server.identify_landmark(self._b64(img))
             if r.get("status") == "ok":
                 return r["name_cn"], r["name_en"]
         except Exception as e:
             logger.warning(f"identify_landmark: {e}")
-        return "方向标记", "direction_marker"
+        return " ", " "
 
     def generate_position_name(self, position_id, camera_images=None):
         if self.use_qwen and camera_images and self._qwen_server and self._qwen_server.is_ready:

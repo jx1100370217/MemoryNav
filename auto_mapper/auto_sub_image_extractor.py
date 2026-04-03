@@ -302,11 +302,11 @@ class AutoSubImageExtractor:
             if not crop_paths:
                 continue
 
-            landmark_cn, landmark_en = "方向标记", "direction_marker"
+            landmark_cn, landmark_en = " ", " "
             if qwen_namer and big_crop_img is not None:
                 try:
                     lm_cn, lm_en = qwen_namer.qwen_identify_landmark(big_crop_img)
-                    if lm_cn and lm_cn != "方向标记":
+                    if lm_cn and lm_cn != " ":
                         landmark_cn, landmark_en = lm_cn, lm_en
                 except Exception:
                     pass
@@ -361,7 +361,7 @@ class AutoSubImageExtractor:
                         "position_id": next_position_id,
                         "position_name": f"auto_{next_idx}",
                         "camera_name": cam_id,
-                        "landmark_name": "方向标记",
+                        "landmark_name": " ",
                         "big_box": norm_boxes.get('big', ''),
                         "mid_box": norm_boxes.get('mid', ''),
                         "small_box": norm_boxes.get('small', ''),
@@ -369,7 +369,7 @@ class AutoSubImageExtractor:
                         "crop_image_path": crop_paths.get('big', ''),
                         "crop_image_paths": crop_paths,
                         "position_name_eng": f"auto_{next_idx}",
-                        "landmark_name_eng": "direction_marker",
+                        "landmark_name_eng": " ",
                     }
         return None
 

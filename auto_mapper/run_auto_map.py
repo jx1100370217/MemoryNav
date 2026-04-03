@@ -50,6 +50,10 @@ def validate_paths(args) -> None:
     if not image_files:
         raise ValueError(f"No camera images in {input_path}")
     logging.info(f"Found {len(image_files)} camera images")
+    import shutil as _shutil
+    if Path(args.output_dir).exists():
+        _shutil.rmtree(args.output_dir)
+        logging.info(f"Cleaned output directory: {args.output_dir}")
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 
 

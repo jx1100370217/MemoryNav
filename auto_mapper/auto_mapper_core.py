@@ -268,6 +268,9 @@ class AutoMapperCore:
             tmp_dir = self.output_dir / tmp_name
 
             if old_dir.exists():
+                if tmp_dir.exists():
+                    shutil.rmtree(tmp_dir)
+                    logging.warning(f"  阶段1: 清理残留临时目录 {tmp_name}")
                 old_dir.rename(tmp_dir)
                 logging.debug(f"  重命名阶段1: {old_id} → {tmp_name}")
 
@@ -287,6 +290,9 @@ class AutoMapperCore:
             new_dir = self.output_dir / new_id
 
             if tmp_dir.exists():
+                if new_dir.exists():
+                    shutil.rmtree(new_dir)
+                    logging.warning(f"  阶段2: 清理残留目录 {new_id}")
                 tmp_dir.rename(new_dir)
                 logging.debug(f"  重命名阶段2: {tmp_name} → {new_id}")
 

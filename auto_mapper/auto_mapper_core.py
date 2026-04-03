@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-自动建图核心模块 v5.1
+自动建图核心模块 v5.2
 
 改进:
 1. Phase 1: VPR 粗粒度 node 创建 (用 Qwen 命名)
@@ -10,6 +10,7 @@
 3. Phase 2: 停 Qwen，启动 PointGrounder + DINOv3 生成连接
 4. 修复闭环 bug: 首尾连接改为可选参数，默认关闭
 5. v5.1: 修复重编号时目录重命名冲突（先全部改临时名，再统一改最终名）
+6. v5.2: Phase 1.6 节点去重与合并（VPR 去重 + 同帧合并 + 别名机制）
 """
 
 import os
@@ -29,10 +30,11 @@ from .auto_node_generator import AutoNodeGenerator
 from .auto_sub_image_extractor import AutoSubImageExtractor
 from .auto_landmark_namer import AutoLandmarkNamer
 from .semantic_node_detector import SemanticNodeDetector
+from .node_dedup_merger import NodeDedupMerger
 
 
 class AutoMapperCore:
-    """自动建图核心控制器 v5.1"""
+    """自动建图核心控制器 v5.2"""
 
     def __init__(self,
                  input_dir: str,
@@ -45,7 +47,8 @@ class AutoMapperCore:
                  qwen_gpu: str = "1",
                  enable_loop_closure: bool = False,
                  loop_closure_threshold: float = 0.80,
-                 semantic_detection: bool = True):
+                 semantic_detection: bool = True,
+                 vpr_dedup_threshold: float = 0.80):
         self.input_dir = Path(input_dir)
         self.output_dir = Path(output_dir)
         self.start_id = start_id
@@ -54,6 +57,7 @@ class AutoMapperCore:
         self._enable_loop_closure = enable_loop_closure
         self._loop_closure_threshold = loop_closure_threshold
         self._semantic_detection = semantic_detection
+        self._vpr_dedup_threshold = vpr_dedup_threshold
 
         if not self.input_dir.exists():
             raise FileNotFoundError(f"Input directory not found: {input_dir}")
@@ -75,7 +79,7 @@ class AutoMapperCore:
         self._all_frames: List[Dict] = []
         self._used_names: set = set()
 
-        logging.info(f"AutoMapperCore v5.1 initialized")
+        logging.info(f"AutoMapperCore v5.2 initialized")
         logging.info(f"Input: {self.input_dir}, Output: {self.output_dir}")
         logging.info(f"Start ID: {start_id}, Threshold: {similarity_threshold}")
         logging.info(f"Qwen naming: {use_qwen_naming}")
@@ -324,6 +328,81 @@ class AutoMapperCore:
             logging.info(f"  node {node['position_id']}: {node['position_name']} "
                          f"(帧 {node['frame_index']})")
 
+    def _renumber_after_dedup(self):
+        """去重后重新编号，确保 node ID 连续"""
+        import json as _json
+
+        if not self.created_nodes:
+            return
+
+        # 按 frame_index 排序
+        self.created_nodes.sort(key=lambda n: n['frame_index'])
+
+        tmp_mapping = []
+        for idx, node in enumerate(self.created_nodes):
+            old_id = node['position_id']
+            new_id = str(idx + self.start_id)
+            tmp_name = f"_tmp_dedup_{idx}"
+
+            old_dir = self.output_dir / old_id
+            tmp_dir = self.output_dir / tmp_name
+
+            if old_dir.exists():
+                if tmp_dir.exists():
+                    shutil.rmtree(tmp_dir)
+                old_dir.rename(tmp_dir)
+
+            if old_id in self.distance_estimator.node_features:
+                self.distance_estimator.node_features[tmp_name] = \
+                    self.distance_estimator.node_features.pop(old_id)
+            if old_id in self.distance_estimator.node_frames:
+                self.distance_estimator.node_frames[tmp_name] = \
+                    self.distance_estimator.node_frames.pop(old_id)
+
+            tmp_mapping.append((node, tmp_name, new_id))
+
+        for node, tmp_name, new_id in tmp_mapping:
+            tmp_dir = self.output_dir / tmp_name
+            new_dir = self.output_dir / new_id
+
+            if tmp_dir.exists():
+                if new_dir.exists():
+                    shutil.rmtree(new_dir)
+                tmp_dir.rename(new_dir)
+
+            node['node_dir'] = str(new_dir)
+            node['position_id'] = new_id
+
+            info_file = new_dir / "node_position_info.json"
+            if info_file.exists():
+                with open(info_file, 'r', encoding='utf-8') as f:
+                    info = _json.load(f)
+                info['self_position']['position_id'] = new_id
+                with open(info_file, 'w', encoding='utf-8') as f:
+                    _json.dump(info, f, ensure_ascii=False, indent=2)
+
+            if tmp_name in self.distance_estimator.node_features:
+                self.distance_estimator.node_features[new_id] = \
+                    self.distance_estimator.node_features.pop(tmp_name)
+            if tmp_name in self.distance_estimator.node_frames:
+                self.distance_estimator.node_frames[new_id] = \
+                    self.distance_estimator.node_frames.pop(tmp_name)
+
+        self.current_id = len(self.created_nodes) + self.start_id
+
+        node_count = len(self.created_nodes)
+        final_id = self.current_id - 1
+        logging.info(f"去重后重编号完成: {node_count} 个 node, ID {self.start_id}-{final_id}")
+        for node in self.created_nodes:
+            aliases = []
+            info_file = Path(node['node_dir']) / "node_position_info.json"
+            if info_file.exists():
+                with open(info_file, 'r', encoding='utf-8') as f:
+                    info = _json.load(f)
+                aliases = info.get('self_position', {}).get('aliases', [])
+            alias_str = f" (别名: {aliases})" if aliases else ""
+            logging.info(f"  node {node['position_id']}: {node['position_name']}{alias_str}")
+
     def generate_connections(self):
         """
         v5: 对每个 node 用 generate_next_positions 一次性生成所有连接
@@ -396,7 +475,7 @@ class AutoMapperCore:
         logging.info("Connection generation completed")
 
     def run_auto_mapping(self) -> Dict:
-        logging.info("Starting automatic mapping v5.1...")
+        logging.info("Starting automatic mapping v5.2...")
 
         frames = self.load_input_data()
 
@@ -409,6 +488,14 @@ class AutoMapperCore:
             self._run_semantic_detection()
         else:
             logging.info("Semantic detection disabled, skipping Phase 1.5")
+
+        # Phase 1.6: 节点去重与合并
+        dedup_merger = NodeDedupMerger(vpr_dedup_threshold=self._vpr_dedup_threshold)
+        self.created_nodes = dedup_merger.run(
+            self.created_nodes, self.distance_estimator, self.output_dir
+        )
+        # 去重后重新编号
+        self._renumber_after_dedup()
 
         # 停掉 namer 的 Qwen 进程，释放显存给 PointGrounder
         logging.info("Phase 1.5b: Stopping namer Qwen to free GPU memory...")

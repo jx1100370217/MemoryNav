@@ -483,19 +483,28 @@ class AutoMapperCore:
         for idx, frame in enumerate(frames):
             self.process_frame(idx, frame)
 
-        # Phase 1.5 (新增): 语义增补 — 扫描中间帧插入语义 node
+        # Phase 1.3: VPR 去重 (仅对 VPR 生成的 node)
+        dedup_merger = NodeDedupMerger(vpr_dedup_threshold=self._vpr_dedup_threshold)
+        self.created_nodes, vpr_alias_map = dedup_merger.dedup_by_vpr(
+            self.created_nodes, self.distance_estimator, self.output_dir
+        )
+        if vpr_alias_map:
+            dedup_merger.write_aliases(self.output_dir, vpr_alias_map)
+            self._renumber_after_dedup()
+
+        # Phase 1.5: 语义增补 — 扫描中间帧，检测门牌/标识/功能区域，插入新 node
         if self._semantic_detection:
             self._run_semantic_detection()
         else:
             logging.info("Semantic detection disabled, skipping Phase 1.5")
 
-        # Phase 1.6: 节点去重与合并
-        dedup_merger = NodeDedupMerger(vpr_dedup_threshold=self._vpr_dedup_threshold)
-        self.created_nodes = dedup_merger.run(
-            self.created_nodes, self.distance_estimator, self.output_dir
+        # Phase 1.6: 同帧合并 (对语义增补产生的同 timestamp node)
+        self.created_nodes, frame_alias_map = dedup_merger.merge_same_frame_nodes(
+            self.created_nodes, self.output_dir
         )
-        # 去重后重新编号
-        self._renumber_after_dedup()
+        if frame_alias_map:
+            dedup_merger.write_aliases(self.output_dir, frame_alias_map)
+            self._renumber_after_dedup()
 
         # 停掉 namer 的 Qwen 进程，释放显存给 PointGrounder
         logging.info("Phase 1.5b: Stopping namer Qwen to free GPU memory...")

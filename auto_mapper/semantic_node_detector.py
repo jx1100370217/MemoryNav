@@ -20,6 +20,7 @@ import base64
 import numpy as np
 from typing import Dict, List, Optional, Set, Tuple
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, '/home/ubuntu/Disk/codes/jianxiong/MemoryNav')
 
@@ -133,7 +134,7 @@ class SemanticNodeDetector:
     CAMERA_PRIORITY = ['camera_2', 'camera_4', 'camera_1', 'camera_3']
 
     def __init__(self):
-        logger.info("SemanticNodeDetector v3.3 initialized (text-only, door-plate enhanced)")
+        logger.info("SemanticNodeDetector v3.4 initialized (text-only, door-plate enhanced, parallel cameras)")
 
     def _encode_image_b64(self, image_path: str) -> Optional[str]:
         if not os.path.exists(image_path):
@@ -144,56 +145,68 @@ class SemanticNodeDetector:
         _, buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 85])
         return base64.b64encode(buf).decode('utf-8')
 
-    def _detect_on_frame(self, frame_data: Dict, qwen_server) -> List[Dict]:
-        """对单帧的所有 camera 执行字符识别
+    def _detect_single_camera(self, cam_id: str, cam_path: str, qwen_server) -> Optional[Dict]:
+        """对单个 camera 执行字符识别 (供并行调用)"""
+        if not cam_path or not os.path.exists(cam_path):
+            return None
 
-        每帧只保留一个最佳 detection (避免同帧多 node)
-        """
+        b64 = self._encode_image_b64(cam_path)
+        if not b64:
+            return None
+
+        try:
+            result = qwen_server.detect_text(b64)
+            if result.get('status') == 'ok' and result.get('found', False):
+                text = result.get('text', '').strip()
+                raw_name_cn = result.get('name_cn', '').strip()
+                name_en = result.get('name_en', '').strip()
+
+                name_cn = _normalize_name(raw_name_cn, text)
+                if name_cn != raw_name_cn:
+                    logger.info(f"    {cam_id}: normalize [{raw_name_cn}] → [{name_cn}]")
+
+                if not _is_name_quality_ok(name_cn):
+                    logger.info(f"    {cam_id}: 识别到 [{text}] → name_cn=[{name_cn}] 质量过滤")
+                    return None
+
+                logger.info(f"    {cam_id}: 识别到文字 [{text}] → {name_cn} ({name_en})")
+                return {
+                    'name_cn': name_cn,
+                    'name_en': name_en if name_en else name_cn,
+                    'text': text,
+                    'camera_id': cam_id,
+                    'source': f'text_{cam_id}',
+                }
+            else:
+                logger.debug(f"    {cam_id}: 未检测到文字")
+        except Exception as e:
+            logger.warning(f"    {cam_id}: Qwen detect_text 异常 - {e}")
+        return None
+
+    def _detect_on_frame(self, frame_data: Dict, qwen_server) -> List[Dict]:
+        """对单帧的所有 camera 并行执行字符识别 (v3.4: 4 cameras 并发)"""
         images = frame_data.get('images', {})
         all_detections = []
 
+        tasks = []
         for cam_id in self.CAMERA_PRIORITY:
             cam_path = images.get(cam_id)
-            if not cam_path or not os.path.exists(cam_path):
-                continue
+            if cam_path and os.path.exists(cam_path):
+                tasks.append((cam_id, cam_path))
 
-            b64 = self._encode_image_b64(cam_path)
-            if not b64:
-                continue
+        if not tasks:
+            return []
 
-            try:
-                result = qwen_server.detect_text(b64)
-                if result.get('status') == 'ok' and result.get('found', False):
-                    text = result.get('text', '').strip()
-                    raw_name_cn = result.get('name_cn', '').strip()
-                    name_en = result.get('name_en', '').strip()
+        with ThreadPoolExecutor(max_workers=len(tasks)) as executor:
+            futures = {
+                executor.submit(self._detect_single_camera, cam_id, cam_path, qwen_server): cam_id
+                for cam_id, cam_path in tasks
+            }
+            for future in as_completed(futures):
+                det = future.result()
+                if det is not None:
+                    all_detections.append(det)
 
-                    # 先 normalize (补全裸数字/英文)
-                    name_cn = _normalize_name(raw_name_cn, text)
-                    if name_cn != raw_name_cn:
-                        logger.info(f"    {cam_id}: normalize [{raw_name_cn}] → [{name_cn}]")
-
-                    # 再做质量校验
-                    if not _is_name_quality_ok(name_cn):
-                        logger.info(f"    {cam_id}: 识别到 [{text}] → name_cn=[{name_cn}] 质量过滤")
-                        continue
-
-                    logger.info(f"    {cam_id}: 识别到文字 [{text}] → {name_cn} ({name_en})")
-                    all_detections.append({
-                        'name_cn': name_cn,
-                        'name_en': name_en if name_en else name_cn,
-                        'text': text,
-                        'camera_id': cam_id,
-                        'source': f'text_{cam_id}',
-                    })
-                else:
-                    logger.debug(f"    {cam_id}: 未检测到文字")
-            except Exception as e:
-                logger.warning(f"    {cam_id}: Qwen detect_text 异常 - {e}")
-
-        # 同一帧去重: 如果多个 camera 识别到不同名称，保留所有不同名的
-        # (后续 cluster 阶段会再去重，这里不做帧内削减)
-        # 但如果同一 camera 出了多个结果（不会，每次只调一次），也没问题
         return all_detections
 
     def _cluster_detections(self, frame_detections: List[Tuple[int, List[Dict], Dict]],

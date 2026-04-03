@@ -15,6 +15,7 @@ v10 修复: 用走廊中间帧(intermediate frames)作为匹配目标
 
 import os, sys, cv2, torch, numpy as np, logging, base64
 from typing import Dict, List, Tuple, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, '/home/ubuntu/Disk/codes/jianxiong/MemoryNav')
 
@@ -50,7 +51,7 @@ class AutoSubImageExtractor:
         self._dinov3 = DINOv3Strategy(device=device)
         self._dinov3.preload()
 
-        logger.info("AutoSubImageExtractor v10 (PointGrounding + corridor-frame match + Hungarian + Y-fix) initialized")
+        logger.info("AutoSubImageExtractor v10.1 (parallel cameras + corridor-frame match + Hungarian + Y-fix) initialized")
 
     # ------------------------------------------------------------------
     # CLS 特征
@@ -181,30 +182,36 @@ class AutoSubImageExtractor:
 
         logger.info(f"=== Generating next_positions for node {position_id} ===")
 
-        # ---- Step 1: 在每个相机上打点 + Y修正 ----
+        # ---- Step 1: 在每个相机上并行打点 + Y修正 (v10.1: 4 cameras 并发) ----
         camera_points = {}
-        for cam_id in ['camera_1', 'camera_2', 'camera_3', 'camera_4']:
-            cam_path = images.get(cam_id)
-            if not cam_path:
-                continue
+
+        def _predict_one_camera(cam_id, cam_path):
             cam_img = cv2.imread(cam_path)
             if cam_img is None:
-                continue
-
+                return cam_id, None
             result = self._grounder.predict(cam_img, self.POINT_PROMPT)
             if result['success'] and result['point']:
                 h, w = cam_img.shape[:2]
                 cx = int(result['point'][0] * w)
                 cy = int(result['point'][1] * h)
                 conf = result.get('confidence', 0.0)
-                logger.info(f"  {cam_id}: raw point=({cx},{cy}) = ({cx/w*100:.1f}%,{cy/h*100:.1f}%) conf={conf:.3f}")
+                return cam_id, (cx, cy, conf, h, w)
+            return cam_id, None
 
-                # Y 坐标修正
-                cx, cy = self._fix_point_y(cx, cy, h, w)
+        cam_tasks = [(cid, images[cid]) for cid in ['camera_1', 'camera_2', 'camera_3', 'camera_4']
+                     if images.get(cid)]
 
-                camera_points[cam_id] = (cx, cy, conf)
-            else:
-                logger.info(f"  {cam_id}: no point (target not found)")
+        with ThreadPoolExecutor(max_workers=len(cam_tasks)) as executor:
+            futures = {executor.submit(_predict_one_camera, cid, cp): cid for cid, cp in cam_tasks}
+            for future in as_completed(futures):
+                cam_id, result = future.result()
+                if result is not None:
+                    cx, cy, conf, h, w = result
+                    logger.info(f"  {cam_id}: raw point=({cx},{cy}) = ({cx/w*100:.1f}%,{cy/h*100:.1f}%) conf={conf:.3f}")
+                    cx, cy = self._fix_point_y(cx, cy, h, w)
+                    camera_points[cam_id] = (cx, cy, conf)
+                else:
+                    logger.info(f"  {cam_id}: no point (target not found)")
 
         if not camera_points:
             logger.warning(f"  Node {position_id}: no camera has valid corridor point!")

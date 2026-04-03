@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-2.1.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.1.0)
+[![Version](https://img.shields.io/badge/Version-2.2.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.2.0)
 
 A robot memory navigation system based on Visual Place Recognition (VPR) and topological maps
 
@@ -23,6 +23,7 @@ MemoryNav is a visual memory navigation system for mobile robots. It collects im
 
 ### Key Capabilities
 
+- **🗺️ Auto-mapping**: 3-phase pipeline (VPR node creation → semantic augmentation → connection generation) automatically builds topological navigation graphs from image sequences — no manual annotation required
 - **🔍 Multi-scheme VPR Localization**: Supports 4 SOTA VPR methods, switchable via a single config file
 - **🗺️ Topological Memory Graph**: Automatically builds a node-edge topology from annotated data; supports shortest-path planning (BFS/Dijkstra)
 - **🔄 Cyclic-shift Matching**: 4-camera cyclic-shift algorithm for orientation-agnostic localization and heading estimation
@@ -75,6 +76,15 @@ MemoryNav/
 │   └── memory_visualization_server.py  # Visualization (sub-image + grounding + occlusion)
 ├── pretrained/                     # Pretrained models (YOLOv8n, DINOv3, etc.)
 ├── merged_labeled_data/            # Memory annotated data
+├── auto_mapper/                    # Auto-mapping module
+│   ├── run_auto_map.py             # Entry script
+│   ├── auto_mapper_core.py         # Core controller (3-phase pipeline)
+│   ├── node_distance_estimator.py  # VPR node distance estimation
+│   ├── auto_landmark_namer.py      # Qwen3.5 scene naming (vLLM)
+│   ├── semantic_node_detector.py   # Door plate / sign text recognition
+│   ├── auto_node_generator.py      # Node directory & metadata generation
+│   ├── auto_sub_image_extractor.py # Grounding crop + corridor frame matching
+│   └── validate_output.py         # Output format validation
 ├── tests/
 │   └── test_memory_ws.py           # WebSocket integration tests
 └── docs/
@@ -260,6 +270,118 @@ anyloc:
 
 ---
 
+## 🗺️ Auto-mapping
+
+The auto-mapping module (`auto_mapper/`) automatically generates topological navigation graphs from robot-captured image sequences — no manual annotation required.
+
+### 3-Phase Pipeline
+
+```
+Phase 1: VPR Coarse-grained Node Creation
+  ├─ Scan 4-camera images frame by frame
+  ├─ VPR feature extraction → compare similarity with nearest node
+  ├─ Similarity < threshold (0.70) → create new node
+  └─ Qwen3.5 VLM auto-naming (Chinese/English)
+
+Phase 1.5: Semantic Augmentation
+  ├─ Scan intermediate frames between nodes
+  ├─ Qwen3.5 text recognition: detect door plates, signs, meeting room names
+  ├─ Quality filtering: blacklist excludes meaningless signs (exit, fire, etc.)
+  ├─ Name normalization: bare numbers/English auto-completed (10 → Room 10, MOORE → Moore Meeting Room)
+  └─ Insert new nodes at spatial positions + renumber
+
+Phase 2: Connection Generation
+  ├─ Qwen3.5 PointGrounder for pairwise adjacent node grounding
+  ├─ Corridor mid-frame matching: DINOv3 CLS features find best camera
+  ├─ Hungarian algorithm: optimal camera → neighbor assignment
+  ├─ 3-scale crop (big/mid/small) + Y-coordinate correction
+  └─ Output format validation (validate_output.py)
+```
+
+### Usage
+
+```bash
+# Basic usage
+python auto_mapper/run_auto_map.py \
+    --input_dir memory_test_data \
+    --output_dir auto_mapper/merged_labeled_data \
+    --vpr_config deploy/vpr_config.yaml
+
+# Full parameters
+python auto_mapper/run_auto_map.py \
+    --input_dir memory_test_data \
+    --output_dir auto_mapper/merged_labeled_data \
+    --vpr_config deploy/vpr_config.yaml \
+    --start_id 1 \
+    --similarity_threshold 0.70 \
+    --min_frame_interval 5 \
+    --use_qwen_naming \
+    --qwen_gpu 1
+```
+
+### Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--input_dir` | `memory_test_data` | Input image directory (containing `*_camera_*.jpg` files) |
+| `--output_dir` | `auto_mapper/merged_labeled_data` | Output directory (`merged_labeled_data` format) |
+| `--vpr_config` | `deploy/vpr_config.yaml` | VPR config file path |
+| `--start_id` | `1` | Starting node ID |
+| `--similarity_threshold` | `0.70` | VPR similarity threshold (below = create new node) |
+| `--min_frame_interval` | `5` | Minimum frame interval (prevents over-dense nodes) |
+| `--use_qwen_naming` | `true` | Use Qwen3.5 auto-naming |
+| `--qwen_gpu` | `1` | GPU device for Qwen3.5 |
+| `--dry_run` | `false` | Validate input only, skip execution |
+
+### Prerequisites
+
+1. **vLLM Service**: Start Qwen3.5 vLLM server for scene naming and text recognition
+   ```bash
+   bash deploy/start_qwen_vllm.sh
+   ```
+2. **VPR Model**: Pretrained weights for the VPR method configured in `deploy/vpr_config.yaml`
+3. **DINOv3 Model**: For corridor mid-frame matching during crop extraction
+
+### Output Format
+
+Auto-mapping output is fully compatible with manually annotated `merged_labeled_data/`:
+
+```
+merged_labeled_data/
+├── 1/                          # Node 1
+│   ├── position_info.json      # Node metadata (name, camera images, connections)
+│   ├── <timestamp>_camera_1.jpg
+│   ├── <timestamp>_camera_2.jpg
+│   ├── <timestamp>_camera_3.jpg
+│   ├── <timestamp>_camera_4.jpg
+│   └── crops/                  # 3-scale attention crops
+│       ├── to_2_camera_2_big.jpg
+│       ├── to_2_camera_2_mid.jpg
+│       └── to_2_camera_2_small.jpg
+├── 2/
+│   └── ...
+```
+
+Use auto-mapped data directly for memory building:
+
+```bash
+bash deploy/build_memory.sh --data_dir auto_mapper/merged_labeled_data
+```
+
+### Core Components
+
+| Component | Description |
+|-----------|-------------|
+| `auto_mapper_core.py` | Core controller orchestrating the 3-phase pipeline |
+| `node_distance_estimator.py` | VPR feature comparison for new node decisions |
+| `auto_landmark_namer.py` | Qwen3.5 vLLM scene description + landmark naming |
+| `semantic_node_detector.py` | Door plate/sign text recognition + name normalization + blacklist filtering |
+| `auto_node_generator.py` | Node directory creation, metadata JSON generation |
+| `auto_sub_image_extractor.py` | PointGrounding + DINOv3 corridor frame matching + Hungarian assignment + crop extraction |
+| `validate_output.py` | Output format integrity validation |
+
+---
+
 ## 🚀 Quick Start
 
 ### Installation
@@ -404,6 +526,16 @@ python tests/test_memory_ws.py
 ---
 
 ## 📋 Changelog
+
+### v2.2.0
+
+- **🆕 Auto-mapping Module**: New `auto_mapper/` module for fully automatic topological graph generation from image sequences
+  - 3-phase pipeline: VPR node creation → semantic augmentation (door plate/sign detection) → connection generation (grounding + crop)
+  - Qwen3.5 vLLM inference backend for scene naming, text recognition, and point grounding
+  - Semantic node detector auto-identifies meeting room names, room numbers, and other navigation-relevant signs
+  - DINOv3 corridor mid-frame matching + Hungarian algorithm for optimal camera→neighbor assignment
+  - 4-camera parallel vLLM calls (Phase 1.5: 1.3x speedup, Phase 2: 1.6x speedup, overall 315s→238s)
+  - Output fully compatible with manually annotated `merged_labeled_data/` — ready for memory building
 
 ### v2.1.0 (Documentation sync)
 

@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-2.1.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.1.0)
+[![Version](https://img.shields.io/badge/Version-2.2.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.2.0)
 
 VPR（視覚的場所認識）とトポロジカルマップに基づくロボット記憶ナビゲーションシステム
 
@@ -23,6 +23,7 @@ MemoryNavは移動ロボット向けの視覚記憶ナビゲーションシス�
 
 ### 主な機能
 
+- **🗺️ 自動建図**：3段階Pipeline（VPRノード作成→語義増補→接続生成）で画像シーケンスからトポロジカルナビゲーショングラフを全自動生成、手動アノテーション不要
 - **🔍 マルチスキームVPR測位**：4種類のSOTA VPR手法をサポート、設定ファイル一つで切り替え可能
 - **🗺️ トポロジカル記憶グラフ**：アノテーションデータからノード-エッジトポロジーを自動構築、最短経路計画（BFS/Dijkstra）をサポート
 - **🔄 循環シフトマッチング**：4カメラ循環シフトアルゴリズムによる方向不変の自己位置推定と偏向角推定
@@ -71,6 +72,15 @@ MemoryNav/
 │   └── memory_visualization_server.py  # 可視化サービス (サブ画像 + 打点 + 遮蔽検出)
 ├── pretrained/                     # 事前学習モデル (YOLOv8n, DINOv3等)
 ├── merged_labeled_data/            # 記憶アノテーションデータ
+├── auto_mapper/                    # 自動建図モジュール
+│   ├── run_auto_map.py             # エントリースクリプト
+│   ├── auto_mapper_core.py         # コアコントローラー (3段階Pipeline)
+│   ├── node_distance_estimator.py  # VPRノード距離推定
+│   ├── auto_landmark_namer.py      # Qwen3.5シーン命名 (vLLM)
+│   ├── semantic_node_detector.py   # ドアプレート/標識文字認識
+│   ├── auto_node_generator.py      # ノードディレクトリ・メタデータ生成
+│   ├── auto_sub_image_extractor.py # グラウンディングcrop + 廊下フレームマッチング
+│   └── validate_output.py         # 出力フォーマット検証
 ├── tests/
 │   └── test_memory_ws.py           # WebSocket統合テスト
 └── docs/
@@ -170,6 +180,83 @@ camera_3またはcamera_4（後方向き）がマッチングに成功した場�
 
 ---
 
+## 🗺️ 自動建図
+
+自動建図モジュール（`auto_mapper/`）は、ロボットが撮影した画像シーケンスからトポロジカルナビゲーショングラフを全自動生成します。手動アノテーション不要です。
+
+### 3段階Pipeline
+
+```
+Phase 1: VPR 粗粒度ノード作成
+  ├─ フレーム順に4カメラ画像をスキャン
+  ├─ VPR特徴量抽出 → 最近ノードとの類似度比較
+  ├─ 類似度 < 閾値(0.70) → 新ノード作成
+  └─ Qwen3.5 VLMで自動命名(中国語/英語)
+
+Phase 1.5: 語義増補
+  ├─ ノード間の中間フレームをスキャン
+  ├─ Qwen3.5文字認識：ドアプレート、標識、会議室名を検出
+  ├─ 品質フィルタリング：ブラックリストで無意味な標識を除外
+  ├─ 名前正規化：数字/英語を自動補完(10 → 10号会議室, MOORE → ムーア会議室)
+  └─ 空間位置に新ノード挿入 + リナンバリング
+
+Phase 2: 接続生成
+  ├─ Qwen3.5 PointGrounderで隣接ノードペアをグラウンディング
+  ├─ 廊下中間フレームマッチング：DINOv3 CLS特徴量で最適camera選択
+  ├─ ハンガリアンアルゴリズム：camera→隣接ノードの最適割当
+  ├─ 3段階crop切り出し(big/mid/small) + Y座標補正
+  └─ 出力フォーマット検証 (validate_output.py)
+```
+
+### 使用方法
+
+```bash
+python auto_mapper/run_auto_map.py \
+    --input_dir memory_test_data \
+    --output_dir auto_mapper/merged_labeled_data \
+    --vpr_config deploy/vpr_config.yaml
+```
+
+### パラメータ
+
+| パラメータ | デフォルト | 説明 |
+|-----------|---------|------|
+| `--input_dir` | `memory_test_data` | 入力画像ディレクトリ |
+| `--output_dir` | `auto_mapper/merged_labeled_data` | 出力ディレクトリ |
+| `--vpr_config` | `deploy/vpr_config.yaml` | VPR設定ファイル |
+| `--similarity_threshold` | `0.70` | VPR類似度閾値 |
+| `--min_frame_interval` | `5` | 最小フレーム間隔 |
+| `--use_qwen_naming` | `true` | Qwen3.5自動命名 |
+| `--qwen_gpu` | `1` | Qwen3.5用GPU |
+
+### 前提条件
+
+1. **vLLMサービス**：`bash deploy/start_qwen_vllm.sh`
+2. **VPRモデル**：設定したVPR手法の事前学習重み
+3. **DINOv3モデル**：廊下中間フレームマッチング用
+
+### 出力フォーマット
+
+手動アノテーションの`merged_labeled_data/`と完全互換。自動建図データで直接記憶構築：
+
+```bash
+bash deploy/build_memory.sh --data_dir auto_mapper/merged_labeled_data
+```
+
+### コアコンポーネント
+
+| コンポーネント | 説明 |
+|-------------|------|
+| `auto_mapper_core.py` | コアコントローラー、3段階Pipelineを編成 |
+| `node_distance_estimator.py` | VPR特徴量比較、新ノード作成判定 |
+| `auto_landmark_namer.py` | Qwen3.5 vLLMシーン記述 + ランドマーク命名 |
+| `semantic_node_detector.py` | ドアプレート/標識文字認識 + 名前正規化 |
+| `auto_node_generator.py` | ノードディレクトリ作成、メタデータJSON生成 |
+| `auto_sub_image_extractor.py` | PointGrounding + DINOv3廊下フレームマッチング + crop切り出し |
+| `validate_output.py` | 出力フォーマット検証 |
+
+---
+
 ## 🚀 クイックスタート
 
 ```bash
@@ -247,6 +334,15 @@ python deploy/ws_proxy_with_memory.py
 ---
 
 ## 📋 更新履歴
+
+### v2.2.0
+
+- **🆕 自動建図モジュール**：`auto_mapper/`モジュールを新設、画像シーケンスからトポロジカルグラフを全自動生成
+  - 3段階Pipeline：VPRノード作成→語義増補→接続生成
+  - Qwen3.5 vLLM推論バックエンド
+  - DINOv3廊下中間フレームマッチング + ハンガリアンアルゴリズム
+  - 4カメラ並列vLLM呼び出し（全体315s→238s）
+  - 出力は`merged_labeled_data/`と完全互換
 
 ### v2.1.0 (ドキュメント同期)
 

@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-2.1.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.1.0)
+[![Version](https://img.shields.io/badge/Version-2.2.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.2.0)
 
 基于视觉位置识别（VPR）和拓扑地图的机器人记忆导航系统
 
@@ -23,6 +23,7 @@ MemoryNav 是一个面向移动机器人的视觉记忆导航系统。系统通�
 
 ### 核心能力
 
+- **🗺️ 自动建图**：三阶段 Pipeline（VPR 节点创建 → 语义增补 → 连接生成）从图像序列全自动生成拓扑导航图，无需人工标注
 - **🔍 多方案 VPR 定位**：支持 4 种 SOTA 视觉位置识别方案，统一配置文件一键切换
 - **🗺️ 拓扑记忆图**：自动从标注数据构建节点-边拓扑图，支持最短路径规划
 - **🔄 循环移位匹配**：4 相机循环移位算法，支持任意朝向下的定位与偏转角估计
@@ -75,6 +76,15 @@ MemoryNav/
 │   └── memory_visualization_server.py  # 可视化服务 (子图匹配 + 打点 + 遮挡检测)
 ├── pretrained/                     # 预训练模型 (YOLOv8n, DINOv3 等)
 ├── merged_labeled_data/            # 记忆标注数据
+├── auto_mapper/                    # 自动建图模块
+│   ├── run_auto_map.py             # 自动建图入口脚本
+│   ├── auto_mapper_core.py         # 核心控制器 (三阶段 Pipeline)
+│   ├── node_distance_estimator.py  # VPR 节点距离估计
+│   ├── auto_landmark_namer.py      # Qwen3.5 场景命名 (vLLM)
+│   ├── semantic_node_detector.py   # 门牌/标识文字识别
+│   ├── auto_node_generator.py      # 节点目录与元数据生成
+│   ├── auto_sub_image_extractor.py # 打点裁剪 + 走廊中间帧匹配
+│   └── validate_output.py         # 输出格式验证
 ├── tests/                          # 测试
 │   └── test_memory_ws.py           # WebSocket 集成测试
 └── docs/                           # 文档
@@ -323,6 +333,119 @@ anyloc:
 
 ---
 
+## 🗺️ 自动建图
+
+自动建图模块（`auto_mapper/`）可从机器人采集的图像序列全自动生成拓扑导航图，无需人工标注。
+
+### 三阶段 Pipeline
+
+```
+Phase 1: VPR 粗粒度节点创建
+  ├─ 按帧序扫描 4 相机图像
+  ├─ VPR 特征提取 → 与最近节点比较相似度
+  ├─ 相似度 < 阈值(0.70) → 创建新节点
+  └─ Qwen3.5 VLM 为节点自动命名(中/英文)
+
+Phase 1.5: 语义增补
+  ├─ 扫描节点之间的中间帧
+  ├─ Qwen3.5 文字识别：检测门牌、标识、会议室名
+  ├─ 质量过滤：黑名单排除无意义标识(安全出口、消防等)
+  ├─ 名称规范化：裸数字/英文自动补全(10 → 10号会议室, MOORE → 摩尔会议室)
+  └─ 按空间位置插入新节点 + 重编号
+
+Phase 2: 连接生成
+  ├─ Qwen3.5 PointGrounder 对每对相邻节点打点定位
+  ├─ 走廊中间帧匹配：用 DINOv3 CLS 特征找到最相关 camera
+  ├─ 匈牙利算法：最优分配 camera → 邻居节点
+  ├─ 三级 crop 裁剪(big/mid/small) + Y坐标修正
+  └─ 输出格式验证 (validate_output.py)
+```
+
+### 使用方式
+
+```bash
+# 基本用法
+python auto_mapper/run_auto_map.py \
+    --input_dir memory_test_data \
+    --output_dir auto_mapper/merged_labeled_data \
+    --vpr_config deploy/vpr_config.yaml
+
+# 完整参数
+python auto_mapper/run_auto_map.py \
+    --input_dir memory_test_data \
+    --output_dir auto_mapper/merged_labeled_data \
+    --vpr_config deploy/vpr_config.yaml \
+    --start_id 1 \
+    --similarity_threshold 0.70 \
+    --min_frame_interval 5 \
+    --use_qwen_naming \
+    --qwen_gpu 1
+```
+
+### 参数说明
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--input_dir` | `memory_test_data` | 输入图像目录（包含 `*_camera_*.jpg` 文件） |
+| `--output_dir` | `auto_mapper/merged_labeled_data` | 输出目录（`merged_labeled_data` 格式） |
+| `--vpr_config` | `deploy/vpr_config.yaml` | VPR 配置文件路径 |
+| `--start_id` | `1` | 起始节点 ID |
+| `--similarity_threshold` | `0.70` | VPR 相似度阈值（低于此值创建新节点） |
+| `--min_frame_interval` | `5` | 最小帧间隔（避免过密建节点） |
+| `--use_qwen_naming` | `true` | 使用 Qwen3.5 自动命名 |
+| `--qwen_gpu` | `1` | Qwen3.5 使用的 GPU 编号 |
+| `--dry_run` | `false` | 仅验证输入，不实际执行 |
+
+### 前置条件
+
+1. **vLLM 服务**：需先启动 Qwen3.5 vLLM 服务用于场景命名和文字识别
+   ```bash
+   bash deploy/start_qwen_vllm.sh
+   ```
+2. **VPR 模型**：按 `deploy/vpr_config.yaml` 配置的 VPR 方案准备预训练权重
+3. **DINOv3 模型**：用于子图裁剪时的走廊中间帧匹配
+
+### 输出格式
+
+自动建图输出与手工标注的 `merged_labeled_data/` 格式完全兼容：
+
+```
+merged_labeled_data/
+├── 1/                          # 节点 1
+│   ├── position_info.json      # 节点元数据 (名称、相机图片、连接信息)
+│   ├── <timestamp>_camera_1.jpg
+│   ├── <timestamp>_camera_2.jpg
+│   ├── <timestamp>_camera_3.jpg
+│   ├── <timestamp>_camera_4.jpg
+│   └── crops/                  # 三级注意力子图
+│       ├── to_2_camera_2_big.jpg
+│       ├── to_2_camera_2_mid.jpg
+│       └── to_2_camera_2_small.jpg
+├── 2/
+│   └── ...
+```
+
+生成的数据可直接用于记忆构建：
+
+```bash
+# 用自动建图数据构建记忆
+bash deploy/build_memory.sh --data_dir auto_mapper/merged_labeled_data
+```
+
+### 核心组件
+
+| 组件 | 说明 |
+|------|------|
+| `auto_mapper_core.py` | 核心控制器，编排三阶段 Pipeline |
+| `node_distance_estimator.py` | VPR 特征比较，判断是否创建新节点 |
+| `auto_landmark_namer.py` | Qwen3.5 vLLM 场景描述 + 地标识别命名 |
+| `semantic_node_detector.py` | 门牌/标识文字识别 + 名称规范化 + 黑名单过滤 |
+| `auto_node_generator.py` | 节点目录创建、元数据 JSON 生成 |
+| `auto_sub_image_extractor.py` | PointGrounding 打点 + DINOv3 走廊帧匹配 + 匈牙利分配 + crop 裁剪 |
+| `validate_output.py` | 输出格式完整性验证 |
+
+---
+
 ## 🚀 快速开始
 
 ### 安装
@@ -516,6 +639,16 @@ python tests/test_memory_ws.py
 ---
 
 ## 📋 更新日志
+
+### v2.2.0
+
+- **🆕 自动建图模块**：新增 `auto_mapper/` 模块，从图像序列全自动生成拓扑导航图
+  - 三阶段 Pipeline：VPR 节点创建 → 语义增补（门牌/标识检测）→ 连接生成（打点 + crop）
+  - Qwen3.5 vLLM 推理后端，支持场景命名、文字识别、打点定位
+  - 语义节点检测器自动识别会议室名、门牌号等有导航意义的标识
+  - DINOv3 走廊中间帧匹配 + 匈牙利算法最优 camera→邻居分配
+  - 4 cameras 并行调用 vLLM（Phase 1.5 加速 1.3x，Phase 2 加速 1.6x，总体 315s→238s）
+  - 输出格式与手工标注 `merged_labeled_data/` 完全兼容，可直接用于记忆构建
 
 ### v2.1.0 (文档同步)
 

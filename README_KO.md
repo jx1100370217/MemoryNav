@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-2.1.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.1.0)
+[![Version](https://img.shields.io/badge/Version-2.2.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.2.0)
 
 VPR(시각적 장소 인식)과 위상 지도 기반 로봇 기억 내비게이션 시스템
 
@@ -23,6 +23,7 @@ MemoryNav는 이동 로봇을 위한 시각적 기억 내비게이션 시스템�
 
 ### 주요 기능
 
+- **🗺️ 자동 맵 생성**：3단계 Pipeline(VPR 노드 생성 → 의미 보강 → 연결 생성)으로 이미지 시퀀스에서 위상 내비게이션 그래프를 자동 생성, 수동 어노테이션 불필요
 - **🔍 멀티 스킴 VPR 측위**：4가지 SOTA VPR 방법 지원, 설정 파일 하나로 전환 가능
 - **🗺️ 위상 기억 그래프**：어노테이션 데이터에서 노드-엣지 위상을 자동 구축, BFS/Dijkstra 최단 경로 계획 지원
 - **🔄 순환 시프트 매칭**：4카메라 순환 시프트 알고리즘으로 방향 불변 위치 추정 및 편향각 추정
@@ -71,6 +72,15 @@ MemoryNav/
 │   └── memory_visualization_server.py  # 시각화 서비스 (서브 이미지 + 포인팅 + 차폐 감지)
 ├── pretrained/                     # 사전 학습 모델 (YOLOv8n, DINOv3 등)
 ├── merged_labeled_data/            # 메모리 어노테이션 데이터
+├── auto_mapper/                    # 자동 맵 생성 모듈
+│   ├── run_auto_map.py             # 엔트리 스크립트
+│   ├── auto_mapper_core.py         # 코어 컨트롤러 (3단계 Pipeline)
+│   ├── node_distance_estimator.py  # VPR 노드 거리 추정
+│   ├── auto_landmark_namer.py      # Qwen3.5 장면 명명 (vLLM)
+│   ├── semantic_node_detector.py   # 도어플레이트/표지판 문자 인식
+│   ├── auto_node_generator.py      # 노드 디렉토리 및 메타데이터 생성
+│   ├── auto_sub_image_extractor.py # 그라운딩 crop + 복도 프레임 매칭
+│   └── validate_output.py         # 출력 형식 검증
 ├── tests/
 │   └── test_memory_ws.py           # WebSocket 통합 테스트
 └── docs/
@@ -170,6 +180,83 @@ camera_3 또는 camera_4(후방 향)가 매칭에 성공한 경우, 전진 동�
 
 ---
 
+## 🗺️ 자동 맵 생성
+
+자동 맵 생성 모듈(`auto_mapper/`)은 로봇이 촬영한 이미지 시퀀스에서 위상 내비게이션 그래프를 자동으로 생성합니다. 수동 어노테이션이 필요 없습니다.
+
+### 3단계 Pipeline
+
+```
+Phase 1: VPR 조립도 노드 생성
+  ├─ 프레임 순서로 4카메라 이미지 스캔
+  ├─ VPR 특징 추출 → 가장 가까운 노드와 유사도 비교
+  ├─ 유사도 < 임계값(0.70) → 새 노드 생성
+  └─ Qwen3.5 VLM 자동 명명(중/영문)
+
+Phase 1.5: 의미 보강
+  ├─ 노드 간 중간 프레임 스캔
+  ├─ Qwen3.5 문자 인식: 도어플레이트, 표지판, 회의실 이름 감지
+  ├─ 품질 필터링: 블랙리스트로 무의미한 표지판 제외
+  ├─ 이름 정규화: 숫자/영문 자동 보완
+  └─ 공간 위치에 새 노드 삽입 + 번호 재할당
+
+Phase 2: 연결 생성
+  ├─ Qwen3.5 PointGrounder로 인접 노드 쌍 그라운딩
+  ├─ 복도 중간 프레임 매칭: DINOv3 CLS 특징으로 최적 camera 선택
+  ├─ 헝가리안 알고리즘: camera → 이웃 노드 최적 할당
+  ├─ 3단계 crop 추출(big/mid/small) + Y좌표 보정
+  └─ 출력 형식 검증 (validate_output.py)
+```
+
+### 사용 방법
+
+```bash
+python auto_mapper/run_auto_map.py \
+    --input_dir memory_test_data \
+    --output_dir auto_mapper/merged_labeled_data \
+    --vpr_config deploy/vpr_config.yaml
+```
+
+### 파라미터
+
+| 파라미터 | 기본값 | 설명 |
+|---------|--------|------|
+| `--input_dir` | `memory_test_data` | 입력 이미지 디렉토리 |
+| `--output_dir` | `auto_mapper/merged_labeled_data` | 출력 디렉토리 |
+| `--vpr_config` | `deploy/vpr_config.yaml` | VPR 설정 파일 |
+| `--similarity_threshold` | `0.70` | VPR 유사도 임계값 |
+| `--min_frame_interval` | `5` | 최소 프레임 간격 |
+| `--use_qwen_naming` | `true` | Qwen3.5 자동 명명 |
+| `--qwen_gpu` | `1` | Qwen3.5용 GPU |
+
+### 전제 조건
+
+1. **vLLM 서비스**：`bash deploy/start_qwen_vllm.sh`
+2. **VPR 모델**：설정된 VPR 방법의 사전 학습 가중치
+3. **DINOv3 모델**：복도 중간 프레임 매칭용
+
+### 출력 형식
+
+수동 어노테이션 `merged_labeled_data/`와 완전 호환。자동 생성 데이터로 바로 메모리 구축：
+
+```bash
+bash deploy/build_memory.sh --data_dir auto_mapper/merged_labeled_data
+```
+
+### 코어 컴포넌트
+
+| 컴포넌트 | 설명 |
+|---------|------|
+| `auto_mapper_core.py` | 코어 컨트롤러, 3단계 Pipeline 편성 |
+| `node_distance_estimator.py` | VPR 특징 비교, 새 노드 생성 판정 |
+| `auto_landmark_namer.py` | Qwen3.5 vLLM 장면 기술 + 랜드마크 명명 |
+| `semantic_node_detector.py` | 도어플레이트/표지판 문자 인식 + 이름 정규화 |
+| `auto_node_generator.py` | 노드 디렉토리 생성, 메타데이터 JSON 생성 |
+| `auto_sub_image_extractor.py` | PointGrounding + DINOv3 복도 프레임 매칭 + crop 추출 |
+| `validate_output.py` | 출력 형식 검증 |
+
+---
+
 ## 🚀 빠른 시작
 
 ```bash
@@ -247,6 +334,15 @@ python deploy/ws_proxy_with_memory.py
 ---
 
 ## 📋 업데이트 로그
+
+### v2.2.0
+
+- **🆕 자동 맵 생성 모듈**：`auto_mapper/` 모듈 신설, 이미지 시퀀스에서 위상 그래프를 자동 생성
+  - 3단계 Pipeline：VPR 노드 생성 → 의미 보강 → 연결 생성
+  - Qwen3.5 vLLM 추론 백엔드
+  - DINOv3 복도 중간 프레임 매칭 + 헝가리안 알고리즘
+  - 4카메라 병렬 vLLM 호출(전체 315s→238s)
+  - 출력은 `merged_labeled_data/`와 완전 호환
 
 ### v2.1.0 (문서 동기화)
 

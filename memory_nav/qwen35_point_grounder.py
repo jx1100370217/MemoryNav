@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Qwen3.5-9B 打点模块 - 支持 vLLM HTTP 和子进程两种后端
+Qwen3.5-9B 打点模块 v2 - vLLM HTTP (并行) + 子进程 (串行) 双后端
 
 优先使用 vLLM HTTP API (与 auto_landmark_namer 共享同一个 vLLM 服务)，
 避免子进程重复加载模型导致 GPU 显存不足。
@@ -23,6 +23,7 @@ import base64
 import os
 import re
 from typing import Dict, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import cv2
 import numpy as np
@@ -457,12 +458,12 @@ class Qwen35PointGrounder:
                           landmark_name: str,
                           target_camera: str = None) -> Dict:
         """
-        在指定相机（或所有相机）上执行打点
+        在所有相机上并行执行打点 (v2: vLLM continuous batching 并行)
 
         Args:
             camera_images: {"camera_1": img, "camera_2": img, ...}
             landmark_name: 地标名称
-            target_camera: 指定相机 (如 "camera_1")，None 则遍历所有相机
+            target_camera: 指定相机优先 (如 "camera_1")，None 则遍历所有相机
 
         Returns:
             {
@@ -479,15 +480,60 @@ class Qwen35PointGrounder:
         else:
             cameras_to_try = sorted(camera_images.keys())
 
+        valid_cameras = [c for c in cameras_to_try if c in camera_images]
+        if not valid_cameras:
+            return {
+                "success": False,
+                "camera_name": "",
+                "point": None,
+                "point_pixel": None,
+                "confidence": 0.0,
+                "error": f"No valid cameras for landmark '{landmark_name}'",
+            }
+
+        # vLLM 后端: 并行提交所有 camera 请求
+        if self._backend == "vllm" and len(valid_cameras) > 1:
+            def _predict_one(cam_name):
+                result = self.predict(camera_images[cam_name], landmark_name)
+                result["camera_name"] = cam_name
+                return result
+
+            results = []
+            with ThreadPoolExecutor(max_workers=len(valid_cameras)) as executor:
+                futures = {executor.submit(_predict_one, c): c for c in valid_cameras}
+                for future in as_completed(futures):
+                    results.append(future.result())
+
+            # 选最高置信度
+            best_result = None
+            best_confidence = -1.0
+            for r in results:
+                if r["success"] and r["confidence"] > best_confidence:
+                    best_result = r
+                    best_confidence = r["confidence"]
+
+            if best_result:
+                logger.info(f"[Qwen35] predict_on_camera 成功(parallel): camera={best_result['camera_name']}, "
+                           f"landmark='{landmark_name}', conf={best_confidence:.4f}, "
+                           f"tried={valid_cameras}")
+                return best_result
+
+            logger.warning(f"[Qwen35] predict_on_camera 全部失败(parallel): landmark='{landmark_name}', "
+                          f"tried={valid_cameras}")
+            return {
+                "success": False,
+                "camera_name": valid_cameras[0],
+                "point": None,
+                "point_pixel": None,
+                "confidence": 0.0,
+                "error": f"All cameras failed for landmark '{landmark_name}'",
+            }
+
+        # 子进程后端: 保持串行 (子进程同一时间只能处理一个请求)
         best_result = None
         best_confidence = -1.0
 
-        tried_cameras = []
-        for cam_name in cameras_to_try:
-            if cam_name not in camera_images:
-                continue
-
-            tried_cameras.append(cam_name)
+        for cam_name in valid_cameras:
             result = self.predict(camera_images[cam_name], landmark_name)
             result["camera_name"] = cam_name
 
@@ -500,14 +546,14 @@ class Qwen35PointGrounder:
         if best_result:
             logger.info(f"[Qwen35] predict_on_camera 成功: camera={best_result['camera_name']}, "
                        f"landmark='{landmark_name}', conf={best_confidence:.4f}, "
-                       f"tried={tried_cameras}")
+                       f"tried={valid_cameras}")
             return best_result
 
         logger.warning(f"[Qwen35] predict_on_camera 全部失败: landmark='{landmark_name}', "
-                      f"tried={tried_cameras}, target_camera={target_camera}")
+                      f"tried={valid_cameras}, target_camera={target_camera}")
         return {
             "success": False,
-            "camera_name": cameras_to_try[0] if cameras_to_try else "",
+            "camera_name": valid_cameras[0],
             "point": None,
             "point_pixel": None,
             "confidence": 0.0,

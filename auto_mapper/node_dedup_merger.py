@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 class NodeDedupMerger:
     """节点去重与合并器"""
 
-    def __init__(self, vpr_dedup_threshold: float = 0.80):
+    def __init__(self, vpr_dedup_threshold: float = 0.60):
         """
         Args:
             vpr_dedup_threshold: VPR 相似度超过此阈值的 node 对将被合并

@@ -41,14 +41,14 @@ class AutoMapperCore:
                  output_dir: str,
                  vpr_config_path: str,
                  start_id: int = 1,
-                 similarity_threshold: float = 0.69,
+                 similarity_threshold: float = 0.50,
                  min_frame_interval: int = 5,
                  use_qwen_naming: bool = False,
                  qwen_gpu: str = "1",
                  enable_loop_closure: bool = False,
                  loop_closure_threshold: float = 0.80,
                  semantic_detection: bool = True,
-                 vpr_dedup_threshold: float = 0.80):
+                 vpr_dedup_threshold: float = 0.60):
         self.input_dir = Path(input_dir)
         self.output_dir = Path(output_dir)
         self.start_id = start_id

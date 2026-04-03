@@ -80,7 +80,7 @@ def main():
     parser.add_argument('--output_dir', type=str, default='auto_mapper/merged_labeled_data')
     parser.add_argument('--vpr_config', type=str, default='deploy/vpr_config.yaml')
     parser.add_argument('--start_id', type=int, default=1)
-    parser.add_argument('--similarity_threshold', type=float, default=0.70)
+    parser.add_argument('--similarity_threshold', type=float, default=0.50)
     parser.add_argument('--min_frame_interval', type=int, default=5)
     parser.add_argument('--use_qwen_naming', default=True)
     parser.add_argument('--qwen_gpu', type=str, default='1')

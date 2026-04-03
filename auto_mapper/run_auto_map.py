@@ -85,6 +85,7 @@ def main():
     parser.add_argument('--use_qwen_naming', default=True)
     parser.add_argument('--qwen_gpu', type=str, default='1')
     parser.add_argument('--log_level', type=str, choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'], default='INFO')
+    parser.add_argument('--no_semantic', action='store_true', help='关闭语义增补(Phase 1.5)')
     parser.add_argument('--dry_run', action='store_true')
 
     args = parser.parse_args()
@@ -124,6 +125,7 @@ def main():
             min_frame_interval=args.min_frame_interval,
             use_qwen_naming=args.use_qwen_naming,
             qwen_gpu=args.qwen_gpu,
+            semantic_detection=not args.no_semantic,
         )
 
         print("🚀 开始自动建图...")

@@ -82,6 +82,9 @@ def _parse_json(text: str) -> Optional[dict]:
 class QwenNamingServer:
     """通过 vLLM OpenAI API 调用 Qwen3.5-9B"""
 
+    # 绕过系统代理, vLLM 是本地服务
+    _NO_PROXY = {"http": None, "https": None}
+
     def __init__(self, gpu="1", timeout=30.0,
                  base_url=None, model_name=None):
         self.gpu = gpu
@@ -99,9 +102,12 @@ class QwenNamingServer:
         """检查 vLLM 服务是否可用"""
         import requests
         try:
-            resp = requests.get(
+            import requests as _requests
+            _s = _requests.Session()
+            _s.trust_env = False
+            resp = _s.get(
                 f"{self.base_url}/models",
-                timeout=5
+                timeout=5,
             )
             if resp.status_code == 200:
                 models = resp.json().get("data", [])
@@ -134,6 +140,7 @@ class QwenNamingServer:
         if self._session is None:
             import requests
             self._session = requests.Session()
+            self._session.trust_env = False  # 不读环境变量代理(all_proxy/http_proxy等)
         return self._session
 
     def _chat(self, prompt: str, image_b64: str, max_tokens: int = 80) -> str:

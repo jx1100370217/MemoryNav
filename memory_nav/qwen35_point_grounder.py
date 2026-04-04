@@ -115,6 +115,9 @@ class Qwen35PointGrounder:
     vLLM 不可用时回退到子进程模式 (qwen3 conda 环境)。
     """
 
+    # 绕过系统代理, vLLM 是本地服务
+    _NO_PROXY = {"http": None, "https": None}
+
     def __init__(self, gpu: str = DEFAULT_GPU, timeout: float = 120.0,
                  vllm_url: str = None, vllm_model: str = None):
         """
@@ -145,7 +148,7 @@ class Qwen35PointGrounder:
         """尝试连接 vLLM 服务"""
         try:
             import requests
-            resp = requests.get(f"{self._vllm_url}/models", timeout=5)
+            _s = requests.Session(); _s.trust_env = False; resp = _s.get(f"{self._vllm_url}/models", timeout=5)
             if resp.status_code == 200:
                 models = resp.json().get("data", [])
                 model_ids = [m.get("id", "") for m in models]
@@ -264,6 +267,7 @@ class Qwen35PointGrounder:
         if self._session is None:
             import requests
             self._session = requests.Session()
+            self._session.trust_env = False  # 不读环境变量代理(all_proxy/http_proxy等)
         return self._session
 
     def _vllm_chat(self, prompt: str, image_b64: str, max_tokens: int = 64) -> str:

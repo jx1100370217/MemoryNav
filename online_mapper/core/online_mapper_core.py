@@ -42,7 +42,7 @@ from online_mapper.semantics.node_category import (
 from online_mapper.semantics.colocation_merger import ColocationMerger
 from online_mapper.geometry.junction_detector import JunctionDetector
 from online_mapper.semantics import semantic_dedup
-from online_mapper.output.merged_data_writer import MergedDataWriter
+from online_mapper.io.merged_data_writer import MergedDataWriter
 
 logger = logging.getLogger(__name__)
 

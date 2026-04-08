@@ -84,6 +84,9 @@ class VGGTDepthEstimator:
         # 同源的上一帧位姿 (供 VGGTVisualOdometry 计算相对运动)
         self.prev_extri = None
         self.prev_intri = None
+        # 当前帧 dense 点云 (camera frame, x-right y-down z-forward, 米)
+        # 供 OccupancyGrid 直接消费, 阶段 3 启用
+        self.last_points_camera = None  # HxWx3 np.float32
         try:
             from online_mapper.geometry.vggt_backend import VGGTBackend, VGGTSlidingWindow
             be = VGGTBackend.get(model_path=model_path, device=device, dtype=dtype)
@@ -109,6 +112,14 @@ class VGGTDepthEstimator:
             self.last_intri = out["intri"]
             self.prev_extri = out.get("prev_extri")
             self.prev_intri = out.get("prev_intri")
+            # world_points (VGGT-world 系) -> camera frame (last 帧)
+            try:
+                wp = out["world_points"]  # HxWx3
+                R = self.last_extri[:3, :3].astype(np.float32)
+                T = self.last_extri[:3, 3].astype(np.float32)
+                self.last_points_camera = (wp @ R.T) + T  # X_cam = R*X_w + T
+            except Exception:
+                self.last_points_camera = None
             # VGGT 输出尺寸为 518x(高), 缩回原图尺寸供下游使用
             import cv2
             h, w = bgr_image.shape[:2]

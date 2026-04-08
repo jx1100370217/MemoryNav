@@ -59,6 +59,8 @@ class OnlineMapperConfig:
 
     # occupancy
     grid_resolution: float = 0.2
+    # occ backend: "depth_row" (1D 射线) | "vggt" (dense 点云直填)
+    occ_backend: str = "vggt"
     grid_size: int = 200
 
     # 起始 ID

@@ -163,7 +163,15 @@ class OnlineMapperCore:
             self.robot_y += dtrans * math.sin(self.robot_theta)
 
             info_gain = 0.0
-            if depth_map is not None:
+            # 阶段 3: VGGT backend 用 dense 点云直填占据栅格
+            pts_cam = getattr(self.depth, "last_points_camera", None) if self.depth else None
+            depth_conf = getattr(self.depth, "last_depth_conf", None) if self.depth else None
+            if pts_cam is not None and getattr(self.cfg, "occ_backend", "vggt") == "vggt":
+                info_gain = self.occ.integrate_pointcloud(
+                    pts_cam, self.robot_x, self.robot_y, self.robot_theta,
+                    conf=depth_conf,
+                )
+            elif depth_map is not None:
                 row = depth_map[depth_map.shape[0] // 2]
                 row = row[::max(1, len(row) // 64)]
                 info_gain = self.occ.integrate(self.robot_x, self.robot_y,

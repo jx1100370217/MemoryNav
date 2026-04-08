@@ -25,12 +25,14 @@ logger = logging.getLogger(__name__)
 
 
 # Higher rank = higher priority (kept as anchor in merge)
+# 调整后: 功能区/房间作为节点的"语义角色"优先级最高,
+# SHOP 仅作品牌标识 (organization) 附加, 不应抢占 anchor 类别.
 _CATEGORY_RANK = {
-    NodeCategory.SHOP.value:              7,
-    NodeCategory.ROOM_NAMED.value:        6,
-    NodeCategory.ROOM_NUMBERED.value:     5,
-    NodeCategory.FUNCTION_AREA.value:     4,
-    NodeCategory.LANDMARK_FACILITY.value: 3,
+    NodeCategory.ROOM_NAMED.value:        7,
+    NodeCategory.ROOM_NUMBERED.value:     6,
+    NodeCategory.FUNCTION_AREA.value:     5,
+    NodeCategory.LANDMARK_FACILITY.value: 4,
+    NodeCategory.SHOP.value:              3,
     NodeCategory.JUNCTION_CROSS.value:    2,
     NodeCategory.JUNCTION_T.value:        1,
     NodeCategory.REJECT.value:            0,
@@ -108,32 +110,28 @@ class ColocationMerger:
 
     @staticmethod
     def _combined_name(anchor, other) -> Tuple[str, str]:
-        """Build merged display names CN/EN.
+        """结构化合并 anchor + other 的命名 (新方案).
 
-        SHOP+FUNCTION_AREA -> "<brand><function>" (e.g. DEEPROUTE.AI前台)
-        Otherwise: anchor name (with other in parens for log/debug).
+        通过 NodeName.merge_names 完成 category / organization /
+        nearby_plates 的融合, 写回 anchor.name_struct, 然后 render
+        display_cn / display_en. 不再做字符串拼接.
         """
-        cn_a = getattr(anchor, "position_name", "") or ""
-        cn_b = getattr(other, "position_name", "") or ""
-        en_a = getattr(anchor, "position_name_eng", "") or cn_a
-        en_b = getattr(other, "position_name_eng", "") or cn_b
-
-        cat_a = getattr(anchor, "category", "")
-        cat_b = getattr(other, "category", "")
-
-        # Strip dedup suffix _N from secondary for clean concat
-        import re
-        cn_b_clean = re.sub(r"_\d+$", "", cn_b)
-        en_b_clean = re.sub(r"_\d+$", "", en_b)
-
-        if cat_a == NodeCategory.SHOP.value and cat_b in (
-                NodeCategory.FUNCTION_AREA.value,
-                NodeCategory.LANDMARK_FACILITY.value,
-                NodeCategory.ROOM_NAMED.value,
-                NodeCategory.ROOM_NUMBERED.value):
-            return f"{cn_a}{cn_b_clean}", f"{en_a} {en_b_clean}".strip()
-        # Default: keep anchor name
-        return cn_a, en_a
+        from online_mapper.semantics.node_naming import NodeName, merge_names
+        a = getattr(anchor, "name_struct", None)
+        b = getattr(other, "name_struct", None)
+        # 兼容: 没有 name_struct 时回退到 anchor 原 position_name
+        if a is None and b is None:
+            cn = getattr(anchor, "position_name", "") or ""
+            return cn, getattr(anchor, "position_name_eng", "") or cn
+        if a is None:
+            a = NodeName(category=getattr(anchor, "position_name", "") or "",
+                         category_en=getattr(anchor, "position_name_eng", "") or "")
+            anchor.name_struct = a
+        if b is None:
+            b = NodeName(category=getattr(other, "position_name", "") or "",
+                         category_en=getattr(other, "position_name_eng", "") or "")
+        merge_names(a, b)
+        return a.display_cn(), a.display_en()
 
     def merge(self,
               nodes: Dict,           # node_id -> TopoNode

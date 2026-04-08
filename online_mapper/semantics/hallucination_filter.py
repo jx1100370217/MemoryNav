@@ -413,17 +413,24 @@ class NameDeduplicator:
         new_names = {k: dict(v) for k, v in names.items()}
         alias_map: Dict[str, str] = {}
 
-        # Group by cn name (order: by frame_idx ascending so earliest wins)
+        # Group by structured (category, organization) when name_struct exists
         ordered_ids = sorted(
             new_names.keys(),
             key=lambda nid: getattr(topo_nodes.get(nid), "frame_idx", 10**9))
 
-        groups: Dict[str, List[str]] = {}
-        for nid in ordered_ids:
-            cn = new_names[nid]["cn"]
-            groups.setdefault(cn, []).append(nid)
+        def _key_for(nid):
+            node = topo_nodes.get(nid)
+            ns = getattr(node, "name_struct", None) if node else None
+            if ns is not None and (ns.category or ns.organization):
+                return ns.dedup_key()
+            return ("", new_names[nid]["cn"])
 
-        for cn, ids in groups.items():
+        groups: Dict[tuple, List[str]] = {}
+        for nid in ordered_ids:
+            groups.setdefault(_key_for(nid), []).append(nid)
+
+        for key, ids in groups.items():
+            cn = key[0] or key[1] if isinstance(key, tuple) else str(key)
             if len(ids) < 2:
                 continue
             self.stats["groups_processed"] += 1
@@ -456,8 +463,19 @@ class NameDeduplicator:
             # Step (b): suffix remaining duplicates
             if len(surviving) >= 2:
                 for i, nid in enumerate(surviving, start=1):
-                    suffixed_cn = f"{cn}_{i}"
-                    suffixed_en = f"{new_names[nid]['en']}_{i}"
+                    node = topo_nodes.get(nid)
+                    ns = getattr(node, "name_struct", None) if node else None
+                    suffix = f"_{i}"
+                    if ns is not None:
+                        ns.instance_suffix = suffix
+                        suffixed_cn = ns.display_cn()
+                        suffixed_en = ns.display_en()
+                    else:
+                        import re as _re
+                        base_cn = _re.sub(r"_\d+$", "", new_names[nid]["cn"])
+                        base_en = _re.sub(r"_\d+$", "", new_names[nid]["en"])
+                        suffixed_cn = f"{base_cn}{suffix}"
+                        suffixed_en = f"{base_en}{suffix}"
                     new_names[nid]["cn"] = suffixed_cn
                     new_names[nid]["en"] = suffixed_en
                     self.stats["suffixed"] += 1

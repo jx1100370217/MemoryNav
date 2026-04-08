@@ -27,6 +27,10 @@ from online_mapper.topology.frontier_nbv import FrontierNBV
 from online_mapper.semantics.open_set_detector import OpenSetDetector
 from online_mapper.semantics.scene_graph import SceneGraph, SceneObject
 from online_mapper.semantics.door_plate_tracker import DoorPlateTracker, PlateObservation
+from online_mapper.semantics.node_naming import (
+    NodeName, merge_names, is_brand_like, select_organization,
+    resolve_global_uniqueness,
+)
 from online_mapper.semantics.hallucination_filter import (
     QwenVerifier, MultiFrameVoter, NameVote, NameDeduplicator,
     STRICT_DETECT_TEXT_PROMPT,
@@ -291,10 +295,18 @@ class OnlineMapperCore:
                             logger.debug(f"junction detect fail: {e}")
 
                     # ---- 已确认的 plate 名 (本帧 + 投票通过) ----
+                    # 优先级: functional/room/CJK plate > brand-like Latin
+                    # (避免 keyframe 因为先看到 NEUMANN 就被误标为 SHOP)
                     confirmed_plate = None
                     plate_text = None
                     plate_verified = False
-                    for name in self._frame_plate_hits.get(fidx, set()):
+                    hits = list(self._frame_plate_hits.get(fidx, set()))
+                    def _hit_priority(name):
+                        if not self.plate_voter.is_confirmed(name):
+                            return -1
+                        return 0 if is_brand_like(name) else 1
+                    hits.sort(key=_hit_priority, reverse=True)
+                    for name in hits:
                         if self.plate_voter.is_confirmed(name):
                             confirmed_plate = name
                             plate_text = name
@@ -358,6 +370,22 @@ class OnlineMapperCore:
                     node.position_name = decision.final_name_cn
                     node.position_name_eng = decision.final_name_en
                     node.category = decision.category.value
+                    # ---- 结构化命名: 区分 SHOP (brand 作 organization) 与其他 ----
+                    if decision.category == NodeCategory.SHOP:
+                        node.name_struct = NodeName(
+                            organization=decision.final_name_cn,
+                        )
+                    else:
+                        node.name_struct = NodeName(
+                            category=decision.final_name_cn,
+                            category_en=decision.final_name_en,
+                        )
+                    # 收集本帧的 GD landmark 进 nearby_landmarks
+                    for c, dets in cam_objects.items():
+                        for d in dets:
+                            lab = d.get("label")
+                            if lab and lab not in node.name_struct.nearby_landmarks:
+                                node.name_struct.nearby_landmarks.append(lab)
                     self.topo.add_node(node)
                     self.node_features[nid] = feats
                     self.node_frame_idx[nid] = fidx
@@ -549,6 +577,9 @@ class OnlineMapperCore:
                 self.metrics["plate_drops_category"] += 1
                 logger.info(f"[DoorPlate-DROP-CATEGORY] '{vote_key}' {decision.reason}")
                 continue
+            # 第一遍: 跳过 brand-like SHOP, 留到第二遍 attach 处理
+            if decision.category == NodeCategory.SHOP and is_brand_like(vote_key):
+                continue
             if decision.final_name_cn in already_used:
                 self.metrics.setdefault("plate_drops_already_attached", 0)
                 self.metrics["plate_drops_already_attached"] += 1
@@ -566,6 +597,13 @@ class OnlineMapperCore:
             node.position_name = decision.final_name_cn
             node.position_name_eng = decision.final_name_en
             node.category = decision.category.value
+            if decision.category == NodeCategory.SHOP:
+                node.name_struct = NodeName(organization=decision.final_name_cn)
+            else:
+                node.name_struct = NodeName(
+                    category=decision.final_name_cn,
+                    category_en=decision.final_name_en,
+                )
             self.topo.add_node(node)
             self.node_features[nid] = self._extract_features(obs.cameras)
             self.node_frame_idx[nid] = obs.frame_idx
@@ -576,6 +614,93 @@ class OnlineMapperCore:
             self.scene_graph.add_node(nid, room=obs.name_cn or "unknown", objects=[])
             logger.info(f"[DoorPlate] node {nid} '{obs.name_cn or obs.text}' "
                         f"frame={obs.frame_idx} area={obs.area:.0f}")
+
+        # ============ 第二遍: brand-like plate attach to nearby functional node ============
+        ATTACH_GAP = 12
+        for key, obs in self.door_tracker.all_best().items():
+            if obs is None:
+                continue
+            if obs.text and _re3.fullmatch(r"[A-Za-z][A-Za-z0-9\.\- &']{3,30}", obs.text):
+                vote_key = obs.text
+            else:
+                vote_key = obs.name_cn or obs.text
+            if vote_key not in confirmed:
+                continue
+            if not is_brand_like(vote_key):
+                continue
+            # 找帧距最近的"非 SHOP / 非空 category"的 node
+            nearest_nid = None
+            nearest_gap = ATTACH_GAP + 1
+            for nid_existing, n_existing in self.topo.nodes.items():
+                ts_e = getattr(n_existing, "name_struct", None)
+                # target 必须有 functional/room/landmark category 才能接受 brand attach
+                if ts_e is None or not ts_e.category:
+                    continue
+                gap = abs(n_existing.frame_idx - obs.frame_idx)
+                if gap < nearest_gap:
+                    nearest_gap = gap
+                    nearest_nid = nid_existing
+            if nearest_nid is not None and nearest_gap <= ATTACH_GAP:
+                target = self.topo.nodes[nearest_nid]
+                ts = target.name_struct
+                replaced_org = False
+                if not ts.organization:
+                    ts.organization = vote_key
+                    replaced_org = True
+                elif vote_key != ts.organization and vote_key not in ts.nearby_plates:
+                    new_votes = len(self.plate_voter.votes_for(vote_key))
+                    old_votes = len(self.plate_voter.votes_for(ts.organization))
+                    if new_votes > old_votes * 1.5:
+                        ts.nearby_plates.append(ts.organization)
+                        ts.organization = vote_key
+                        replaced_org = True
+                    else:
+                        ts.nearby_plates.append(vote_key)
+                # 重定位 (仅显示层): 把 target 的 timestamp/cameras 改成 brand
+                # 门牌 bbox 最大的那一帧 — 输出最清晰的视角.
+                # frame_idx / pose 不变, 避免触发 coloc merger 错误合并.
+                if replaced_org:
+                    target.timestamp = obs.timestamp
+                    target.cameras = dict(obs.cameras)
+                    logger.info(f"[DoorPlate-RELOCATE-DISPLAY] node {nearest_nid} "
+                                f"display ts -> {obs.timestamp} "
+                                f"(brand '{vote_key}' best view); "
+                                f"topology frame_idx stays at {target.frame_idx}")
+                target.position_name = ts.display_cn()
+                target.position_name_eng = ts.display_en()
+                self.metrics.setdefault("plate_attached_to_keyframe", 0)
+                self.metrics["plate_attached_to_keyframe"] += 1
+                logger.info(f"[DoorPlate-ATTACH] brand '{vote_key}' -> "
+                            f"node {nearest_nid} (gap={nearest_gap}, "
+                            f"display='{target.position_name}')")
+                continue
+            # 无 nearby functional node: 创建独立 SHOP node
+            decision = self.category_clf.classify(
+                plate_text=vote_key, plate_text_verified=True,
+                junction_kind=JunctionKind.UNKNOWN,
+            )
+            if decision.category == NodeCategory.REJECT:
+                continue
+            nid = str(self.next_node_id)
+            self.next_node_id += 1
+            node = TopoNode(
+                node_id=nid, timestamp=obs.timestamp, frame_idx=obs.frame_idx,
+                cameras=dict(obs.cameras),
+                landmark_name=decision.final_name_cn,
+                room=decision.final_name_cn)
+            node.position_name = decision.final_name_cn
+            node.position_name_eng = decision.final_name_en
+            node.category = decision.category.value
+            node.name_struct = NodeName(organization=vote_key)
+            node.position_name = node.name_struct.display_cn()
+            node.position_name_eng = node.name_struct.display_en()
+            self.topo.add_node(node)
+            self.node_features[nid] = self._extract_features(obs.cameras)
+            self.node_frame_idx[nid] = obs.frame_idx
+            self.pose_graph.add_node(nid, obs.pose[0], obs.pose[1], obs.pose[2])
+            self.scene_graph.add_node(nid, room=obs.name_cn or "unknown", objects=[])
+            logger.info(f"[DoorPlate-SHOP-STANDALONE] {nid} '{vote_key}' "
+                        f"frame={obs.frame_idx}")
 
     # ------------------------------------------------------------------
     def _finalize(self):
@@ -619,12 +744,14 @@ class OnlineMapperCore:
 
         # 3. 写出 base node 目录
         for nid, node in self.topo.nodes.items():
+            ns = getattr(node, "name_struct", None)
             self.writer.write_node(
                 node_id=nid, timestamp=node.timestamp,
                 cameras=node.cameras,
                 position_name=names[nid]["cn"],
                 position_name_eng=names[nid]["en"],
-                next_positions=[],  # 先空, 后面 ConnectionBuilder 填
+                next_positions=[],
+                name_struct=ns.to_dict() if ns is not None else None,
             )
 
         # 4. ConnectionBuilder: 真实 next_positions
@@ -829,6 +956,19 @@ class OnlineMapperCore:
 
     # ------------------------------------------------------------------
     def _generate_names(self):
+        # 优先从结构化 name_struct 渲染 display name; 兼容旧 position_name
+        out = {}
+        for nid, node in self.topo.nodes.items():
+            ns = getattr(node, "name_struct", None)
+            if ns is not None and (ns.category or ns.organization):
+                out[nid] = {"cn": ns.display_cn(), "en": ns.display_en()}
+                continue
+            cn = getattr(node, "position_name", None) or node.landmark_name or f"节点_{nid}"
+            en = getattr(node, "position_name_eng", None) or ""
+            out[nid] = {"cn": cn, "en": en}
+        return out
+
+    def _generate_names_legacy(self):
         """直接采用分类器在 keyframe 时已经决定的最终名.
         EN 字段确保是真正的英文 (走 cn_to_en map)."""
         names = {}

@@ -199,8 +199,11 @@ merged_labeled_data_old/
 memory_test_data-*/
 memory_test_data/
 
-# online_mapper runtime outputs (generated artifacts)
-online_mapper/output/
+# online_mapper runtime outputs (generated artifacts) — ignore runtime dirs
+# but keep the python source files at top level of the package
+online_mapper/output/*/
+!online_mapper/output/__init__.py
+!online_mapper/output/merged_data_writer.py
 
 # Local pretrained model weights (not tracked)
 pretrained/

@@ -164,59 +164,12 @@ class ThresholdedSubImageExtractor(AutoSubImageExtractor):
             matches.append((cam_id, nb_id, sim))
             logger.info(f"  KEEP {cam_id}->{nb_id} sim={sim:.3f}")
 
-        # ---- Step 5: 选择 crop 源帧 ----
-        # 当 node 位于房间内 (e.g. 前台 / 关爱室) 时, node 自身相机看到的是
-        # 房间陈设, 不是 "通道正中间位置 + 景深" 的走廊视角. 改用 my_frame_idx
-        # 与 nb_frame_idx 之间的走廊中间帧, 取 cam_id 同方向相机, 重新打点 +
-        # 裁剪. 这样输出的 crop 是机器人沿走廊行进过程中正对 nb 方向的视角.
-        def _pick_crop_source(cam_id, nb_id):
-            """返回 (img, cx, cy, ts) 用于 _save_crops; 失败时回退 node 自身."""
-            fallback = (*cam_crop_cache[cam_id], timestamp)
-            if not use_corridor:
-                return fallback
-            nb_obj = next((n for n in neighbor_nodes if n["position_id"] == nb_id), None)
-            if nb_obj is None:
-                return fallback
-            nb_fi = nb_obj.get("frame_index")
-            if nb_fi is None or my_frame_idx is None:
-                return fallback
-            f_lo = min(my_frame_idx, nb_fi)
-            f_hi = max(my_frame_idx, nb_fi)
-            mids = list(range(f_lo + 1, f_hi))
-            if not mids or len(mids) > self.MAX_CORRIDOR_FRAMES:
-                return fallback
-            # 取走廊中点帧 (机器人在两 node 之间走到一半时的视角)
-            mid_idx = mids[len(mids) // 2]
-            try:
-                frame = all_frames[mid_idx]
-            except (IndexError, TypeError):
-                return fallback
-            mid_path = frame["images"].get(cam_id)
-            if not mid_path:
-                return fallback
-            mid_img = cv2.imread(mid_path)
-            if mid_img is None:
-                return fallback
-            try:
-                r = self._grounder.predict(mid_img, self.POINT_PROMPT)
-            except Exception as e:
-                logger.debug(f"corridor grounder fail: {e}")
-                return fallback
-            if not (r and r.get("success") and r.get("point")):
-                return fallback
-            mh, mw = mid_img.shape[:2]
-            mcx = int(r["point"][0] * mw)
-            mcy = int(r["point"][1] * mh)
-            mcx, mcy = self._fix_point_y(mcx, mcy, mh, mw)
-            logger.info(f"  [CorridorCrop] {cam_id}->{nb_id} use mid frame "
-                        f"{mid_idx} (ts={frame['timestamp']}) point=({mcx},{mcy})")
-            return (mid_img, mcx, mcy, frame["timestamp"])
-
+        # ---- Step 5: save crops + return next_positions ----
         next_positions = []
         for cam_id, nb_id, sim in matches:
-            src_img, src_cx, src_cy, src_ts = _pick_crop_source(cam_id, nb_id)
+            cam_img, cx, cy = cam_crop_cache[cam_id]
             crop_paths, norm_boxes, big_crop_img = self._save_crops(
-                src_img, (src_cx, src_cy), node_dir, src_ts, cam_id, nb_id)
+                cam_img, (cx, cy), node_dir, timestamp, cam_id, nb_id)
             if not crop_paths:
                 continue
 

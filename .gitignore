@@ -198,3 +198,6 @@ merged_labeled_data_old/
 # Test data directories with dash suffix
 memory_test_data-*/
 memory_test_data/
+
+# online_mapper runtime outputs (generated artifacts)
+online_mapper/output/

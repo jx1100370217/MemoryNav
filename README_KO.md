@@ -72,7 +72,7 @@ MemoryNav/
 │   └── memory_visualization_server.py  # 시각화 서비스 (서브 이미지 + 포인팅 + 차폐 감지)
 ├── pretrained/                     # 사전 학습 모델 (YOLOv8n, DINOv3 등)
 ├── merged_labeled_data/            # 메모리 어노테이션 데이터
-├── auto_mapper/                    # 자동 맵 생성 모듈
+├── offline_mapper/                 # 🗺️ 오프라인 맵 생성 모듈 (구 auto_mapper)
 │   ├── run_auto_map.py             # 엔트리 스크립트
 │   ├── auto_mapper_core.py         # 코어 컨트롤러 (3단계 Pipeline)
 │   ├── node_distance_estimator.py  # VPR 노드 거리 추정
@@ -80,10 +80,33 @@ MemoryNav/
 │   ├── semantic_node_detector.py   # 도어플레이트/표지판 문자 인식
 │   ├── auto_node_generator.py      # 노드 디렉토리 및 메타데이터 생성
 │   ├── auto_sub_image_extractor.py # 그라운딩 crop + 복도 프레임 매칭
-│   └── validate_output.py         # 출력 형식 검증
+│   └── validate_output.py          # 출력 형식 검증
+├── online_mapper/                  # 🛰️ 온라인 능동 맵 생성 모듈 (3계층 아키텍처)
+│   ├── run_online_map.py           # 엔트리 스크립트
+│   ├── config.py                   # 글로벌 설정 (OnlineMapperConfig)
+│   ├── core/online_mapper_core.py  # ⭐ 메인 오케스트레이터 (스트리밍 루프)
+│   ├── geometry/                   # Geometry 계층
+│   │   ├── depth_estimator.py      #   Depth-Anything-V2 래퍼
+│   │   ├── visual_odometry.py      #   ORB + EssentialMatrix VO
+│   │   ├── pose_graph.py           #   scipy LM 포즈 그래프
+│   │   ├── junction_detector.py    #   4-카메라 깊이 교차로 판정
+│   │   └── occupancy.py            #   2D 점유 그리드
+│   ├── topology/                   # Topology 계층
+│   │   ├── keyframe_selector.py    #   다중 트리거 키프레임 선택
+│   │   ├── loop_closure.py         #   자동 임계값 + ORB 기하 검증 루프 클로저
+│   │   ├── connection_builder.py   #   next_positions 생성기 (offline_mapper 서브클래스)
+│   │   └── graph.py                #   TopoGraph / TopoNode
+│   └── semantics/                  # Semantics 계층
+│       ├── open_set_detector.py    #   Grounding-DINO 래퍼
+│       ├── door_plate_tracker.py   #   도어플레이트 대표 프레임 선택
+│       ├── hallucination_filter.py # ⭐ STRICT 프롬프트 + QwenVerifier + MultiFrameVoter
+│       ├── node_category.py        # ⭐ 7 카테고리 화이트리스트 분류기 + CN/EN 맵
+│       ├── colocation_merger.py    # ⭐ 동일 위치 노드 병합
+│       └── scene_graph.py          #   계층적 씬 그래프
 ├── tests/
 │   └── test_memory_ws.py           # WebSocket 통합 테스트
 └── docs/
+    └── online_mapper.md            # 📘 online_mapper 전체 설계 문서 (13 장)
 ```
 
 ---
@@ -180,9 +203,33 @@ camera_3 또는 camera_4(후방 향)가 매칭에 성공한 경우, 전진 동�
 
 ---
 
-## 🗺️ 자동 맵 생성
+## 🗂️ 맵 생성 모듈 비교
 
-자동 맵 생성 모듈(`auto_mapper/`)은 로봇이 촬영한 이미지 시퀀스에서 위상 내비게이션 그래프를 자동으로 생성합니다. 수동 어노테이션이 필요 없습니다.
+MemoryNav는 서로 **상호 보완**하는 두 개의 맵 생성 모듈을 제공합니다:
+
+| 차원 | `offline_mapper/` (오프라인) | `online_mapper/` (온라인 능동) |
+|---|---|---|
+| **포지셔닝** | 녹화 완료 후 일괄 후처리 | 로봇 주행 중 스트리밍 의사결정 |
+| **시간적 가정** | 전체 프레임 가시 | "도달한" 프레임만 |
+| **메인 루프** | 3 단계 Pipeline (Phase1 → 1.5 → 2) | 프레임별: geometry → VPR → 루프 → 플레이트 스캔 → KF 트리거 → 분류 → 노드 생성 |
+| **키프레임 전략** | VPR 유사도 + 최소 프레임 간격 | VPR + 누적 병진 + 누적 회전 + 정보 이득 + 교차로 + 시맨틱 화이트리스트 |
+| **루프 클로저** | 시작-끝 비교 (선택적) | 전역 VPR + ORB 기하 검증, 매 프레임 |
+| **명명** | Qwen describe_scene / detect_text (단일 프레임) | 다중 프레임 투표 + 2차 검증 + 카테고리 화이트리스트 + CN/EN 이중 언어 |
+| **노드 필터** | 없음 (모든 VPR 트리거가 노드 생성) | 7 카테고리 화이트리스트, 장식 벽/화분/빈 복도 거부 |
+| **환각 방어** | 없음 | STRICT 프롬프트 + QwenVerifier + MultiFrameVoter + 부분 문자열 변이 병합 |
+| **출력 스키마** | `merged_labeled_data/` | **완전 호환** `merged_labeled_data/` + 추가 `scene_graph.json` / `pose_graph.json` / `online_mapping_log.jsonl` / `metrics.json` |
+| **코드 관계** | 독립형 | `offline_mapper.AutoSubImageExtractor` / `AutoLandmarkNamer` / `NodeDistanceEstimator` 서브클래싱 및 재사용 (offline_mapper 수정 없음) |
+
+두 모듈 모두 **동일한 출력 스키마**를 가지며 `deploy/build_memory.sh`로 직접 메모리 구축에 사용할 수 있습니다.
+
+전체 online_mapper 설계 문서: **[`docs/online_mapper.md`](docs/online_mapper.md)** (13 장, 약 47k 문자)
+online_mapper 이터레이션 기록 (r1→r6): **[`online_mapper/RESULTS.md`](online_mapper/RESULTS.md)**
+
+---
+
+## 🗺️ 오프라인 맵 생성 (offline_mapper)
+
+오프라인 맵 생성 모듈(`offline_mapper/`, 구 `auto_mapper`)은 로봇이 촬영한 이미지 시퀀스에서 위상 내비게이션 그래프를 자동으로 생성합니다. 수동 어노테이션이 필요 없습니다.
 
 ### 3단계 Pipeline
 
@@ -211,9 +258,9 @@ Phase 2: 연결 생성
 ### 사용 방법
 
 ```bash
-python auto_mapper/run_auto_map.py \
+python offline_mapper/run_auto_map.py \
     --input_dir memory_test_data \
-    --output_dir auto_mapper/merged_labeled_data \
+    --output_dir offline_mapper/merged_labeled_data \
     --vpr_config deploy/vpr_config.yaml
 ```
 
@@ -222,7 +269,7 @@ python auto_mapper/run_auto_map.py \
 | 파라미터 | 기본값 | 설명 |
 |---------|--------|------|
 | `--input_dir` | `memory_test_data` | 입력 이미지 디렉토리 |
-| `--output_dir` | `auto_mapper/merged_labeled_data` | 출력 디렉토리 |
+| `--output_dir` | `offline_mapper/merged_labeled_data` | 출력 디렉토리 |
 | `--vpr_config` | `deploy/vpr_config.yaml` | VPR 설정 파일 |
 | `--similarity_threshold` | `0.70` | VPR 유사도 임계값 |
 | `--min_frame_interval` | `5` | 최소 프레임 간격 |
@@ -240,14 +287,14 @@ python auto_mapper/run_auto_map.py \
 수동 어노테이션 `merged_labeled_data/`와 완전 호환。자동 생성 데이터로 바로 메모리 구축：
 
 ```bash
-bash deploy/build_memory.sh --data_dir auto_mapper/merged_labeled_data
+bash deploy/build_memory.sh --data_dir offline_mapper/merged_labeled_data
 ```
 
 ### 코어 컴포넌트
 
 | 컴포넌트 | 설명 |
 |---------|------|
-| `auto_mapper_core.py` | 코어 컨트롤러, 3단계 Pipeline 편성 |
+| `offline_mapper/auto_mapper_core.py` | 코어 컨트롤러, 3단계 Pipeline 편성 |
 | `node_distance_estimator.py` | VPR 특징 비교, 새 노드 생성 판정 |
 | `auto_landmark_namer.py` | Qwen3.5 vLLM 장면 기술 + 랜드마크 명명 |
 | `semantic_node_detector.py` | 도어플레이트/표지판 문자 인식 + 이름 정규화 |
@@ -335,9 +382,21 @@ python deploy/ws_proxy_with_memory.py
 
 ## 📋 업데이트 로그
 
+### v2.3.0
+
+- **🛰️ 온라인 능동 맵 생성 모듈** (`online_mapper/`): 3 계층 아키텍처 (Geometry + Topology + Semantics) 기반의 스트리밍 온라인 맵 생성 모듈 신설, `offline_mapper/`와 상호 보완
+  - **Geometry 계층**: 단안 ORB+EssentialMatrix VO, Depth-Anything-V2, scipy LM 포즈 그래프, 2D 점유 그리드, 4-카메라 깊이 교차로 감지
+  - **Topology 계층**: 다중 트리거 키프레임, 자동 임계값 + ORB 기하 검증 전역 루프 클로저, 공간 KNN ∪ 시간 인접 인접성 재구축
+  - **Semantics 계층**: STRICT 프롬프트 + QwenVerifier 2차 검증 + MultiFrameVoter 다중 프레임 투표 + 부분 문자열 변이 병합 + 7 카테고리 화이트리스트 + ColocationMerger 동일 위치 병합 + CN/EN 이중 언어 명명 + NameDeduplicator 접미사 중복 해결
+  - 출력 스키마는 `offline_mapper/`와 100% 호환, 추가로 `scene_graph.json` / `pose_graph.json` / `online_mapping_log.jsonl` / `metrics.json` 생성
+  - **테스트 데이터 (49 프레임) 최종 결과**: 고품질 노드 5 개 (인쇄 구역 / 리셉션 / NEUMANN 전기실 / 케어 룸 / DEEPROUTE.AI 리셉션), 환각 0 / 중복 0 / 루프 클로저 2 회, validator 5/5 통과
+  - 전체 설계 문서: **[`docs/online_mapper.md`](docs/online_mapper.md)**
+  - 이터레이션 기록 (r1→r6): [`online_mapper/RESULTS.md`](online_mapper/RESULTS.md)
+- **🔁 `auto_mapper/` → `offline_mapper/` 이름 변경**: `online_mapper/`와 짝을 맞춰 오프라인/온라인 맵 생성을 명확히 구분. 내부 클래스 이름 (`AutoMapperCore` 등)은 의도적으로 유지하고 import 경로만 이동.
+
 ### v2.2.0
 
-- **🆕 자동 맵 생성 모듈**：`auto_mapper/` 모듈 신설, 이미지 시퀀스에서 위상 그래프를 자동 생성
+- **🆕 자동 맵 생성 모듈**：`auto_mapper/` 모듈 (v2.3.0에서 `offline_mapper/`로 이름 변경) 신설, 이미지 시퀀스에서 위상 그래프를 자동 생성
   - 3단계 Pipeline：VPR 노드 생성 → 의미 보강 → 연결 생성
   - Qwen3.5 vLLM 추론 백엔드
   - DINOv3 복도 중간 프레임 매칭 + 헝가리안 알고리즘

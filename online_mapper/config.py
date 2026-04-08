@@ -54,6 +54,8 @@ class OnlineMapperConfig:
 
     # visual odometry
     enable_real_vo: bool = True
+    # vo backend: "orb" (MonoVO) | "vggt" (复用 VGGTDepthEstimator 位姿, 零额外推理)
+    vo_backend: str = "vggt"
 
     # occupancy
     grid_resolution: float = 0.2

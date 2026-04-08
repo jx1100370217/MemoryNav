@@ -19,7 +19,7 @@ from online_mapper.core.stream_loader import StreamLoader
 from online_mapper.geometry.depth_estimator import DepthEstimator, build_depth_estimator
 from online_mapper.geometry.pose_graph import PoseGraph
 from online_mapper.geometry.occupancy import OccupancyGrid
-from online_mapper.geometry.visual_odometry import MonoVO
+from online_mapper.geometry.visual_odometry import MonoVO, build_visual_odometry
 from online_mapper.topology.graph import TopoGraph, TopoNode
 from online_mapper.topology.keyframe_selector import KeyframeSelector
 from online_mapper.topology.loop_closure import LoopCloser
@@ -58,7 +58,7 @@ class OnlineMapperCore:
 
         # geometry
         self.depth = build_depth_estimator(cfg) if cfg.enable_depth else None
-        self.vo = MonoVO() if cfg.enable_real_vo else None
+        self.vo = build_visual_odometry(cfg, self.depth) if cfg.enable_real_vo else None
         self.pose_graph = PoseGraph()
         self.occ = OccupancyGrid(cfg.grid_size, cfg.grid_resolution)
 

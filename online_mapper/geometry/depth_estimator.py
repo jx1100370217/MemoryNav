@@ -53,6 +53,10 @@ class DepthEstimator:
             h, w = bgr_image.shape[:2]
             return np.ones((h, w), dtype=np.float32)
 
+    def estimate_stateless(self, bgr_image) -> np.ndarray:
+        # DA-V2 本来就是无状态的, 直接转调
+        return self.estimate(bgr_image)
+
 
 # ======================================================================
 class VGGTDepthEstimator:
@@ -77,6 +81,9 @@ class VGGTDepthEstimator:
         self.last_world_points = None
         self.last_extri = None
         self.last_intri = None
+        # 同源的上一帧位姿 (供 VGGTVisualOdometry 计算相对运动)
+        self.prev_extri = None
+        self.prev_intri = None
         try:
             from online_mapper.geometry.vggt_backend import VGGTBackend, VGGTSlidingWindow
             be = VGGTBackend.get(model_path=model_path, device=device, dtype=dtype)
@@ -100,6 +107,8 @@ class VGGTDepthEstimator:
             self.last_world_points = out["world_points"]
             self.last_extri = out["extri"]
             self.last_intri = out["intri"]
+            self.prev_extri = out.get("prev_extri")
+            self.prev_intri = out.get("prev_intri")
             # VGGT 输出尺寸为 518x(高), 缩回原图尺寸供下游使用
             import cv2
             h, w = bgr_image.shape[:2]
@@ -108,6 +117,22 @@ class VGGTDepthEstimator:
             return depth
         except Exception as e:
             logger.warning(f"VGGT estimate failed: {e}", exc_info=True)
+            h, w = bgr_image.shape[:2]
+            return np.ones((h, w), dtype=np.float32)
+
+    def estimate_stateless(self, bgr_image) -> np.ndarray:
+        """旁路调用 (junction_detector 等), 不污染滑窗与缓存的 last_extri."""
+        if not self.available or bgr_image is None:
+            h, w = (bgr_image.shape[:2] if bgr_image is not None else (1, 1))
+            return np.ones((h, w), dtype=np.float32)
+        try:
+            out = self._sw.infer_stateless(bgr_image)
+            import cv2
+            h, w = bgr_image.shape[:2]
+            return cv2.resize(out["depth"].astype(np.float32),
+                              (w, h), interpolation=cv2.INTER_LINEAR)
+        except Exception as e:
+            logger.warning(f"VGGT estimate_stateless failed: {e}")
             h, w = bgr_image.shape[:2]
             return np.ones((h, w), dtype=np.float32)
 

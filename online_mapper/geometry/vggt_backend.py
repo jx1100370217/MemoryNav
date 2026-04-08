@@ -161,28 +161,40 @@ class VGGTSlidingWindow:
         return self.backend.available
 
     def push_and_infer(self, bgr: np.ndarray) -> Dict[str, np.ndarray]:
-        """把当前帧加入滑窗并运行 VGGT, 返回最新帧的几何输出."""
+        """把当前帧加入滑窗并运行 VGGT, 返回最新帧 + 上一帧的几何输出.
+
+        关键: VGGT 每次推理位姿都规范化到窗口首帧, 所以 last 与 prev
+        必须同源 (来自同一次 forward) 才能直接做相对运动计算.
+        """
         if bgr is None:
             return {}
         self._buf.append(bgr.copy())
         out = self.backend.infer_bgr_list(list(self._buf))
         self._last_out = out
-        last = len(out["depth"]) - 1
-        return {
+        N = len(out["depth"])
+        last = N - 1
+        prev = N - 2 if N >= 2 else None
+        ret = {
             "depth":        out["depth"][last],
             "depth_conf":   out["depth_conf"][last],
             "world_points": out["world_points"][last],
             "extri":        out["extri"][last],
             "intri":        out["intri"][last],
+            "prev_extri":   out["extri"][prev] if prev is not None else None,
+            "prev_intri":   out["intri"][prev] if prev is not None else None,
         }
+        return ret
 
     def infer_stateless(self, bgr: np.ndarray) -> Dict[str, np.ndarray]:
-        """不更新滑窗, 仅用当前帧 + 已有滑窗做一次推理 (供 junction_detector 等旁路)."""
+        """单帧推理 (不入栈, 不带 buffer 上下文).
+
+        给 junction_detector 这种"只要绝对深度中位数"的旁路用 — 速度优先,
+        VGGT 单帧依然给出合理 metric depth.
+        """
         if bgr is None or not self.available:
             return {}
-        frames = list(self._buf) + [bgr]
-        out = self.backend.infer_bgr_list(frames)
-        last = len(out["depth"]) - 1
+        out = self.backend.infer_bgr_list([bgr])
+        last = 0
         return {
             "depth":        out["depth"][last],
             "depth_conf":   out["depth_conf"][last],

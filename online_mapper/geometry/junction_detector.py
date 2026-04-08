@@ -81,7 +81,7 @@ class JunctionDetector:
             if img is None:
                 continue
             try:
-                d = self.depth.estimate(img)
+                d = self.depth.estimate_stateless(img)
             except Exception as e:
                 logger.debug(f"junction depth fail {cam_id}: {e}")
                 continue

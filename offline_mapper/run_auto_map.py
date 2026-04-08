@@ -5,9 +5,9 @@
 自动建图入口脚本 v2
 
 使用方式:
-    python auto_mapper/run_auto_map.py \
+    python offline_mapper/run_auto_map.py \
         --input_dir memory_test_data \
-        --output_dir auto_mapper/merged_labeled_data \
+        --output_dir offline_mapper/merged_labeled_data \
         --start_id 1 \
         --vpr_config deploy/vpr_config.yaml \
         --use_qwen_naming
@@ -22,7 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, '/home/ubuntu/Disk/codes/jianxiong/MemoryNav')
 
-from auto_mapper.auto_mapper_core import AutoMapperCore
+from offline_mapper.offline_mapper_core import AutoMapperCore
 
 
 def setup_logging(log_level: str = "INFO") -> None:
@@ -77,11 +77,11 @@ def main():
     parser = argparse.ArgumentParser(description="MemoryNav 自动建图工具 v2")
 
     parser.add_argument('--input_dir', type=str, default='memory_test_data')
-    parser.add_argument('--output_dir', type=str, default='auto_mapper/merged_labeled_data')
+    parser.add_argument('--output_dir', type=str, default='offline_mapper/merged_labeled_data')
     parser.add_argument('--vpr_config', type=str, default='deploy/vpr_config.yaml')
     parser.add_argument('--start_id', type=int, default=1)
-    parser.add_argument('--similarity_threshold', type=float, default=0.50)
-    parser.add_argument('--min_frame_interval', type=int, default=5)
+    parser.add_argument('--similarity_threshold', type=float, default=0.525)
+    parser.add_argument('--min_frame_interval', type=int, default=1)
     parser.add_argument('--use_qwen_naming', default=True)
     parser.add_argument('--qwen_gpu', type=str, default='1')
     parser.add_argument('--log_level', type=str, choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'], default='INFO')
@@ -139,7 +139,7 @@ def main():
         # 验证
         print("\n🔍 运行输出验证...")
         try:
-            from auto_mapper.validate_output import validate_output_format
+            from offline_mapper.validate_output import validate_output_format
             result = validate_output_format(args.output_dir)
             if result['valid']:
                 print("✅ 输出格式验证通过!")

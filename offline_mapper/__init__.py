@@ -11,9 +11,9 @@ MemoryNav Auto Mapper Module
 - 格式验证
 
 使用方式：
-    python auto_mapper/run_auto_map.py \
+    python offline_mapper/run_auto_map.py \
         --input_dir memory_test_data-2 \
-        --output_dir auto_mapper/merged_labeled_data \
+        --output_dir offline_mapper/merged_labeled_data \
         --start_id 60 \
         --vpr_config deploy/vpr_config.yaml
 '''

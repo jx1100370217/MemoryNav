@@ -31,6 +31,11 @@ class OnlineMapperConfig:
     depth_model_id: str = "pretrained/depth-anything-v2-small-hf"
     depth_device: str = "cuda:0"
     enable_depth: bool = True
+    # depth backend: "da_v2" (Depth-Anything-V2-Small) | "vggt" (VGGT-1B, metric)
+    depth_backend: str = "vggt"
+    vggt_model_path: str = "pretrained/vggt-1b/model.pt"
+    vggt_window_size: int = 4
+    vggt_dtype: str = "bf16"
 
     # semantics
     enable_grounding_dino: bool = True

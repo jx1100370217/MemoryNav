@@ -204,3 +204,4 @@ online_mapper/output/
 
 # Local pretrained model weights (not tracked)
 pretrained/
+third_party/

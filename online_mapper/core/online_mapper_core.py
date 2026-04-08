@@ -16,7 +16,7 @@ sys.path.insert(0, '/home/ubuntu/Disk/codes/jianxiong/MemoryNav')
 
 from online_mapper.config import OnlineMapperConfig
 from online_mapper.core.stream_loader import StreamLoader
-from online_mapper.geometry.depth_estimator import DepthEstimator
+from online_mapper.geometry.depth_estimator import DepthEstimator, build_depth_estimator
 from online_mapper.geometry.pose_graph import PoseGraph
 from online_mapper.geometry.occupancy import OccupancyGrid
 from online_mapper.geometry.visual_odometry import MonoVO
@@ -57,7 +57,7 @@ class OnlineMapperCore:
                                          min_frame_interval=cfg.min_keyframe_frame_interval)
 
         # geometry
-        self.depth = DepthEstimator(cfg.depth_model_id, cfg.depth_device) if cfg.enable_depth else None
+        self.depth = build_depth_estimator(cfg) if cfg.enable_depth else None
         self.vo = MonoVO() if cfg.enable_real_vo else None
         self.pose_graph = PoseGraph()
         self.occ = OccupancyGrid(cfg.grid_size, cfg.grid_resolution)

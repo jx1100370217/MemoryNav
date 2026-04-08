@@ -24,7 +24,7 @@ MemoryNav 是一个面向移动机器人的视觉记忆导航系统。系统通�
 ### 核心能力
 
 - **🗺️ 离线建图** (`offline_mapper/`)：三阶段 Pipeline（VPR 节点创建 → 语义增补 → 连接生成）从图像序列全自动生成拓扑导航图，无需人工标注
-- **🛰️ 在线主动建图** (`online_mapper/`)：三层架构（Geometry+Topology+Semantics）流式在线建图，支持类别白名单、多帧投票幻觉过滤、co-location 合并、真实 VO、闭环几何验证、双语命名、空间 KNN 邻接重建；输出 schema 与 `offline_mapper/` 完全一致，详见 [`docs/online_mapper.md`](docs/online_mapper.md)
+- **🛰️ 在线主动建图** (`online_mapper/`, **v2.3.0**)：三层架构（Geometry+Topology+Semantics）流式在线建图。**VGGT-1B 几何前端**（depth + VO + 占据栅格 dense 点云 单次推理同时供给）、**结构化节点命名** `NodeName(category, organization, nearby_plates, ...)`（`前台·DEEPROUTE.AI` 取代 `DEEPROUTE.AI前台` 字符串拼接）、门牌**两阶段归属**（防 EUMANN 串扰）、ConnectionBuilder **几何方向先验**（cos 相似度 + 反向硬惩罚修复 cam→neighbor 错配）+ **走廊中点帧 crop**（修复房间内 node 视角错位）、多帧投票幻觉过滤、闭环几何验证、双语命名、空间 KNN 邻接重建；输出兼容 `offline_mapper/` schema 并新增 `category/organization/nearby_plates/nearby_landmarks` 字段。完整设计见 [`docs/online_mapper.md`](docs/online_mapper.md)
 - **🔍 多方案 VPR 定位**：支持 4 种 SOTA 视觉位置识别方案，统一配置文件一键切换
 - **🗺️ 拓扑记忆图**：自动从标注数据构建节点-边拓扑图，支持最短路径规划
 - **🔄 循环移位匹配**：4 相机循环移位算法，支持任意朝向下的定位与偏转角估计
@@ -86,32 +86,42 @@ MemoryNav/
 │   ├── auto_node_generator.py      # 节点目录与元数据生成
 │   ├── auto_sub_image_extractor.py # 打点裁剪 + 走廊中间帧匹配
 │   └── validate_output.py          # 输出格式验证
-├── online_mapper/                  # 🛰️ 在线主动建图模块 (三层架构)
-│   ├── run_online_map.py           # 在线建图入口
-│   ├── config.py                   # 全局配置 (OnlineMapperConfig)
-│   ├── core/online_mapper_core.py  # ⭐ 主编排器 (流式主循环)
-│   ├── geometry/                   # Geometry 层
-│   │   ├── depth_estimator.py      #   Depth-Anything-V2 封装
-│   │   ├── visual_odometry.py      #   ORB + EssentialMatrix VO
+├── online_mapper/                  # 🛰️ 在线主动建图模块 (v2.3.0, 三层架构)
+│   ├── run_online_map.py           # CLI 入口
+│   ├── config.py                   # 全局配置 (含 depth/vo/occ_backend 开关)
+│   ├── core/online_mapper_core.py  # ⭐ 主编排器 (~870 行 流式主循环)
+│   ├── geometry/                   # Geometry 层 (VGGT-1B 几何前端)
+│   │   ├── vggt_backend.py         # ⭐ VGGT-1B 单例 + 滑窗 (NEW v2.2)
+│   │   ├── depth_estimator.py      #   DA-V2 + VGGTDepthEstimator + 工厂
+│   │   ├── visual_odometry.py      #   MonoVO + VGGTVisualOdometry + 工厂
 │   │   ├── pose_graph.py           #   scipy LM pose graph
-│   │   ├── junction_detector.py    #   4-camera depth 路口判定
-│   │   └── occupancy.py            #   2D 占据栅格
+│   │   ├── junction_detector.py    #   4-camera depth 路口判定 (stateless)
+│   │   └── occupancy.py            #   1D ray-cast + dense 点云直填
 │   ├── topology/                   # Topology 层
 │   │   ├── keyframe_selector.py    #   多触发关键帧选择
 │   │   ├── loop_closure.py         #   auto-tune + ORB 几何验证闭环
-│   │   ├── connection_builder.py   #   next_positions 生成 (子类化 offline_mapper)
+│   │   ├── connection_builder.py   #   ⭐ next_positions: 几何方向先验 + 走廊中点 crop
 │   │   └── graph.py                #   TopoGraph / TopoNode
-│   └── semantics/                  # Semantics 层
-│       ├── open_set_detector.py    #   Grounding-DINO 封装
-│       ├── door_plate_tracker.py   #   门牌多帧代表帧选择
-│       ├── hallucination_filter.py # ⭐ STRICT prompt + QwenVerifier + MultiFrameVoter
-│       ├── node_category.py        # ⭐ 节点类别分类器 + CN/EN 映射
-│       ├── colocation_merger.py    # ⭐ 同位置节点合并
-│       └── scene_graph.py          #   层次场景图
+│   ├── semantics/                  # Semantics 层
+│   │   ├── open_set_detector.py    #   Grounding-DINO 封装
+│   │   ├── door_plate_tracker.py   #   门牌多帧代表帧选择
+│   │   ├── hallucination_filter.py # ⭐ STRICT prompt + QwenVerifier + MultiFrameVoter
+│   │   ├── node_category.py        # ⭐ 节点类别分类器 + CN/EN 映射
+│   │   ├── node_naming.py          # ⭐ 结构化命名 NodeName (NEW v2.3)
+│   │   ├── colocation_merger.py    # ⭐ 同位置合并 (用 NodeName.merge_names)
+│   │   └── scene_graph.py          #   层次场景图
+│   └── io/
+│       └── merged_data_writer.py   #   输出 merged_labeled_data + 结构化字段
+├── third_party/vggt_space/         # VGGT 源码 (.gitignore, 从 HF Space 下载)
+├── pretrained/                     # 模型权重 (.gitignore)
+│   ├── vggt-1b/                    #   facebook/VGGT-1B
+│   ├── depth-anything-v2-small-hf/ #   备用 depth backend
+│   ├── grounding-dino-base/        #   IDEA-Research/grounding-dino-base
+│   └── dinov3_vitb16.safetensors   #   VPR backbone
 ├── tests/                          # 测试
 │   └── test_memory_ws.py           # WebSocket 集成测试
 └── docs/                           # 文档
-    └── online_mapper.md            # 📘 online_mapper 完整设计文档 (13 章)
+    └── online_mapper.md            # 📘 online_mapper 完整设计文档 (v2.3.0)
 ```
 
 ---
@@ -376,8 +386,8 @@ MemoryNav 提供**两个互补**的建图模块, 分别对应两种典型使用�
 
 两者**输出 schema 一致**, 均可被 `deploy/build_memory.sh` 直接用于记忆构建.
 
-完整的 online_mapper 设计文档见 **[`docs/online_mapper.md`](docs/online_mapper.md)** (13 章, 约 47000 字).
-online_mapper 迭代历史 (r1→r6) 和详细 before/after 指标见 **[`online_mapper/RESULTS.md`](online_mapper/RESULTS.md)**.
+完整的 online_mapper 设计文档见 **[`docs/online_mapper.md`](docs/online_mapper.md)** (v2.3.0, 12 章).
+online_mapper 迭代历史 (v2.1.0 → v2.3.0) 见 [`docs/online_mapper.md` §10](docs/online_mapper.md). r1→r6 早期 metrics 见 **[`online_mapper/RESULTS.md`](online_mapper/RESULTS.md)**.
 
 ---
 

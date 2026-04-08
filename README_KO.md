@@ -81,32 +81,42 @@ MemoryNav/
 │   ├── auto_node_generator.py      # 노드 디렉토리 및 메타데이터 생성
 │   ├── auto_sub_image_extractor.py # 그라운딩 crop + 복도 프레임 매칭
 │   └── validate_output.py          # 출력 형식 검증
-├── online_mapper/                  # 🛰️ 온라인 능동 맵 생성 모듈 (3계층 아키텍처)
-│   ├── run_online_map.py           # 엔트리 스크립트
-│   ├── config.py                   # 글로벌 설정 (OnlineMapperConfig)
-│   ├── core/online_mapper_core.py  # ⭐ 메인 오케스트레이터 (스트리밍 루프)
-│   ├── geometry/                   # Geometry 계층
-│   │   ├── depth_estimator.py      #   Depth-Anything-V2 래퍼
-│   │   ├── visual_odometry.py      #   ORB + EssentialMatrix VO
+├── online_mapper/                  # 🛰️ 온라인 능동 맵 생성 모듈 (v2.3.0, 3 계층)
+│   ├── run_online_map.py           # CLI 엔트리
+│   ├── config.py                   # 글로벌 설정 (depth/vo/occ_backend 스위치)
+│   ├── core/online_mapper_core.py  # ⭐ 메인 오케스트레이터 (~870 줄)
+│   ├── geometry/                   # Geometry 계층 (VGGT-1B 기하 프론트엔드)
+│   │   ├── vggt_backend.py         # ⭐ VGGT-1B 싱글톤 + 슬라이딩 윈도우 (NEW v2.2)
+│   │   ├── depth_estimator.py      #   DA-V2 + VGGTDepthEstimator + 팩토리
+│   │   ├── visual_odometry.py      #   MonoVO + VGGTVisualOdometry + 팩토리
 │   │   ├── pose_graph.py           #   scipy LM 포즈 그래프
-│   │   ├── junction_detector.py    #   4-카메라 깊이 교차로 판정
-│   │   └── occupancy.py            #   2D 점유 그리드
+│   │   ├── junction_detector.py    #   4 카메라 깊이 교차로 (stateless)
+│   │   └── occupancy.py            #   1D ray-cast + dense 점군 직접 채움
 │   ├── topology/                   # Topology 계층
 │   │   ├── keyframe_selector.py    #   다중 트리거 키프레임 선택
-│   │   ├── loop_closure.py         #   자동 임계값 + ORB 기하 검증 루프 클로저
-│   │   ├── connection_builder.py   #   next_positions 생성기 (offline_mapper 서브클래스)
+│   │   ├── loop_closure.py         #   자동 임계값 + ORB 기하 검증
+│   │   ├── connection_builder.py   #   ⭐ next_positions: 기하 방향 사전 + 복도 중간 crop
 │   │   └── graph.py                #   TopoGraph / TopoNode
-│   └── semantics/                  # Semantics 계층
-│       ├── open_set_detector.py    #   Grounding-DINO 래퍼
-│       ├── door_plate_tracker.py   #   도어플레이트 대표 프레임 선택
-│       ├── hallucination_filter.py # ⭐ STRICT 프롬프트 + QwenVerifier + MultiFrameVoter
-│       ├── node_category.py        # ⭐ 7 카테고리 화이트리스트 분류기 + CN/EN 맵
-│       ├── colocation_merger.py    # ⭐ 동일 위치 노드 병합
-│       └── scene_graph.py          #   계층적 씬 그래프
+│   ├── semantics/                  # Semantics 계층
+│   │   ├── open_set_detector.py    #   Grounding-DINO 래퍼
+│   │   ├── door_plate_tracker.py   #   도어플레이트 대표 프레임 선택
+│   │   ├── hallucination_filter.py # ⭐ STRICT 프롬프트 + QwenVerifier + MultiFrameVoter
+│   │   ├── node_category.py        # ⭐ 노드 카테고리 분류기 + CN/EN 매핑
+│   │   ├── node_naming.py          # ⭐ 구조화 명명 NodeName (NEW v2.3)
+│   │   ├── colocation_merger.py    # ⭐ 동일 위치 병합 (NodeName.merge_names 사용)
+│   │   └── scene_graph.py          #   계층적 씬 그래프
+│   └── io/
+│       └── merged_data_writer.py   #   출력 라이터 + 구조화 필드
+├── third_party/vggt_space/         # VGGT 소스 (.gitignore, HF Space에서 다운로드)
+├── pretrained/                     # 모델 가중치 (.gitignore)
+│   ├── vggt-1b/                    #   facebook/VGGT-1B
+│   ├── depth-anything-v2-small-hf/ #   백업 depth backend
+│   ├── grounding-dino-base/        #   IDEA-Research/grounding-dino-base
+│   └── dinov3_vitb16.safetensors   #   VPR 백본
 ├── tests/
 │   └── test_memory_ws.py           # WebSocket 통합 테스트
 └── docs/
-    └── online_mapper.md            # 📘 online_mapper 전체 설계 문서 (13 장)
+    └── online_mapper.md            # 📘 online_mapper 전체 설계 문서 (v2.3.0)
 ```
 
 ---

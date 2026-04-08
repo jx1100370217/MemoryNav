@@ -81,32 +81,42 @@ MemoryNav/
 │   ├── auto_node_generator.py      # ノードディレクトリ・メタデータ生成
 │   ├── auto_sub_image_extractor.py # グラウンディングcrop + 廊下フレームマッチング
 │   └── validate_output.py          # 出力フォーマット検証
-├── online_mapper/                  # 🛰️ オンライン能動建図モジュール (3層アーキテクチャ)
-│   ├── run_online_map.py           # エントリースクリプト
-│   ├── config.py                   # グローバル設定 (OnlineMapperConfig)
-│   ├── core/online_mapper_core.py  # ⭐ メインオーケストレーター (ストリーミングループ)
-│   ├── geometry/                   # Geometry 層
-│   │   ├── depth_estimator.py      #   Depth-Anything-V2 ラッパー
-│   │   ├── visual_odometry.py      #   ORB + EssentialMatrix VO
+├── online_mapper/                  # 🛰️ オンライン能動建図モジュール (v2.3.0, 3 層)
+│   ├── run_online_map.py           # CLI エントリ
+│   ├── config.py                   # グローバル設定 (depth/vo/occ_backend スイッチ)
+│   ├── core/online_mapper_core.py  # ⭐ メインオーケストレーター (~870 行)
+│   ├── geometry/                   # Geometry 層 (VGGT-1B 幾何フロントエンド)
+│   │   ├── vggt_backend.py         # ⭐ VGGT-1B シングルトン + スライディングウィンドウ (NEW v2.2)
+│   │   ├── depth_estimator.py      #   DA-V2 + VGGTDepthEstimator + ファクトリ
+│   │   ├── visual_odometry.py      #   MonoVO + VGGTVisualOdometry + ファクトリ
 │   │   ├── pose_graph.py           #   scipy LM ポーズグラフ
-│   │   ├── junction_detector.py    #   4 カメラ深度による交差点判定
-│   │   └── occupancy.py            #   2D 占有グリッド
+│   │   ├── junction_detector.py    #   4 カメラ深度による交差点判定 (stateless)
+│   │   └── occupancy.py            #   1D ray-cast + dense 点群直接充填
 │   ├── topology/                   # Topology 層
 │   │   ├── keyframe_selector.py    #   多トリガー キーフレーム選択
 │   │   ├── loop_closure.py         #   自動閾値 + ORB 幾何検証ループクロージャ
-│   │   ├── connection_builder.py   #   next_positions 生成 (offline_mapper のサブクラス)
+│   │   ├── connection_builder.py   #   ⭐ next_positions: 幾何方向先験 + 廊下中点 crop
 │   │   └── graph.py                #   TopoGraph / TopoNode
-│   └── semantics/                  # Semantics 層
-│       ├── open_set_detector.py    #   Grounding-DINO ラッパー
-│       ├── door_plate_tracker.py   #   ドアプレートの代表フレーム選択
-│       ├── hallucination_filter.py # ⭐ STRICT プロンプト + QwenVerifier + MultiFrameVoter
-│       ├── node_category.py        # ⭐ 7 カテゴリー ホワイトリスト分類器 + CN/EN マップ
-│       ├── colocation_merger.py    # ⭐ 同一位置ノードマージ
-│       └── scene_graph.py          #   階層的シーングラフ
+│   ├── semantics/                  # Semantics 層
+│   │   ├── open_set_detector.py    #   Grounding-DINO ラッパー
+│   │   ├── door_plate_tracker.py   #   ドアプレート代表フレーム選択
+│   │   ├── hallucination_filter.py # ⭐ STRICT プロンプト + QwenVerifier + MultiFrameVoter
+│   │   ├── node_category.py        # ⭐ ノードカテゴリー分類器 + CN/EN マップ
+│   │   ├── node_naming.py          # ⭐ 構造化命名 NodeName (NEW v2.3)
+│   │   ├── colocation_merger.py    # ⭐ 同一位置マージ (NodeName.merge_names を使用)
+│   │   └── scene_graph.py          #   階層的シーングラフ
+│   └── io/
+│       └── merged_data_writer.py   #   出力ライター + 構造化フィールド
+├── third_party/vggt_space/         # VGGT ソース (.gitignore, HF Space からダウンロード)
+├── pretrained/                     # モデル重み (.gitignore)
+│   ├── vggt-1b/                    #   facebook/VGGT-1B
+│   ├── depth-anything-v2-small-hf/ #   バックアップ depth backend
+│   ├── grounding-dino-base/        #   IDEA-Research/grounding-dino-base
+│   └── dinov3_vitb16.safetensors   #   VPR バックボーン
 ├── tests/
 │   └── test_memory_ws.py           # WebSocket統合テスト
 └── docs/
-    └── online_mapper.md            # 📘 online_mapper 完全設計ドキュメント (13 章)
+    └── online_mapper.md            # 📘 online_mapper 完全設計ドキュメント (v2.3.0)
 ```
 
 ---
@@ -222,8 +232,8 @@ MemoryNav は**相補的な 2 つ**の建図モジュールを提供します:
 
 両者の**出力スキーマは同一**で、いずれも `deploy/build_memory.sh` で直接記憶構築に使用できます。
 
-完全な online_mapper 設計ドキュメント: **[`docs/online_mapper.md`](docs/online_mapper.md)** (13 章、約 47k 文字)
-online_mapper イテレーション履歴 (r1→r6): **[`online_mapper/RESULTS.md`](online_mapper/RESULTS.md)**
+完全な online_mapper 設計ドキュメント: **[`docs/online_mapper.md`](docs/online_mapper.md)** (v2.3.0, 12 章)
+online_mapper イテレーション履歴 (v2.1.0 → v2.3.0): [`docs/online_mapper.md` §10](docs/online_mapper.md). 初期 r1→r6 メトリクス: **[`online_mapper/RESULTS.md`](online_mapper/RESULTS.md)**
 
 ---
 

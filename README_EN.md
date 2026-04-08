@@ -86,32 +86,42 @@ MemoryNav/
 │   ├── auto_node_generator.py      # Node directory & metadata generation
 │   ├── auto_sub_image_extractor.py # Grounding crop + corridor frame matching
 │   └── validate_output.py          # Output format validation
-├── online_mapper/                  # 🛰️ Online active mapping (3-layer architecture)
-│   ├── run_online_map.py           # Entry script
-│   ├── config.py                   # Global config (OnlineMapperConfig)
-│   ├── core/online_mapper_core.py  # ⭐ Main orchestrator (streaming loop)
-│   ├── geometry/                   # Geometry layer
-│   │   ├── depth_estimator.py      #   Depth-Anything-V2 wrapper
-│   │   ├── visual_odometry.py      #   ORB + EssentialMatrix VO
+├── online_mapper/                  # 🛰️ Online active mapping (v2.3.0, 3-layer)
+│   ├── run_online_map.py           # CLI entry
+│   ├── config.py                   # Global config (depth/vo/occ_backend switches)
+│   ├── core/online_mapper_core.py  # ⭐ Main orchestrator (~870 lines streaming loop)
+│   ├── geometry/                   # Geometry layer (VGGT-1B frontend)
+│   │   ├── vggt_backend.py         # ⭐ VGGT-1B singleton + sliding window (NEW v2.2)
+│   │   ├── depth_estimator.py      #   DA-V2 + VGGTDepthEstimator + factory
+│   │   ├── visual_odometry.py      #   MonoVO + VGGTVisualOdometry + factory
 │   │   ├── pose_graph.py           #   scipy LM pose graph
-│   │   ├── junction_detector.py    #   4-camera depth junction detector
-│   │   └── occupancy.py            #   2D occupancy grid
+│   │   ├── junction_detector.py    #   4-camera depth junction (stateless)
+│   │   └── occupancy.py            #   1D ray-cast + dense point cloud filling
 │   ├── topology/                   # Topology layer
 │   │   ├── keyframe_selector.py    #   Multi-trigger keyframe selection
-│   │   ├── loop_closure.py         #   Auto-tune + ORB geometric verification
-│   │   ├── connection_builder.py   #   next_positions builder (subclasses offline_mapper)
+│   │   ├── loop_closure.py         #   auto-tune + ORB geometric verification
+│   │   ├── connection_builder.py   #   ⭐ next_positions: geo prior + corridor mid crop
 │   │   └── graph.py                #   TopoGraph / TopoNode
-│   └── semantics/                  # Semantics layer
-│       ├── open_set_detector.py    #   Grounding-DINO wrapper
-│       ├── door_plate_tracker.py   #   Door plate representative frame selection
-│       ├── hallucination_filter.py # ⭐ STRICT prompt + QwenVerifier + MultiFrameVoter
-│       ├── node_category.py        # ⭐ 7-class whitelist classifier + CN/EN map
-│       ├── colocation_merger.py    # ⭐ Co-location node merger
-│       └── scene_graph.py          #   Hierarchical scene graph
+│   ├── semantics/                  # Semantics layer
+│   │   ├── open_set_detector.py    #   Grounding-DINO wrapper
+│   │   ├── door_plate_tracker.py   #   Door plate multi-frame selection
+│   │   ├── hallucination_filter.py # ⭐ STRICT prompt + QwenVerifier + MultiFrameVoter
+│   │   ├── node_category.py        # ⭐ Node category classifier + CN/EN map
+│   │   ├── node_naming.py          # ⭐ Structured naming NodeName (NEW v2.3)
+│   │   ├── colocation_merger.py    # ⭐ Co-location merge (uses NodeName.merge_names)
+│   │   └── scene_graph.py          #   Hierarchical scene graph
+│   └── io/
+│       └── merged_data_writer.py   #   Output writer + structured fields
+├── third_party/vggt_space/         # VGGT source (.gitignore, from HF Space)
+├── pretrained/                     # Model weights (.gitignore)
+│   ├── vggt-1b/                    #   facebook/VGGT-1B
+│   ├── depth-anything-v2-small-hf/ #   backup depth backend
+│   ├── grounding-dino-base/        #   IDEA-Research/grounding-dino-base
+│   └── dinov3_vitb16.safetensors   #   VPR backbone
 ├── tests/
 │   └── test_memory_ws.py           # WebSocket integration tests
 └── docs/
-    └── online_mapper.md            # 📘 Full online_mapper design doc (13 chapters)
+    └── online_mapper.md            # 📘 Full online_mapper design doc (v2.3.0)
 ```
 
 ---

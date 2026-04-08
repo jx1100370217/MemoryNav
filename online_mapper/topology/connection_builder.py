@@ -109,6 +109,48 @@ class ThresholdedSubImageExtractor(AutoSubImageExtractor):
                     sim_matrix[i][j] = max(
                         self._cos_sim(cam_crop_features[cam_id], f) for f in feats)
 
+        # ---- Step 4.5: 几何方向先验 (cam_1=front, cam_2=right, cam_3=rear, cam_4=left) ----
+        # 修复纯视觉匹配在线性走廊+相似 landmark 场景下的方向错配.
+        my_pose = node_info.get("pose")
+        if my_pose is not None:
+            import math as _math
+            cam_angles = {
+                "camera_1": 0.0,
+                "camera_2": -_math.pi / 2,
+                "camera_3":  _math.pi,
+                "camera_4":  _math.pi / 2,
+            }
+            def _wrap(a):
+                return _math.atan2(_math.sin(a), _math.cos(a))
+            mx, my, mth = my_pose
+            geo_bonus = np.zeros_like(sim_matrix)
+            for i, cam_id in enumerate(cam_ids):
+                ca = cam_angles.get(cam_id, 0.0)
+                for j, nb_id in enumerate(nb_ids):
+                    nb_obj = next((n for n in neighbor_nodes if n["position_id"] == nb_id), None)
+                    nbp = nb_obj.get("pose") if nb_obj else None
+                    if nbp is None:
+                        continue
+                    nx, ny, _ = nbp
+                    dx, dy = nx - mx, ny - my
+                    if abs(dx) < 1e-6 and abs(dy) < 1e-6:
+                        continue
+                    world_ang = _math.atan2(dy, dx)
+                    robot_ang = _wrap(world_ang - mth)  # neighbor 相对机器人朝向的角度
+                    diff = _wrap(robot_ang - ca)
+                    score = _math.cos(diff)             # ∈ [-1, 1]
+                    geo_bonus[i][j] = score
+                    if score < -0.3:
+                        # 相机和 neighbor 方向夹角 > ~108°, 几乎不可能看到, 强力惩罚
+                        sim_matrix[i][j] -= 1.0
+            # 几何融合: visual_sim + α * angular_cos
+            ALPHA = 0.6
+            sim_matrix = sim_matrix + ALPHA * geo_bonus
+            for i, cam_id in enumerate(cam_ids):
+                for j, nb_id in enumerate(nb_ids):
+                    logger.info(f"  geo[{cam_id}->{nb_id}] cos={geo_bonus[i][j]:+.2f} "
+                                f"final_sim={sim_matrix[i][j]:+.3f}")
+
         from scipy.optimize import linear_sum_assignment
         row_ind, col_ind = linear_sum_assignment(-sim_matrix)
 
@@ -182,8 +224,8 @@ class ConnectionBuilder:
                 device=self._device, qwen_gpu=self._qwen_gpu)
 
     @staticmethod
-    def topo_node_to_dict(node, node_dir: Path) -> Dict:
-        return {
+    def topo_node_to_dict(node, node_dir: Path, pose_graph=None) -> Dict:
+        d = {
             "position_id": node.node_id,
             "position_name": getattr(node, "position_name", "") or f"node_{node.node_id}",
             "position_name_eng": getattr(node, "position_name_eng", "") or f"node_{node.node_id}",
@@ -192,6 +234,10 @@ class ConnectionBuilder:
             "images": dict(node.cameras),
             "frame_index": node.frame_idx,
         }
+        if pose_graph is not None and node.node_id in pose_graph.nodes:
+            pn = pose_graph.nodes[node.node_id]
+            d["pose"] = (pn.x, pn.y, pn.theta)
+        return d
 
     @staticmethod
     def frame_to_dict(frame: Dict) -> Dict:
@@ -203,10 +249,11 @@ class ConnectionBuilder:
 
     def build_for_node(self, node, neighbors: List, node_dir: Path,
                        neighbor_dirs: Dict[str, Path],
-                       all_frames: List[Dict]) -> List[Dict]:
+                       all_frames: List[Dict],
+                       pose_graph=None) -> List[Dict]:
         self._ensure()
-        node_info = self.topo_node_to_dict(node, node_dir)
-        nb_dicts = [self.topo_node_to_dict(nb, neighbor_dirs[nb.node_id])
+        node_info = self.topo_node_to_dict(node, node_dir, pose_graph=pose_graph)
+        nb_dicts = [self.topo_node_to_dict(nb, neighbor_dirs[nb.node_id], pose_graph=pose_graph)
                     for nb in neighbors]
         all_meta = [self.frame_to_dict(f) for f in all_frames]
         try:

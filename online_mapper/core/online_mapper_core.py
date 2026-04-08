@@ -768,7 +768,8 @@ class OnlineMapperCore:
                     if not nbs:
                         continue
                     nps = cb.build_for_node(node, nbs, node_dirs[nid], node_dirs,
-                                             self._all_frames_cache)
+                                             self._all_frames_cache,
+                                             pose_graph=self.pose_graph)
                     if nps:
                         # 重写 node json
                         self._patch_node_with_nexts(out_root / nid, nps,

@@ -25,7 +25,6 @@
 | 闭环 | 首尾对比 (可选) | 全局 VPR + 几何验证, 每帧检测, auto-tune |
 | 节点命名 | 单帧 describe_scene | **结构化** `NodeName(category, organization, nearby_plates, ...)`, 多帧投票 + 二次验证 + 类别白名单 + 防串扰 |
 | 显示拼接 | 字符串 | `category·organization`, 例如 `前台·DEEPROUTE.AI` (不再有 `DEEPROUTE.AI前台` 粘连) |
-| next_position crop | node 自身相机帧 | 走廊中点帧的 grounder 打点 (修复房间内 node 视角错位) |
 | cam→neighbor 匹配 | 纯视觉 CLS Hungarian | + 几何方向先验 (`cos(robot_ang - cam_ang)`) |
 | 输出 | merged_labeled_data/ | 完全兼容旧 schema + 结构化命名字段 + scene_graph / pose_graph / metrics |
 
@@ -41,7 +40,6 @@
 - VGGT 加载 ~10s (一次性), 滑窗 4 帧推理 ~230 ms/frame
 - 显存峰值 ~8 GB
 - 全部节点结构化双语命名, 零幻觉, 零跨节点串扰
-- next_position crop 全部为走廊中点帧 + 几何方向匹配
 
 ---
 
@@ -62,7 +60,7 @@
   │ ├VGGTDepth │           │ LoopCloser  │           │ DoorPlateTracker    │
   │ ├VGGTVO    │ ─零推理   │ TopoGraph   │           │ MultiFrameVoter     │
   │ │  (复用)  │           │ ConnBuilder │ ─几何先验 │ QwenVerifier        │
-  │ ├Occupancy │ ◄─dense   │ +走廊中点   │   crop    │ NodeCategoryClf     │
+  │ ├Occupancy │ ◄─dense   │ ConnBuilder │ ─几何先验 │ NodeCategoryClf     │
   │ │  pointcl │           │ JunctionDet │           │ ColocationMerger    │
   │ │  直填    │           │ FrontierNBV │           │ NodeName (结构化)   │
   │ └PoseGraph │           │             │           │ NameDeduplicator    │
@@ -95,7 +93,7 @@ online_mapper/
 ├── topology/
 │   ├── keyframe_selector.py            多触发关键帧选择
 │   ├── loop_closure.py                 auto-tune + ORB 几何验证
-│   ├── connection_builder.py           next_positions (几何方向先验 + 走廊中点 crop)
+│   ├── connection_builder.py           next_positions (几何方向先验)
 │   └── graph.py                        TopoGraph / TopoNode
 ├── semantics/
 │   ├── open_set_detector.py            Grounding-DINO 封装
@@ -188,7 +186,6 @@ StreamLoader yields frame  (4 cameras + timestamp + frame_idx 0..N)
 │     - sim_matrix + 几何方向先验 (cos(robot_ang - cam_ang))         │
 │       ALPHA=0.6, 反向硬惩罚 (cos<-0.3 → -1.0)                      │
 │     - Hungarian 匹配 → cam ↔ nb 1-to-1                             │
-│     - 走廊中点帧重新跑 grounder 取 crop (修复房间内 node 视角)     │
 │  8. 写 scene_graph.json / pose_graph.json /                        │
 │     online_mapping_log.jsonl / metrics.json                        │
 └────────────────────────────────────────────────────────────────────┘
@@ -302,7 +299,7 @@ dyaw = atan2(R_rel[0,2], R_rel[2,2])  # 绕 y 轴 (OpenCV camera frame)
 
 ### 5.3 ConnectionBuilder (topology/connection_builder.py) ⭐ v2.3.0 重写匹配
 
-子类化 `offline_mapper.AutoSubImageExtractor`, 在 Hungarian 匹配后增加 (1) 阈值过滤 (2) 几何方向先验 (3) 走廊中点 crop.
+子类化 `offline_mapper.AutoSubImageExtractor`, 在 Hungarian 匹配后增加 (1) 阈值过滤 (2) 几何方向先验.
 
 #### 5.3.1 几何方向先验
 
@@ -323,22 +320,6 @@ if angular_score < -0.3: sim -= 1.0  # 反向相机硬惩罚
 ```
 
 要求: `pose_graph` 通过 `build_for_node(..., pose_graph=...)` 传入, 每个 node 携带 `(x, y, theta)`.
-
-#### 5.3.2 走廊中点 crop 源帧
-
-原本 crop 来自 node 自身的相机图 → node 位于房间内 (例如 前台) 时 camera_1 看的是房间陈设, 不是走廊景深.
-
-改为: 对每个匹配 (cam_id, nb_id), 从 `(my_frame_idx, nb_frame_idx)` 之间取中点帧, 在该帧 cam_id 同方向相机重新跑 grounder + Y-fix, 用新点裁剪. 失败回退 node 自身.
-
-```python
-mids = range(min(my_fi, nb_fi)+1, max(my_fi, nb_fi))
-mid_idx = mids[len(mids)//2]
-mid_img = all_frames[mid_idx]['images'][cam_id]
-point = grounder.predict(mid_img, "通道正中间位置")
-crop = make_square_crop(mid_img, point)
-```
-
-效果: 不论 node 位于走廊还是房间内, crop 都是机器人沿走廊行进时正对 nb 方向的视角.
 
 ### 5.4 TopoGraph / spatial-KNN 邻接重建
 
@@ -467,7 +448,7 @@ output_dir/                                  (cfg.output_dir, 默认 online_mapp
 │   ├── 1770097720_camera_2.jpg
 │   ├── 1770097720_camera_3.jpg
 │   ├── 1770097720_camera_4.jpg
-│   ├── crops/                               next_position 子图 (走廊中点帧)
+│   ├── crops/                               next_position 子图 (node 自身相机帧)
 │   │   ├── 1770097770_camera_3__1__big__...jpg
 │   │   ├── 1770097770_camera_3__1__mid__...jpg
 │   │   └── 1770097770_camera_3__1__small__...jpg
@@ -695,7 +676,6 @@ python offline_mapper/validate_output.py online_mapper/output/merged_labeled_dat
 - 门牌两阶段归属: functional 先建 node, brand 后 attach (修复 EUMANN 串扰)
 - brand attach 仅重定位 display 层 (timestamp + cameras), 不动 topology
 - ConnectionBuilder 几何方向先验 (cos 相似度 + 反向硬惩罚) 修复 cam↔neighbor 错配
-- ConnectionBuilder crop 源帧改用走廊中点帧, 修复房间内 node 视角错位
 - writer 输出新增结构化字段 (category, organization, nearby_plates, ...)
 
 ### Tag 链 (回滚锚点)
@@ -705,7 +685,7 @@ v2.1.0           DA-V2 + ORB + 1D ray-cast (VGGT 重构前的稳定快照)
 v2.2.0-alpha     +VGGT depth
 v2.2.0-beta      +VGGT VO (零额外推理)
 v2.2.0           +VGGT 占据栅格 (完整 VGGT 几何前端)
-v2.3.0           +结构化命名 + 几何方向先验 + 走廊中点 crop
+v2.3.0           +结构化命名 + 几何方向先验
 ```
 
 ---
@@ -732,9 +712,6 @@ A. v2.3.0 已修复. 检查 git log 是否在 v2.3.0+ 之后.
 
 ### Q. 节点命名出现 "DEEPROUTE.AI前台" 字符串拼接?
 A. v2.3.0 已改为 `前台·DEEPROUTE.AI` (中点分隔). 旧版本拼接逻辑在 `_combined_name`, 新版改为调用 `NodeName.merge_names`.
-
-### Q. next_position crop 是房间陈设, 不是走廊景深?
-A. v2.3.0 已修复, 改用走廊中点帧 + 同方向相机重新跑 grounder. 见 `connection_builder._pick_crop_source`.
 
 ### Q. cam ↔ neighbor 方向匹配错乱 (如 前台 → camera_2 应该是 camera_3)?
 A. v2.3.0 已加几何方向先验. 必须保证 `pose_graph` 通过 `build_for_node(..., pose_graph=...)` 传入.

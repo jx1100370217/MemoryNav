@@ -95,7 +95,7 @@ MemoryNav/
 │   ├── topology/                   # Topology 層
 │   │   ├── keyframe_selector.py    #   多トリガー キーフレーム選択
 │   │   ├── loop_closure.py         #   自動閾値 + ORB 幾何検証ループクロージャ
-│   │   ├── connection_builder.py   #   ⭐ next_positions: 幾何方向先験 + 廊下中点 crop
+│   │   ├── connection_builder.py   #   ⭐ next_positions: 幾何方向先験
 │   │   └── graph.py                #   TopoGraph / TopoNode
 │   ├── semantics/                  # Semantics 層
 │   │   ├── open_set_detector.py    #   Grounding-DINO ラッパー

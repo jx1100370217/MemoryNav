@@ -24,7 +24,7 @@ MemoryNav 是一个面向移动机器人的视觉记忆导航系统。系统通�
 ### 核心能力
 
 - **🗺️ 离线建图** (`offline_mapper/`)：三阶段 Pipeline（VPR 节点创建 → 语义增补 → 连接生成）从图像序列全自动生成拓扑导航图，无需人工标注
-- **🛰️ 在线主动建图** (`online_mapper/`, **v2.3.0**)：三层架构（Geometry+Topology+Semantics）流式在线建图。**VGGT-1B 几何前端**（depth + VO + 占据栅格 dense 点云 单次推理同时供给）、**结构化节点命名** `NodeName(category, organization, nearby_plates, ...)`（`前台·DEEPROUTE.AI` 取代 `DEEPROUTE.AI前台` 字符串拼接）、门牌**两阶段归属**（防 EUMANN 串扰）、ConnectionBuilder **几何方向先验**（cos 相似度 + 反向硬惩罚修复 cam→neighbor 错配）+ **走廊中点帧 crop**（修复房间内 node 视角错位）、多帧投票幻觉过滤、闭环几何验证、双语命名、空间 KNN 邻接重建；输出兼容 `offline_mapper/` schema 并新增 `category/organization/nearby_plates/nearby_landmarks` 字段。完整设计见 [`docs/online_mapper.md`](docs/online_mapper.md)
+- **🛰️ 在线主动建图** (`online_mapper/`, **v2.3.0**)：三层架构（Geometry+Topology+Semantics）流式在线建图。**VGGT-1B 几何前端**（depth + VO + 占据栅格 dense 点云 单次推理同时供给）、**结构化节点命名** `NodeName(category, organization, nearby_plates, ...)`（`前台·DEEPROUTE.AI` 取代 `DEEPROUTE.AI前台` 字符串拼接）、门牌**两阶段归属**（防 EUMANN 串扰）、ConnectionBuilder **几何方向先验**（cos 相似度 + 反向硬惩罚修复 cam→neighbor 错配）、多帧投票幻觉过滤、闭环几何验证、双语命名、空间 KNN 邻接重建；输出兼容 `offline_mapper/` schema 并新增 `category/organization/nearby_plates/nearby_landmarks` 字段。完整设计见 [`docs/online_mapper.md`](docs/online_mapper.md)
 - **🔍 多方案 VPR 定位**：支持 4 种 SOTA 视觉位置识别方案，统一配置文件一键切换
 - **🗺️ 拓扑记忆图**：自动从标注数据构建节点-边拓扑图，支持最短路径规划
 - **🔄 循环移位匹配**：4 相机循环移位算法，支持任意朝向下的定位与偏转角估计
@@ -100,7 +100,7 @@ MemoryNav/
 │   ├── topology/                   # Topology 层
 │   │   ├── keyframe_selector.py    #   多触发关键帧选择
 │   │   ├── loop_closure.py         #   auto-tune + ORB 几何验证闭环
-│   │   ├── connection_builder.py   #   ⭐ next_positions: 几何方向先验 + 走廊中点 crop
+│   │   ├── connection_builder.py   #   ⭐ next_positions: 几何方向先验
 │   │   └── graph.py                #   TopoGraph / TopoNode
 │   ├── semantics/                  # Semantics 层
 │   │   ├── open_set_detector.py    #   Grounding-DINO 封装

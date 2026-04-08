@@ -100,7 +100,7 @@ MemoryNav/
 │   ├── topology/                   # Topology layer
 │   │   ├── keyframe_selector.py    #   Multi-trigger keyframe selection
 │   │   ├── loop_closure.py         #   auto-tune + ORB geometric verification
-│   │   ├── connection_builder.py   #   ⭐ next_positions: geo prior + corridor mid crop
+│   │   ├── connection_builder.py   #   ⭐ next_positions: geo prior
 │   │   └── graph.py                #   TopoGraph / TopoNode
 │   ├── semantics/                  # Semantics layer
 │   │   ├── open_set_detector.py    #   Grounding-DINO wrapper

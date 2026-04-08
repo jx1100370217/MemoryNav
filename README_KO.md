@@ -95,7 +95,7 @@ MemoryNav/
 │   ├── topology/                   # Topology 계층
 │   │   ├── keyframe_selector.py    #   다중 트리거 키프레임 선택
 │   │   ├── loop_closure.py         #   자동 임계값 + ORB 기하 검증
-│   │   ├── connection_builder.py   #   ⭐ next_positions: 기하 방향 사전 + 복도 중간 crop
+│   │   ├── connection_builder.py   #   ⭐ next_positions: 기하 방향 사전
 │   │   └── graph.py                #   TopoGraph / TopoNode
 │   ├── semantics/                  # Semantics 계층
 │   │   ├── open_set_detector.py    #   Grounding-DINO 래퍼

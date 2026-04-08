@@ -201,3 +201,6 @@ memory_test_data/
 
 # online_mapper runtime outputs (generated artifacts)
 online_mapper/output/
+
+# Local pretrained model weights (not tracked)
+pretrained/

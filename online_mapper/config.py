@@ -28,13 +28,13 @@ class OnlineMapperConfig:
     nbv_semantic_weight: float = 0.5
 
     # depth
-    depth_model_id: str = "depth-anything/Depth-Anything-V2-Small-hf"
+    depth_model_id: str = "pretrained/depth-anything-v2-small-hf"
     depth_device: str = "cuda:0"
     enable_depth: bool = True
 
     # semantics
     enable_grounding_dino: bool = True
-    grounding_dino_model_id: str = "IDEA-Research/grounding-dino-base"
+    grounding_dino_model_id: str = "pretrained/grounding-dino-base"
     enable_qwen_naming: bool = True   # 默认开 (vLLM 应已启动)
     qwen_base_url: str = "http://localhost:8199/v1"
     qwen_gpu: str = "1"

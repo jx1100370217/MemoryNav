@@ -1272,9 +1272,9 @@ async def process_inference_with_memory(message_data, session_state,
                                     f"heading_offset={vpr_result.heading_offset:.1f}°, "
                                     f"best_shift={vpr_result.best_shift}")
                         nav_state.last_vpr_result = vpr_result
-                        _perf['3_vpr_ms'] = (time.time() - _t_vpr) * 1000
                     else:
                         logger.info(f"🧠 [Memory] VPR 定位失败: 无匹配节点")
+                    _perf["3_vpr_ms"] = (time.time() - _t_vpr) * 1000
                 except Exception as e:
                     logger.error(f"🧠 [Memory] VPR 定位异常: {e}", exc_info=True)
             else:

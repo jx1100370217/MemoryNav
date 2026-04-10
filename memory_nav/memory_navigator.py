@@ -164,12 +164,24 @@ class MemoryNavigator:
             logger.error("[MemoryNavigator] VPR未初始化")
             return (None, {}) if return_features else None
         
-        # 提取特征
+        # 提取特征 — batch forward (单次GPU推理处理4相机)
+        cam_ids = sorted([c for c in camera_images if camera_images[c] is not None])
+        cam_imgs = [camera_images[c] for c in cam_ids]
         query_features = {}
-        for cam_id, image in camera_images.items():
-            if image is not None:
-                feat = self.extractor.extract(image)
-                query_features[cam_id] = feat
+        if cam_imgs and hasattr(self.extractor, 'extract_batch') and len(cam_imgs) > 1:
+            try:
+                batch_feats = self.extractor.extract_batch(cam_imgs)
+                for idx, cam_id in enumerate(cam_ids):
+                    query_features[cam_id] = batch_feats[idx]
+            except Exception as e:
+                logger.warning(f"[MemoryNavigator] batch extract 失败, 退回串行: {e}")
+                for cam_id, image in camera_images.items():
+                    if image is not None:
+                        query_features[cam_id] = self.extractor.extract(image)
+        else:
+            for cam_id, image in camera_images.items():
+                if image is not None:
+                    query_features[cam_id] = self.extractor.extract(image)
         
         # VPR定位
         result = self.vpr.locate(query_features)

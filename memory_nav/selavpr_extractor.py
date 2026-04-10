@@ -223,9 +223,36 @@ class SelaVPRExtractor:
             return np.random.randn(self.feature_dim).astype(np.float32)
 
     def extract_batch(self, images: List[np.ndarray]) -> np.ndarray:
-        """批量提取特征"""
-        features = [self.extract(img) for img in images]
-        return np.array(features)
+        """批量提取特征 — 真正的 batch forward, 单次 GPU 推理处理所有图像
+
+        Args:
+            images: BGR 图像列表
+
+        Returns:
+            特征矩阵 (N, feature_dim)
+        """
+        if self.model is None or not images:
+            return np.array([np.random.randn(self.feature_dim).astype(np.float32)
+                             for _ in images])
+        try:
+            # 批量预处理: 所有图像 resize 到 518x518 并 stack
+            tensors = [self._preprocess_image(img) for img in images]
+            batch = torch.cat(tensors, dim=0)  # [N, 3, 518, 518]
+
+            # 单次 forward pass
+            with torch.no_grad():
+                output = self.model(batch)
+                if self.use_hashing and self.use_rerank:
+                    descriptors = output[2]
+                elif self.use_hashing and not self.use_rerank:
+                    descriptors = output[0]
+                else:
+                    descriptors = output
+
+            return descriptors.cpu().numpy().astype(np.float32)
+        except Exception as e:
+            logger.error(f"[SelaVPR++] 批量特征提取失败: {e}, 退回串行模式")
+            return np.array([self.extract(img) for img in images])
 
     @property
     def output_dim(self) -> int:

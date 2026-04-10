@@ -158,11 +158,15 @@ class FisheyeUndistorter:
             return image
         return self.cameras[camera_id].remap(image)
 
-    def undistort_batch(self, camera_images: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
-        """批量去畸变"""
-        return {cam_id: self.undistort(img, cam_id)
-                for cam_id, img in camera_images.items()}
+    def undistort_batch(self, camera_images):
+        """批量去畸变 — 并行处理4相机 (cv2.remap 释放 GIL)"""
+        from concurrent.futures import ThreadPoolExecutor
+        def _undist(item):
+            cam_id, img = item
+            return cam_id, self.undistort(img, cam_id)
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            results = executor.map(_undist, camera_images.items())
+            return {cam_id: img for cam_id, img in results}
 
-    @property
     def is_ready(self) -> bool:
         return len(self.cameras) > 0

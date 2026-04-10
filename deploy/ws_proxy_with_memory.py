@@ -1088,6 +1088,8 @@ async def process_inference_with_memory(message_data, session_state,
     """
     try:
         logger.info(f"[MemoryProxy] 开始处理推理请求 (memory_enabled={memory_enabled})")
+        _perf = {}
+        _perf_frame_start = time.time()
         _sub_match = None  # 子图匹配结果
 
         # ================================================================
@@ -1129,6 +1131,7 @@ async def process_inference_with_memory(message_data, session_state,
         # 图像处理：解码、调整尺寸、保存
         # ================================================================
         rgb_base64 = message_data['images']['front_1']
+        _t0 = time.time()
         rgb = decode_base64_image(rgb_base64)
         if rgb is None:
             return {
@@ -1170,6 +1173,8 @@ async def process_inference_with_memory(message_data, session_state,
                             logger.warning(f"保存 {camera_id} 图片失败: {e}")
 
         # ================================================================
+        _perf['1_decode_ms'] = (time.time() - _t0) * 1000 if '_t0' in dir() else 0
+
         # 处理 task 为 None/"None"/"none"
         # ================================================================
         if instruction is None or instruction in ["None", "none"]:
@@ -1243,6 +1248,7 @@ async def process_inference_with_memory(message_data, session_state,
         camera_images: Optional[Dict[str, np.ndarray]] = None
 
         if memory_enabled and navigator is not None:
+            _t_cam = time.time()
             camera_images = decode_camera_images(message_data)
             if camera_images and len(camera_images) == 4:
                 # 鱼眼去畸变（如果可用）
@@ -1251,6 +1257,8 @@ async def process_inference_with_memory(message_data, session_state,
                     logger.info("📷 [Undistort] 鱼眼去畸变完成")
                 logger.info(f"🧠 [Memory] 开始 VPR 定位 (4相机图就绪)")
                 try:
+                    _perf['2_cam_decode_undistort_ms'] = (time.time() - _t_cam) * 1000 if '_t_cam' in dir() else 0
+                    _t_vpr = time.time()
                     vpr_result, query_features = await asyncio.to_thread(
                         navigator.locate_by_images, camera_images, True
                     )
@@ -1264,6 +1272,7 @@ async def process_inference_with_memory(message_data, session_state,
                                     f"heading_offset={vpr_result.heading_offset:.1f}°, "
                                     f"best_shift={vpr_result.best_shift}")
                         nav_state.last_vpr_result = vpr_result
+                        _perf['3_vpr_ms'] = (time.time() - _t_vpr) * 1000
                     else:
                         logger.info(f"🧠 [Memory] VPR 定位失败: 无匹配节点")
                 except Exception as e:
@@ -1289,13 +1298,16 @@ async def process_inference_with_memory(message_data, session_state,
 
             # 执行子图匹配（供后续响应使用）
             logger.info(f"── 🔍 当前步子图匹配: {_cur_step.from_node_name} → {_cur_step.to_node_name} ──" if _cur_step else "── 🔍 当前步子图匹配 ──")
+            _t_sub = time.time()
             _sub_match = do_sub_image_match(memory_navigator, nav_state, camera_images) if camera_images else None
             # 帧间相似度使用 VPR 已提取的 DINOv2 特征（零额外开销）
             # 帧间相似度比较用sub_match返回的相机（真实匹配/得分最高相机），不用预设camera
             _cache_cam_name = _sub_match.get('camera_name') if _sub_match else None
             _sub_match = _cache_or_reuse_sub_match(nav_state, _sub_match, nav_state.last_query_features, _cache_cam_name)
             visualize_sub_image_match(camera_images, _sub_match, pts, cache_action=nav_state.last_cache_action)
+            _perf['4_sub_match_ms'] = (time.time() - _t_sub) * 1000
 
+            _t_la = time.time()
             # ---- lookahead: 对下一步也做子图匹配 ----
             _next_step_idx = nav_state.current_step_idx + 1
             if _next_step_idx < len(nav_state.plan.steps) and camera_images:
@@ -1314,9 +1326,11 @@ async def process_inference_with_memory(message_data, session_state,
                                 f"子图匹配: ❌ 无结果")
                 except Exception as e:
                     nav_state.next_step_sub_match = None
+                    _perf['5_lookahead_ms'] = (time.time() - _t_la) * 1000 if '_t_la' in dir() else 0
                     logger.warning(f"🔭 [Lookahead] 下一步子图匹配异常: {e}")
             else:
                 nav_state.next_step_sub_match = None
+                _perf['5_lookahead_ms'] = (time.time() - _t_la) * 1000 if '_t_la' in dir() else 0
 
             # ---- 遮挡检测: 只要子图匹配失败就触发，不关心VPR ----
             _sub_match_found = _sub_match.get('match', {}).get('found', False) if _sub_match else False
@@ -1340,6 +1354,8 @@ async def process_inference_with_memory(message_data, session_state,
                 except Exception as e:
                     logger.warning(f"[Memory] 遮挡检测异常: {e}")
 
+            _perf['6_occlusion_ms'] = (time.time() - _t_occ) * 1000 if '_t_occ' in dir() else 0
+            _t_qwen = time.time()
             # ---- Qwen3.5 兜底打点: 子图匹配失败且未遮挡时 ----
             nav_state.fallback_action = None
             nav_state.fallback_pixel_target = None
@@ -1394,6 +1410,9 @@ async def process_inference_with_memory(message_data, session_state,
             target_node_id = step.to_node_id
             source_node_id = step.from_node_id
 
+            _perf['7_qwen_fallback_ms'] = (time.time() - _t_qwen) * 1000 if '_t_qwen' in dir() else 0
+            _perf['total_ms'] = (time.time() - _perf_frame_start) * 1000 if '_perf_frame_start' in dir() else 0
+            logger.info(f"⏱️ [Perf] {', '.join(f'{k}={v:.0f}' for k,v in sorted(_perf.items()))}")
             logger.info(f"─── ⚡ 决策 ───")
             logger.info(f"🧠 [Memory] 活跃计划: 步骤 {nav_state.current_step_idx + 1}/{nav_state.plan.total_steps}, "
                         f"{step.from_node_name}({source_node_id}) → {step.to_node_name}({target_node_id}), "
@@ -1678,9 +1697,11 @@ async def process_inference_with_memory(message_data, session_state,
                         nav_state.last_task = current_task
 
                         # 首次规划成功，执行子图匹配
+                        _t_sub = time.time()
                         _sub_match = do_sub_image_match(memory_navigator, nav_state, camera_images) if camera_images else None
                         _sub_match = _cache_or_reuse_sub_match(nav_state, _sub_match, nav_state.last_query_features)
                         visualize_sub_image_match(camera_images, _sub_match, pts, cache_action=nav_state.last_cache_action)
+                        _perf['4_sub_match_ms'] = (time.time() - _t_sub) * 1000
 
                         session_state['request_count'] += 1
                         session_state['last_instruction'] = instruction

@@ -758,7 +758,7 @@ def _extract_pixel_target(sub_image_match=None):
     return [center['x'], center['y']]
 
 
-SUB_MATCH_CONFIDENCE_THRESHOLD = 0.60
+SUB_MATCH_CONFIDENCE_THRESHOLD = 0.68
 
 FRAME_SIMILARITY_THRESHOLD = 0.70  # 帧间 DINOv2 特征相似度阈值，高于此值认为场景几乎没变
 
@@ -1361,7 +1361,26 @@ async def process_inference_with_memory(message_data, session_state,
             nav_state.fallback_pixel_target = None
             nav_state.fallback_instruction = None
             nav_state.fallback_camera_name = None
-            if not _sub_match_found and not _occ_occluded:
+            # ---- 快速 advance 判断: VPR 已到目标节点 + lookahead 成功 → 跳过 Qwen3.5 ----
+            _skip_qwen_fallback = False
+            if not _sub_match_found and vpr_result is not None:
+                _cur_step_for_check = nav_state.get_current_step()
+                _check_target_id = _cur_step_for_check.to_node_id if _cur_step_for_check else None
+                if _check_target_id is not None:
+                    _check_sim = navigator.vpr.get_node_similarity(nav_state.last_query_features, _check_target_id) if nav_state.last_query_features else 0.0
+                    _check_is_last = (nav_state.current_step_idx + 1 >= len(nav_state.plan.steps))
+                    _check_lookahead_ok = False
+                    if nav_state.next_step_sub_match is not None:
+                        _la_m = nav_state.next_step_sub_match.get('match', {})
+                        _check_lookahead_ok = (_la_m.get('found', False)
+                                               and _la_m.get('confidence', 0) >= SUB_MATCH_CONFIDENCE_THRESHOLD)
+                    if (vpr_result.matched_node_id == _check_target_id
+                            and _check_sim >= 0.70
+                            and (_check_is_last or _check_lookahead_ok)):
+                        _skip_qwen_fallback = True
+                        logger.info(f"⏩ [Memory] VPR 已到目标节点 + {'最后一步' if _check_is_last else 'lookahead成功'}, 跳过 Qwen3.5 兜底")
+
+            if not _sub_match_found and not _occ_occluded and not _skip_qwen_fallback:
                 _fb_step = nav_state.get_current_step()
                 _fb_landmark_orig = getattr(_fb_step, 'landmark_name', '') if _fb_step else ''
                 # Qwen3.5 兜底打点统一使用找路策略，避免找不到参照物时瞎指方向

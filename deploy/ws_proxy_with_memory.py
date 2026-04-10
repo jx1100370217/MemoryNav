@@ -758,7 +758,7 @@ def _extract_pixel_target(sub_image_match=None):
     return [center['x'], center['y']]
 
 
-SUB_MATCH_CONFIDENCE_THRESHOLD = 0.68
+SUB_MATCH_CONFIDENCE_THRESHOLD = 0.60
 
 FRAME_SIMILARITY_THRESHOLD = 0.70  # 帧间 DINOv2 特征相似度阈值，高于此值认为场景几乎没变
 

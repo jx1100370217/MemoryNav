@@ -36,7 +36,7 @@ WS_URL = "ws://127.0.0.1:9528"
 PROJECT_ROOT = "/home/ubuntu/Disk/codes/jianxiong/MemoryNav"
 DATA_DIR = os.path.join(PROJECT_ROOT, "memory_test_data")
 TASK = "前往C8前台"
-# TASK = "前往蓝山"
+# TASK = "前往母婴室门口"
 SAMPLE_STEP = 1  # 每 N 帧采样一次
 
 # 从服务端导入阈值常量，确保测试与服务使用同一套阈值

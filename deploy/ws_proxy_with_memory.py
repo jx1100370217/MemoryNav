@@ -1776,11 +1776,16 @@ async def process_inference_with_memory(message_data, session_state,
                     # 保存打点可视化
                     visualize_qwen35_grounding(camera_images, _fb_result, _fb_landmark, pts)
 
-                    # 侧面相机输出旋转
-                    if _fb_cam in ('camera_2', 'camera_4'):
-                        _rot = 0.785 if _fb_cam == 'camera_2' else -0.785
-                        logger.info(f"🔄 [Qwen3.5] 侧面相机 {_fb_cam}，输出旋转动作 [0,0,{_rot}]")
-                        qwen_response["action"] = [[0.0, 0.0, _rot]]
+                    # 侧面相机: 通过坐标转换获取实际 yaw，原地旋转 (与有计划路径一致)
+                    if _fb_cam in ('camera_3', 'camera_4') and _fb_point and len(_fb_point) >= 2:
+                        _action_vec, _coord_debug = _pixel_target_to_robot_action(_fb_point[0], _fb_point[1], _fb_cam)
+                        _yaw_deg = _coord_debug.get('yaw_global_deg', 0)
+                        _yaw_rad = math.radians(_yaw_deg)
+                        qwen_response["action"] = [[0.0, 0.0, _yaw_rad]]
+                        logger.info(f"🔄 [Qwen3.5] 侧面相机 {_fb_cam}, yaw={_yaw_deg:.1f}° → {_yaw_rad:.3f}rad, action={qwen_response['action'][0]}")
+                    elif _fb_point and _fb_cam and len(_fb_point) >= 2:
+                        _action_vec, _coord_debug = _pixel_target_to_robot_action(_fb_point[0], _fb_point[1], _fb_cam)
+                        qwen_response["action"] = [_action_vec]
                     else:
                         qwen_response["action"] = [[0.0, 0.0, 0.0]]
 

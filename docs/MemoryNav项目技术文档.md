@@ -780,30 +780,17 @@ y_lateral = distance × sin(global_yaw)
 
 #### 侧面相机特殊处理
 
-camera_3 和 camera_4 指向后方，匹配成功时不输出前进动作而是纯旋转。
-
-**有活跃导航计划时**（`build_memory_response` 中），子图匹配和 Qwen3.5 兜底的侧面相机处理已统一：
+camera_3 和 camera_4 指向后方，匹配成功时不输出前进动作而是纯旋转。所有路径（有计划/无计划、子图匹配/Qwen3.5 兜底）均统一走 `_pixel_target_to_robot_action()` 坐标转换获取实际 yaw：
 
 ```
-子图匹配成功 + camera_3/camera_4:
+camera_3/camera_4 命中时:
   → _pixel_target_to_robot_action(x, y, camera_id) 获取实际 yaw
   → action = [[0, 0, yaw_rad]]  (原地旋转到目标方向)
 
-Qwen3.5 兜底 + camera_3/camera_4:
-  → 同上，走 _pixel_target_to_robot_action() 获取实际 yaw
-  → action = [[0, 0, yaw_rad]]  (原地旋转到目标方向)
+camera_1/camera_2 命中时:
+  → _pixel_target_to_robot_action(x, y, camera_id) 获取前进向量
+  → action = [[x_forward, y_lateral, 0]]  (前进)
 ```
-
-**无活跃导航计划时**（纯 Qwen3.5 兜底路径，第 1780 行附近），仍使用固定旋转:
-
-```
-Qwen3.5 兜底 + camera_2/camera_4:
-  → action = [[0, 0, +0.785]]  camera_2
-  → action = [[0, 0, -0.785]]  camera_4
-  (固定旋转约45度)
-```
-
-> 注意：无计划路径中判断的是 camera_2/camera_4（而非 camera_3/camera_4），与有计划路径不一致。
 
 ### 3.12 鱼眼去畸变
 

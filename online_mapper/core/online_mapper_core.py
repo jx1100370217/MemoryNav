@@ -629,6 +629,9 @@ class OnlineMapperCore:
             node.position_name = decision.final_name_cn
             node.position_name_eng = decision.final_name_en
             node.category = decision.category.value
+            # 标记: 此节点由 plate best-view 创建, display frame 就是 at-the-plate 视角
+            # brand attach 阶段不应被 brand 的 best-view 覆盖
+            node._from_plate_best = True
             if decision.category == NodeCategory.SHOP:
                 node.name_struct = NodeName(organization=decision.final_name_cn)
             else:
@@ -688,27 +691,30 @@ class OnlineMapperCore:
                         replaced_org = True
                     else:
                         ts.nearby_plates.append(vote_key)
-                # 重定位 (仅显示层): 仅当 target 是纯 brand (SHOP) 节点时才改 display
-                # 到 brand 最大 bbox 帧. 功能性节点 (function_area / landmark_facility
-                # / ROOM) 应保留自己的原始帧, 因为用户想看"到门口了"的视角, 而不是
-                # 看 brand sticker 最清楚的视角.
-                # 例: 关爱室 node 附加了 NEUMANN brand, 保留关爱室门口帧;
-                #     独立 DEEPROUTE.AI 店铺节点则可以切到品牌招牌最清晰的帧.
-                is_shop_only_target = (
-                    getattr(target, "category", "") == NodeCategory.SHOP.value
-                    and not ts.category
-                )
-                if replaced_org and is_shop_only_target:
+                # 重定位 (仅显示层):
+                #   - target 由 plate best-view 创建 (_from_plate_best=True) → 保留
+                #     原帧. 因为 plate best-view 已经是"到这个房间/设施门口"的
+                #     最佳视角 (bbox 最大 = 离牌子最近), brand 是别处的副标, relocate
+                #     到 brand 帧会离开功能中心. 例: 关爱室 (由 '关爱室' plate 建
+                #     frame 41=门口近视) 被 NEUMANN (在别处 frame 38) attach 时保留.
+                #   - target 由 keyframe trigger 创建 (无 _from_plate_best) →
+                #     keyframe 的 trigger 帧 (acc_rot/acc_trans/vpr<0.5) 位置是
+                #     累计运动决定的, 相对"任意". brand 的 best-view 帧反而是"离
+                #     brand 牌子最近"的语义中心, 是更好的视角. 例: 前台 (keyframe
+                #     trigger 在 1770097836 中段) 被 DEEPROUTE.AI (best frame 1770097843
+                #     = 前台柜台近视) attach 时, relocate 到 DEEPROUTE.AI 帧更合理.
+                target_from_plate = getattr(target, "_from_plate_best", False)
+                if replaced_org and not target_from_plate:
                     target.timestamp = obs.timestamp
                     target.cameras = dict(obs.cameras)
                     logger.info(f"[DoorPlate-RELOCATE-DISPLAY] node {nearest_nid} "
                                 f"display ts -> {obs.timestamp} "
-                                f"(brand '{vote_key}' best view); "
+                                f"(brand '{vote_key}' best view, keyframe-sourced target); "
                                 f"topology frame_idx stays at {target.frame_idx}")
                 elif replaced_org:
                     logger.info(f"[DoorPlate-ATTACH-KEEP-DISPLAY] node {nearest_nid} "
                                 f"({target.position_name or target.category}) "
-                                f"brand '{vote_key}' attached but keeping functional view "
+                                f"plate-sourced, keeping original plate best-view "
                                 f"at ts={target.timestamp}")
                 target.position_name = ts.display_cn()
                 target.position_name_eng = ts.display_en()

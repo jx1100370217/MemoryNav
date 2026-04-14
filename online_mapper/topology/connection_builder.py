@@ -144,7 +144,13 @@ class ThresholdedSubImageExtractor(AutoSubImageExtractor):
                         # 相机和 neighbor 方向夹角 > ~108°, 几乎不可能看到, 强力惩罚
                         sim_matrix[i][j] -= 1.0
             # 几何融合: visual_sim + α * angular_cos
-            ALPHA = 0.6
+            # α 不能太大: VO/pose_graph 的 theta 在室内场景 (小转弯, 短轨迹) 经常漂移
+            # 几百度, 如果 α 过大会让"几何看似对齐但视觉完全对不上"的相机胜过
+            # "视觉显著最好但几何方向偏"的真正对应相机.
+            # 实测: α=0.6 时, 前台→关爱室被误判成 camera_1 (pose 说正对, 但图像
+            # 是前台柜台); α=0.2 时正确落到 camera_2 (走廊视角, 视觉相似度 0.82).
+            # cos<-0.3 的 -1 硬惩罚保留, 防止背向相机混进匹配.
+            ALPHA = 0.2
             sim_matrix = sim_matrix + ALPHA * geo_bonus
             for i, cam_id in enumerate(cam_ids):
                 for j, nb_id in enumerate(nb_ids):

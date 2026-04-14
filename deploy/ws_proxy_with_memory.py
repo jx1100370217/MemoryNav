@@ -1200,8 +1200,8 @@ def visualize_qwen35_grounding(camera_images, grounding_result, landmark_name, p
 # 建图模式帧处理
 # ============================================================================
 
-def process_mapping_frame(message_data: dict, session_state: dict,
-                           mapping_session: MappingSession) -> dict:
+async def process_mapping_frame(message_data: dict, session_state: dict,
+                                 mapping_session: MappingSession) -> dict:
     """
     建图模式下处理单个帧请求. 不返回 action; 返回建图决策日志 + 实时状态.
 
@@ -1210,6 +1210,9 @@ def process_mapping_frame(message_data: dict, session_state: dict,
     响应格式:
       {status, id, pts, mode:"mapping", action:[[0,0,0]], task_status:"mapping",
        log: <log_entry>, mapping: <status>}
+
+    feed() 是 CPU-heavy sync 调用 (depth/VPR/GD/Qwen HTTP, 最大 ~12s), 走线程池
+    避免阻塞 asyncio 事件循环导致 ws ping/pong 超时.
     """
     try:
         robot_id = message_data.get('id', None)
@@ -1239,7 +1242,9 @@ def process_mapping_frame(message_data: dict, session_state: dict,
             }
 
         ts = str(pts) if pts is not None else None
-        log_entry = mapping_session.feed(cam_arrays, timestamp=ts)
+        log_entry = await asyncio.to_thread(
+            mapping_session.feed, cam_arrays, timestamp=ts
+        )
 
         return {
             "status": "success",
@@ -2164,10 +2169,15 @@ async def handle_client(websocket):
                             shared_extractor = None
                             if memory_navigator is not None and getattr(memory_navigator, "extractor", None):
                                 shared_extractor = memory_navigator.extractor
-                            mapping_session = MappingSession(
+                            # MappingSession __init__ 会加载 Depth/GD 等模型 (~10s), 走线程池
+                            # 避免阻塞事件循环导致 ws ping 超时
+                            ms_kwargs = dict(
                                 client_id=client_id,
                                 config_overrides=overrides if isinstance(overrides, dict) else None,
                                 shared_vpr_extractor=shared_extractor,
+                            )
+                            mapping_session = await asyncio.to_thread(
+                                lambda: MappingSession(**ms_kwargs)
                             )
                             session_state['mode'] = 'mapping'
                             response = {
@@ -2186,7 +2196,9 @@ async def handle_client(websocket):
                         response = {"status": "error", "message": "当前没有活跃建图会话"}
                     else:
                         try:
-                            summary = mapping_session.finalize()
+                            # finalize() 是 ~30s CPU-heavy sync, 必须走线程池
+                            # 否则会阻塞 asyncio 事件循环 → ws ping 超时 → 连接 1011
+                            summary = await asyncio.to_thread(mapping_session.finalize)
                             session_state['mode'] = 'nav'
                             response = {
                                 "status": "success",
@@ -2218,7 +2230,7 @@ async def handle_client(websocket):
                 # ---- 处理推理请求 ----
                 else:
                     if session_state['mode'] == 'mapping' and mapping_session:
-                        response = process_mapping_frame(data, session_state, mapping_session)
+                        response = await process_mapping_frame(data, session_state, mapping_session)
                     else:
                         response = await process_inference_with_memory(
                             data, session_state,
@@ -2244,11 +2256,11 @@ async def handle_client(websocket):
     except websockets.exceptions.ConnectionClosed:
         logger.info(f"客户端连接已关闭 [{client_id}]")
     finally:
-        # 若建图会话未 finalize, 自动 finalize 保住数据
+        # 若建图会话未 finalize, 自动 finalize 保住数据 (走线程池, 不阻塞事件循环)
         if mapping_session and not mapping_session.finalized:
             try:
                 logger.info(f"[Mapping] 客户端断开, 自动 finalize [{client_id}]")
-                mapping_session.finalize()
+                await asyncio.to_thread(mapping_session.finalize)
             except Exception as e:
                 logger.error(f"断线自动 finalize 失败: {e}", exc_info=True)
         if client_id in connected_clients:

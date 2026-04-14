@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-test_memory_ws.py - 记忆导航 WebSocket 集成测试
+test_memory_ws.py - 记忆导航/在线建图 双模式 WebSocket 集成测试
 
 使用 memory_test_data/ 真实轨迹数据，完整回放帧序列，
+通过 --mode {nav,mapping} 选择测试导航模式或建图模式。
 
-导航策略:
+导航模式 (--mode nav, 默认):
   Layer 1: 记忆引导 - 每步返回 camera_name + landmark_name + pixel_target (子图匹配)
   Layer 2: VPR持续验证 - 匹配目标节点→advance, 匹配源节点→重复引导
   Layer 3: 模型兜底 - VPR失败或匹配路径外节点时走 InternVLA 推理
   趋势检测: 相似度趋势判断方向正确性
   稀疏容错: 连续偏离超限→强制advance
+
+建图模式 (--mode mapping):
+  发送 start_mapping 切换服务端到建图模式 → 逐帧喂入 4 相机 → stop_mapping 触发 finalize
+  输出节点/拓扑/场景图/占据栅格/可视化 PNG
 
 用法:
   1. 启动 ws_proxy_with_memory.py:
@@ -18,12 +23,14 @@ test_memory_ws.py - 记忆导航 WebSocket 集成测试
      python3 deploy/ws_proxy_with_memory.py
 
   2. 运行测试:
-     python3 tests/test_memory_ws.py
+     python3 tests/test_memory_ws.py                  # 默认 nav 模式
+     python3 tests/test_memory_ws.py --mode mapping   # 建图模式
 
   3. 查看服务端完整日志:
      tail -f deploy/logs/ws_proxy_with_memory.log
 """
 
+import argparse
 import asyncio
 import json
 import os
@@ -164,8 +171,8 @@ def print_header(title, width=140):
     print(f"{C_BOLD}{'═' * width}{C_RESET}")
 
 
-async def run_test():
-    """完整轨迹回放测试"""
+async def run_test_nav():
+    """完整轨迹回放测试 (导航模式)"""
 
     print_header("🧪 记忆导航 — 完整轨迹回放测试")
     print(f"  {C_BOLD}服务器:{C_RESET}  {WS_URL}")
@@ -642,5 +649,249 @@ async def run_test():
         sys.exit(1)
 
 
+# ============================================================================
+# 建图模式
+# ============================================================================
+
+async def run_test_mapping():
+    """完整轨迹建图测试 (建图模式).
+
+    流程:
+      1. start_mapping 切换服务端到建图模式 (每 client 独立 session)
+      2. 逐帧发 4 相机 base64 → 服务端 OnlineMapperCore.process_frame
+      3. stop_mapping 触发 finalize, 返回 metrics + artifacts + visualizations
+    """
+    print_header("🗺️  在线建图 — 完整轨迹回放测试")
+    print(f"  {C_BOLD}服务器:{C_RESET}  {WS_URL}")
+    print(f"  {C_BOLD}数据:{C_RESET}    {DATA_DIR}")
+
+    timestamps = get_timestamps()
+    total_frames = len(timestamps)
+    print(f"  {C_BOLD}总帧数:{C_RESET}  {total_frames}")
+
+    if total_frames < 2:
+        print(f"\n{C_RED}❌ 测试数据不足 ({total_frames} 帧), 至少需要 2 帧{C_RESET}")
+        sys.exit(1)
+
+    try:
+        import websockets
+    except ImportError:
+        print(f"\n{C_RED}❌ 需要安装 websockets: pip install websockets{C_RESET}")
+        sys.exit(1)
+
+    print(f"\n{C_CYAN}🔗 连接 {WS_URL}...{C_RESET}")
+    ws = None
+    for _attempt in range(3):
+        try:
+            ws = await websockets.connect(
+                WS_URL,
+                max_size=50 * 1024 * 1024,
+                open_timeout=30,
+                ping_interval=30,
+                ping_timeout=10,
+            )
+            break
+        except Exception as e:
+            if _attempt < 2:
+                print(f"{C_YELLOW}⚠️  连接尝试 {_attempt+1}/3 失败: {e}, 3秒后重试...{C_RESET}")
+                await asyncio.sleep(3)
+            else:
+                print(f"{C_RED}❌ 连接失败 (已重试3次): {e}{C_RESET}")
+                print(f"   请先启动: cd {PROJECT_ROOT} && python deploy/ws_proxy_with_memory.py")
+                sys.exit(1)
+    print(f"{C_GREEN}✅ 已连接{C_RESET}")
+
+    # --- 1. 启动建图会话 ---
+    start_resp = await send_command(ws, 'start_mapping')
+    if start_resp.get('status') != 'success':
+        print(f"{C_RED}❌ start_mapping 失败: {start_resp.get('message')}{C_RESET}")
+        await ws.close(); sys.exit(1)
+    output_dir = start_resp.get('output_dir', '?')
+    print(f"  {C_BOLD}会话输出:{C_RESET} {C_DIM}{output_dir}{C_RESET}")
+
+    # --- 2. 帧流输入 ---
+    print_header(f"▶️  建图: 喂入 {total_frames} 帧")
+    print(f"\n{C_BOLD}{'seq':>4s} │ {'frame':>5s} │ {'ts':>10s} │ {'KF':^3s} │ "
+          f"{'reason':^12s} │ {'VPR sim':>8s} │ {'info_gain':>10s} │ "
+          f"{'category':^18s} │ {'name':<14s} │ {'nodes':>5s} │ "
+          f"{'loops':>5s} │ {'dt':>7s}{C_RESET}")
+    print_separator('─')
+
+    start_time = time.time()
+    stat_kf_triggered = 0
+    stat_kf_by_cat = defaultdict(int)
+    stat_reject = 0
+    stat_reasons = defaultdict(int)
+    stat_latencies = []
+
+    last_status = {}
+    for seq, ts in enumerate(timestamps):
+        imgs = load_frame(ts)
+        if 'camera_1' not in imgs or 'camera_2' not in imgs \
+                or 'camera_3' not in imgs or 'camera_4' not in imgs:
+            print(f"{seq:4d} │ skip ts={ts} (missing cameras: {list(imgs)})")
+            continue
+
+        t0 = time.time()
+        # task 字段在建图模式下被忽略, 填 placeholder 即可
+        resp = await send_frame(ws, "mapping", imgs, pts=int(ts))
+        dt_ms = int((time.time() - t0) * 1000)
+        stat_latencies.append(dt_ms)
+
+        log = resp.get('log', {}) or {}
+        mapping_status = resp.get('mapping', {}) or {}
+        last_status = mapping_status
+
+        fidx = log.get('frame_idx', seq)
+        triggered = log.get('keyframe', False)
+        reason = log.get('reason', '') or ''
+        sim = log.get('vpr_sim_to_last')
+        ig = log.get('info_gain') or 0.0
+        cd = log.get('category_decision') or {}
+        cat = cd.get('category', '') or ''
+        name = cd.get('name', '') or ''
+
+        # 统计
+        if triggered:
+            stat_kf_triggered += 1
+            stat_reasons[reason] += 1
+            if cat == 'reject':
+                stat_reject += 1
+            elif cat:
+                stat_kf_by_cat[cat] += 1
+
+        # 颜色标识
+        kf_mark = f"{C_GREEN}KF{C_RESET}" if triggered else f"{C_DIM}──{C_RESET}"
+        if cat == 'reject':
+            cat_s = f"{C_RED}{cat:^18s}{C_RESET}"
+        elif cat:
+            cat_s = f"{C_GREEN}{cat:^18s}{C_RESET}"
+        else:
+            cat_s = f"{C_DIM}{'─':^18s}{C_RESET}"
+        sim_s = f"{sim:.3f}" if isinstance(sim, (int, float)) else "  ─  "
+        nodes = mapping_status.get('n_nodes', 0)
+        loops = mapping_status.get('n_loop_closures', 0)
+
+        print(f"{seq:4d} │ {fidx:5d} │ {str(ts):>10s} │ {kf_mark:^3s} │ "
+              f"{reason:^12s} │ {sim_s:>8s} │ {ig:>10.5f} │ "
+              f"{cat_s} │ {name[:14]:<14s} │ {nodes:>5d} │ "
+              f"{loops:>5d} │ {dt_ms:>5d}ms")
+
+    feed_elapsed = time.time() - start_time
+
+    # --- 3. finalize ---
+    print_header("🏁 触发 stop_mapping → finalize")
+    stop_resp = await send_command_with_timeout(ws, 'stop_mapping', timeout=180)
+    summary = stop_resp.get('summary') or {}
+    metrics = summary.get('metrics') or {}
+    artifacts = summary.get('artifacts') or {}
+    visuals = summary.get('visualizations') or {}
+    finalize_s = summary.get('finalize_seconds', 0)
+
+    # --- 4. 统计输出 ---
+    print_header("📊 建图统计报告")
+    print(f"\n  {C_BOLD}【基本】{C_RESET}")
+    print(f"  {'总帧数':>14s}: {total_frames}")
+    print(f"  {'发送帧数':>14s}: {len(stat_latencies)}")
+    print(f"  {'喂帧总耗时':>14s}: {feed_elapsed:.1f}s  ({feed_elapsed/max(len(stat_latencies),1)*1000:.0f}ms/帧)")
+    print(f"  {'finalize 耗时':>14s}: {finalize_s:.1f}s")
+    if stat_latencies:
+        lats = sorted(stat_latencies)
+        p50 = lats[len(lats)//2]
+        p90 = lats[int(len(lats) * 0.9)]
+        print(f"  {'延迟 P50/P90':>14s}: {p50}ms / {p90}ms  (max={max(lats)}ms)")
+
+    print(f"\n  {C_BOLD}【拓扑】{C_RESET}")
+    print(f"  {'n_nodes':>14s}: {metrics.get('n_nodes', 0)}")
+    print(f"  {'n_edges':>14s}: {metrics.get('n_edges', 0)}")
+    print(f"  {'n_loops':>14s}: {metrics.get('n_loop_closures', 0)}")
+    print(f"  {'semantic merges':>14s}: {metrics.get('n_semantic_merges', 0)}")
+
+    print(f"\n  {C_BOLD}【关键帧】{C_RESET}")
+    print(f"  {'triggered':>14s}: {metrics.get('n_keyframes_triggered', stat_kf_triggered)}")
+    acc_by_cat = metrics.get('kf_accepted_by_category') or {}
+    for cat, n in sorted(acc_by_cat.items(), key=lambda kv: -kv[1]):
+        print(f"  {cat:>14s}: {n}  {C_GREEN}{'█' * n}{C_RESET}")
+    n_reject = metrics.get('kf_rejected_by_category', 0)
+    if n_reject:
+        print(f"  {'rejected':>14s}: {n_reject}  {C_RED}{'█' * n_reject}{C_RESET}")
+    if stat_reasons:
+        print(f"\n  {C_BOLD}【触发原因分布】{C_RESET}")
+        for r, n in sorted(stat_reasons.items(), key=lambda kv: -kv[1]):
+            print(f"  {r:>14s}: {n}")
+
+    print(f"\n  {C_BOLD}【门牌 / 语义】{C_RESET}")
+    print(f"  {'n_door_plates':>14s}: {metrics.get('n_door_plates', 0)}")
+    pv = metrics.get('plate_voter') or {}
+    if pv:
+        print(f"  {'voter confirmed':>14s}: {pv.get('confirmed', 0)} / {pv.get('total_names_seen', 0)}")
+        if pv.get('confirmed_names'):
+            print(f"  {'confirmed':>14s}: {', '.join(pv['confirmed_names'])}")
+        if pv.get('rejected_names'):
+            print(f"  {'rejected':>14s}: {', '.join(pv['rejected_names'])}")
+    print(f"  {'n_connections':>14s}: {metrics.get('n_connections', 0)}")
+    print(f"  {'named_landmarks':>14s}: {metrics.get('n_named_landmarks', 0)}")
+
+    runtimes = metrics.get('runtime_s') or {}
+    if runtimes:
+        print(f"\n  {C_BOLD}【runtime_s】{C_RESET}")
+        total_runtime = runtimes.get('total', 0)
+        for k in ('depth', 'vpr', 'detect', 'vo', 'plate_scan', 'name', 'total'):
+            if k in runtimes:
+                v = runtimes[k]
+                pct = (v / max(total_runtime, 1e-6) * 100) if k != 'total' else 100.0
+                print(f"  {k:>14s}: {v:>7.2f}s  ({pct:>5.1f}%)")
+
+    print(f"\n  {C_BOLD}【产物】{C_RESET}")
+    for k, v in artifacts.items():
+        if v:
+            print(f"  {k:>20s}: {C_DIM}{v}{C_RESET}")
+    if visuals:
+        print(f"\n  {C_BOLD}【可视化】{C_RESET}")
+        for k, v in visuals.items():
+            if v:
+                print(f"  {k:>20s}: {C_DIM}{v}{C_RESET}")
+
+    print_separator('═')
+    ok = metrics.get('n_nodes', 0) > 0
+    if ok:
+        print(f"\n{C_GREEN}{C_BOLD}🎉 建图完成!{C_RESET}")
+    else:
+        print(f"\n{C_RED}{C_BOLD}💥 未产生任何节点, 建图可能失败{C_RESET}")
+    print(f"{C_DIM}📋 服务端详细日志: deploy/logs/ws_proxy_with_memory.log{C_RESET}\n")
+
+    if ws:
+        await ws.close()
+
+    if not ok:
+        sys.exit(1)
+
+
+async def send_command_with_timeout(ws, command, timeout=30):
+    """stop_mapping 需要较长 timeout (finalize 可能几十秒)"""
+    await ws.send(json.dumps({"command": command}))
+    return json.loads(await asyncio.wait_for(ws.recv(), timeout=timeout))
+
+
+# ============================================================================
+# CLI
+# ============================================================================
+
+def parse_args():
+    p = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument('--mode', choices=['nav', 'mapping'], default='nav',
+                   help='测试模式: nav (记忆导航, 默认) | mapping (在线建图)')
+    return p.parse_args()
+
+
+async def main():
+    args = parse_args()
+    if args.mode == 'mapping':
+        await run_test_mapping()
+    else:
+        await run_test_nav()
+
+
 if __name__ == "__main__":
-    asyncio.run(run_test())
+    asyncio.run(main())

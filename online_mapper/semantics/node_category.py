@@ -68,18 +68,15 @@ FUNCTION_AREA_WHITELIST = {
     "snack":  "零食区",
     "工位":   "工位区",
     "工位区": "工位区",
-    "open office": "办公区",
-    "openoffice": "办公区",
-    "open-office": "办公区",
     # 中文规范名自匹配 (Qwen describe_scene 直接返回中文 canonical)
-    "办公区": "办公区",
-    "办公":   "办公区",
+    # 注意: 不收 '办公区' / '办公' — 办公区太泛化, 不适合作导航节点
     "休息区": "休息区",
     "零食区": "零食区",
     "前台区": "前台",
 }
 
 # Landmark facility whitelist
+# 只保留真正有导航价值的公共设施; 电井/配电间/消防 之类的机房不建节点
 LANDMARK_FACILITY_WHITELIST = {
     "电梯":   "电梯口",
     "elevator": "电梯口",
@@ -91,11 +88,6 @@ LANDMARK_FACILITY_WHITELIST = {
     "厕所":   "卫生间",
     "toilet": "卫生间",
     "wc":     "卫生间",
-    "强电":   "强电井",
-    "弱电":   "弱电井",
-    "配电":   "配电间",
-    "水井":   "水井间",
-    "消防":   "消防设施",
 }
 
 # Meeting room indicator

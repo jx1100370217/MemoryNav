@@ -2172,62 +2172,7 @@ async def handle_client(websocket):
                     }
                     logger.info(f"🧠 记忆状态已重置 [{client_id}]")
 
-                # ---- 建图模式命令 ----
-                elif command == 'start_mapping':
-                    if mapping_session and not mapping_session.finalized:
-                        response = {
-                            "status": "error",
-                            "message": "建图会话已在进行, 请先 stop_mapping",
-                            "mode": session_state['mode'],
-                        }
-                    else:
-                        try:
-                            overrides = data.get('config') or {}
-                            shared_extractor = None
-                            if memory_navigator is not None and getattr(memory_navigator, "extractor", None):
-                                shared_extractor = memory_navigator.extractor
-                            # MappingSession __init__ 会加载 Depth/GD 等模型 (~10s), 走线程池
-                            # 避免阻塞事件循环导致 ws ping 超时
-                            ms_kwargs = dict(
-                                client_id=client_id,
-                                config_overrides=overrides if isinstance(overrides, dict) else None,
-                                shared_vpr_extractor=shared_extractor,
-                            )
-                            mapping_session = await asyncio.to_thread(
-                                lambda: MappingSession(**ms_kwargs)
-                            )
-                            session_state['mode'] = 'mapping'
-                            response = {
-                                "status": "success",
-                                "message": "建图模式已开启",
-                                "mode": "mapping",
-                                "output_dir": mapping_session.output_dir,
-                            }
-                            logger.info(f"🗺️ 建图模式开启 [{client_id}] -> {mapping_session.output_dir}")
-                        except Exception as e:
-                            logger.error(f"启动建图失败: {e}", exc_info=True)
-                            response = {"status": "error", "message": f"启动建图失败: {e}"}
-
-                elif command == 'stop_mapping':
-                    if not mapping_session:
-                        response = {"status": "error", "message": "当前没有活跃建图会话"}
-                    else:
-                        try:
-                            # finalize() 是 ~30s CPU-heavy sync, 必须走线程池
-                            # 否则会阻塞 asyncio 事件循环 → ws ping 超时 → 连接 1011
-                            summary = await asyncio.to_thread(mapping_session.finalize)
-                            session_state['mode'] = 'nav'
-                            response = {
-                                "status": "success",
-                                "message": "建图完成",
-                                "mode": "nav",
-                                "summary": summary,
-                            }
-                            logger.info(f"🗺️ 建图会话结束 [{client_id}]: {summary.get('artifacts')}")
-                        except Exception as e:
-                            logger.error(f"finalize 失败: {e}", exc_info=True)
-                            response = {"status": "error", "message": f"finalize 失败: {e}"}
-
+                # ---- 建图模式状态查询命令 (建图开始/结束改由 task 驱动, 见下方) ----
                 elif command == 'mapping_status':
                     if not mapping_session:
                         response = {
@@ -2244,11 +2189,73 @@ async def handle_client(websocket):
                             **mapping_session.status(),
                         }
 
-                # ---- 处理推理请求 ----
+                # ---- 处理推理请求 (task 驱动 nav / mapping 分流) ----
                 else:
-                    if session_state['mode'] == 'mapping' and mapping_session:
+                    task_value = (data.get('task') or '').strip()
+
+                    # task == "stop_mapping": 触发 finalize, 切回 nav
+                    if task_value == 'stop_mapping':
+                        if not mapping_session or mapping_session.finalized:
+                            response = {"status": "error",
+                                        "message": "当前没有活跃建图会话",
+                                        "mode": session_state['mode']}
+                        else:
+                            try:
+                                summary = await asyncio.to_thread(mapping_session.finalize)
+                                session_state['mode'] = 'nav'
+                                response = {
+                                    "status": "success",
+                                    "message": "建图完成",
+                                    "mode": "nav",
+                                    "summary": summary,
+                                }
+                                logger.info(f"🗺️ 建图会话结束 [{client_id}]: {summary.get('artifacts')}")
+                            except Exception as e:
+                                logger.error(f"finalize 失败: {e}", exc_info=True)
+                                response = {"status": "error", "message": f"finalize 失败: {e}"}
+
+                    # task == "mapping": 第一帧自动创建 session, 之后每帧喂入
+                    elif task_value == 'mapping':
+                        if mapping_session is None or mapping_session.finalized:
+                            try:
+                                shared_extractor = (
+                                    memory_navigator.extractor
+                                    if (memory_navigator is not None
+                                        and getattr(memory_navigator, "extractor", None))
+                                    else None
+                                )
+                                overrides = data.get('config') or {}
+                                ms_kwargs = dict(
+                                    client_id=client_id,
+                                    config_overrides=overrides if isinstance(overrides, dict) else None,
+                                    shared_vpr_extractor=shared_extractor,
+                                )
+                                # MappingSession __init__ 加载 Depth/GD 等重模型 (~10s), 走线程池
+                                mapping_session = await asyncio.to_thread(
+                                    lambda: MappingSession(**ms_kwargs)
+                                )
+                                session_state['mode'] = 'mapping'
+                                logger.info(f"🗺️ 建图模式开启 [{client_id}] -> {mapping_session.output_dir}")
+                            except Exception as e:
+                                logger.error(f"启动建图失败: {e}", exc_info=True)
+                                response = {"status": "error",
+                                            "message": f"启动建图失败: {e}",
+                                            "mode": session_state['mode']}
+                                await websocket.send(json.dumps(response, ensure_ascii=False))
+                                logger.info(f"已发送响应 [{client_id}]")
+                                continue
                         response = await process_mapping_frame(data, session_state, mapping_session)
+
+                    # 其他 task: nav 模式 (若之前在 mapping, 自动 finalize 切回)
                     else:
+                        if (mapping_session and not mapping_session.finalized
+                                and session_state['mode'] == 'mapping'):
+                            try:
+                                logger.info(f"🗺️ task 切到非 mapping, 自动 finalize [{client_id}]")
+                                await asyncio.to_thread(mapping_session.finalize)
+                            except Exception as e:
+                                logger.error(f"自动 finalize 失败: {e}", exc_info=True)
+                            session_state['mode'] = 'nav'
                         response = await process_inference_with_memory(
                             data, session_state,
                             memory_navigator, nav_state, memory_enabled

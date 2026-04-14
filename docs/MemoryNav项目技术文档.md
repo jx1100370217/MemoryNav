@@ -1498,40 +1498,30 @@ CUDA_VISIBLE_DEVICES=0 python online_mapper/run_online_map.py \
 
 ### 5.1 命令协议
 
+**所有请求保持统一形状** `{id, task, pts, images}`, 服务端按 `task` 字段分流:
+
+| `task` 值 | 作用 |
+|---|---|
+| `"mapping"` | 进入 / 保持建图模式. 第一帧服务端自动创建 `MappingSession`, 之后每帧喂入 `OnlineMapperCore` |
+| `"stop_mapping"` | 触发 `finalize` + 可视化, 返回 `summary`, 切回 `nav` (请求仍带 images, 服务端 ignore) |
+| 其他 (含 `None` / 导航指令) | 走记忆导航. 若之前处于 mapping, 自动 `finalize` 后再切回 nav |
+
+控制命令(`{"command": "..."}`)仅保留**状态查询类**,不再承担模式切换:
+
 | 命令 | 作用 |
 |---|---|
-| `{"command": "start_mapping"}` | 创建 `MappingSession`, 切到 `mapping` 模式 |
-| `{"command": "stop_mapping"}` | 触发 `finalize` + 可视化, 返回产物路径并切回 `nav` |
 | `{"command": "mapping_status"}` | 查询当前 session 进度 (帧数 / 节点数 / 闭环数) |
-| `{"command": "reset"/"reset_memory"/"toggle_memory"/"memory_status"/"session_status"}` | 原有导航控制命令 |
-| 普通帧请求 `{id, pts, images:{camera_1..4}}` | 根据 `session_state['mode']` 分流到 `process_inference_with_memory` (nav) 或 `process_mapping_frame` (mapping) |
+| `{"command": "reset"/"reset_memory"/"toggle_memory"/"memory_status"/"session_status"}` | 记忆导航控制 |
 
 #### 请求示例
 
-**开启建图会话**:
-
-```json
-{"command": "start_mapping"}
-```
-
-响应:
-
-```json
-{
-  "status": "success",
-  "message": "建图模式已开启",
-  "mode": "mapping",
-  "output_dir": "/home/ubuntu/.../deploy/logs/mapping_output/session_1776156750_140.../merged_labeled_data"
-}
-```
-
-**喂入单帧 (mapping 模式)** — `task` 字段被忽略, 只作占位:
+**建图帧 (首帧自动创建 session)**:
 
 ```json
 {
   "id": "test_robot",
   "task": "mapping",
-  "pts": 1770097806,
+  "pts": 1770097720,
   "images": {
     "camera_1": "<base64 jpg>",
     "camera_2": "<base64 jpg>",
@@ -1542,7 +1532,7 @@ CUDA_VISIBLE_DEVICES=0 python online_mapper/run_online_map.py \
 }
 ```
 
-响应 (摘要):
+响应:
 
 ```json
 {
@@ -1557,22 +1547,21 @@ CUDA_VISIBLE_DEVICES=0 python online_mapper/run_online_map.py \
     "info_gain": 0.0000,
     "keyframe": true,
     "reason": "vpr<0.5",
-    "category_decision": {"category": "function_area", "name": "前台", "reason": "function_area scene='前台'"}
+    "category_decision": {"category": "function_area", "name": "前台"}
   },
   "mapping": {"frames_processed": 17, "n_keyframes": 3, "n_nodes": 2, "n_loop_closures": 0}
 }
 ```
 
-**查询建图状态**:
+**结束建图** (同样的形状,`task="stop_mapping"`):
 
 ```json
-{"command": "mapping_status"}
-```
-
-**结束并生成产物**:
-
-```json
-{"command": "stop_mapping"}
+{
+  "id": "test_robot",
+  "task": "stop_mapping",
+  "pts": 1770097843,
+  "images": {"camera_1": "<base64>", "...": "..."}
+}
 ```
 
 响应 (摘要):
@@ -1602,7 +1591,13 @@ CUDA_VISIBLE_DEVICES=0 python online_mapper/run_online_map.py \
 }
 ```
 
-**导航模式帧请求**(`session_state['mode']` 未切到 `mapping` 时走此链路):
+**查询建图状态** (唯一保留的命令形式):
+
+```json
+{"command": "mapping_status"}
+```
+
+**导航帧请求**(`task` 为普通导航指令):
 
 ```json
 {

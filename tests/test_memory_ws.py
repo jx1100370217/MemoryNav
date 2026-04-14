@@ -14,7 +14,9 @@ test_memory_ws.py - 记忆导航/在线建图 双模式 WebSocket 集成测试
   稀疏容错: 连续偏离超限→强制advance
 
 建图模式 (--mode mapping):
-  发送 start_mapping 切换服务端到建图模式 → 逐帧喂入 4 相机 → stop_mapping 触发 finalize
+  请求形状与 nav 完全一致 {id, task, pts, images}, 由 task 字段驱动:
+    task="mapping"      首帧自动创建 session, 后续每帧喂入 OnlineMapperCore
+    task="stop_mapping" 触发 finalize, 返回 metrics / artifacts / visualizations
   输出节点/拓扑/场景图/占据栅格/可视化 PNG
 
 用法:
@@ -101,13 +103,13 @@ def load_frame(ts):
     return images
 
 
-async def send_frame(ws, task, images, pts=None):
-    """发送一帧请求并接收响应"""
+async def send_frame(ws, task, images, pts=None, timeout=30):
+    """发送一帧请求并接收响应. 默认 30s 超时; 建图首帧/stop_mapping 需要更长."""
     msg = {"id": "test_robot", "task": task, "images": images}
     if pts is not None:
         msg["pts"] = pts
     await ws.send(json.dumps(msg))
-    return json.loads(await asyncio.wait_for(ws.recv(), timeout=30))
+    return json.loads(await asyncio.wait_for(ws.recv(), timeout=timeout))
 
 
 async def send_command(ws, command):
@@ -662,12 +664,11 @@ async def run_test_nav():
 # ============================================================================
 
 async def run_test_mapping():
-    """完整轨迹建图测试 (建图模式).
+    """完整轨迹建图测试 (建图模式, task 驱动).
 
-    流程:
-      1. start_mapping 切换服务端到建图模式 (每 client 独立 session)
-      2. 逐帧发 4 相机 base64 → 服务端 OnlineMapperCore.process_frame
-      3. stop_mapping 触发 finalize, 返回 metrics + artifacts + visualizations
+    流程: 所有请求统一 {id, task, pts, images} 形状
+      1. 每帧 task="mapping" (首帧服务端自动创建 MappingSession, 后续喂入)
+      2. 最后一帧 task="stop_mapping" 触发 finalize, 返回 metrics + artifacts + visualizations
     """
     print_header("🗺️  在线建图 — 完整轨迹回放测试")
     print(f"  {C_BOLD}服务器:{C_RESET}  {WS_URL}")
@@ -710,16 +711,8 @@ async def run_test_mapping():
                 sys.exit(1)
     print(f"{C_GREEN}✅ 已连接{C_RESET}")
 
-    # --- 1. 启动建图会话 (首次会加载 Depth/GroundingDINO/Qwen verifier, 给足超时) ---
-    start_resp = await send_command_with_timeout(ws, 'start_mapping', timeout=180)
-    if start_resp.get('status') != 'success':
-        print(f"{C_RED}❌ start_mapping 失败: {start_resp.get('message')}{C_RESET}")
-        await ws.close(); sys.exit(1)
-    output_dir = start_resp.get('output_dir', '?')
-    print(f"  {C_BOLD}会话输出:{C_RESET} {C_DIM}{output_dir}{C_RESET}")
-
-    # --- 2. 帧流输入 ---
-    print_header(f"▶️  建图: 喂入 {total_frames} 帧")
+    # --- 1. 帧流输入 (task='mapping' 驱动, 首帧自动创建 session) ---
+    print_header(f"▶️  建图: 喂入 {total_frames} 帧 (task='mapping')")
     print(f"\n{C_BOLD}{'seq':>4s} │ {'frame':>5s} │ {'ts':>10s} │ {'KF':^3s} │ "
           f"{'reason':^12s} │ {'VPR sim':>8s} │ {'info_gain':>10s} │ "
           f"{'category':^18s} │ {'name':<14s} │ {'nodes':>5s} │ "
@@ -734,6 +727,7 @@ async def run_test_mapping():
     stat_latencies = []
 
     last_status = {}
+    output_dir = None
     for seq, ts in enumerate(timestamps):
         imgs = load_frame(ts)
         if 'camera_1' not in imgs or 'camera_2' not in imgs \
@@ -742,8 +736,10 @@ async def run_test_mapping():
             continue
 
         t0 = time.time()
-        # task 字段在建图模式下被忽略, 填 placeholder 即可
-        resp = await send_frame(ws, "mapping", imgs, pts=int(ts))
+        # 首帧服务端会懒加载 Depth/GD/Qwen (~30-60s), 给足 timeout
+        frame_timeout = 180 if seq == 0 else 60
+        resp = await send_frame(ws, "mapping", imgs, pts=int(ts),
+                                 timeout=frame_timeout)
         dt_ms = int((time.time() - t0) * 1000)
         stat_latencies.append(dt_ms)
 
@@ -788,9 +784,13 @@ async def run_test_mapping():
 
     feed_elapsed = time.time() - start_time
 
-    # --- 3. finalize ---
+    # --- 2. 发 task="stop_mapping" 触发 finalize (请求形状保持统一) ---
     print_header("🏁 触发 stop_mapping → finalize")
-    stop_resp = await send_command_with_timeout(ws, 'stop_mapping', timeout=180)
+    # 最后一帧图像复用即可 (服务端 stop_mapping 路径不消费 images)
+    last_imgs = load_frame(timestamps[-1]) if timestamps else {}
+    stop_resp = await send_frame(ws, "stop_mapping", last_imgs,
+                                  pts=int(timestamps[-1]) if timestamps else None,
+                                  timeout=180)
     summary = stop_resp.get('summary') or {}
     metrics = summary.get('metrics') or {}
     artifacts = summary.get('artifacts') or {}

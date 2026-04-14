@@ -270,24 +270,27 @@ class MappingSession:
         # StreamLoader 已在 __init__ 里扫过 tmp_dir (空), 不影响 process_frame
         logger.info(f"[Mapping] 会话就绪: output={self.output_dir}")
 
-    def feed(self, camera_images: Dict[str, np.ndarray], timestamp: Optional[str] = None) -> Dict:
-        """
+    def feed_raw(self, camera_b64: Dict[str, str], timestamp: Optional[str] = None) -> Dict:
+        """喂入原始 JPEG base64 (不做 decode→re-encode, 保持与 memory_test_data 字节一致).
+
+        这样 GroundingDINO / Depth / VPR 看到的像素与 run_online_map.py 完全相同,
+        避免 JPEG 重编码导致的下游分数浮动和结果漂移.
+
         Args:
-            camera_images: {'camera_1': ndarray(H,W,3,RGB), ..., 'camera_4': ...}
+            camera_b64: {'camera_1': '<base64 jpg>', ..., 'camera_4': ...}
             timestamp: 可选时间戳字符串, 无则用 frame_idx
         Returns:
             log_entry dict
         """
         ts = timestamp or f"{self.frame_idx:06d}"
         cam_paths = {}
-        for cam_id, img in camera_images.items():
-            if img is None:
+        for cam_id, b64 in camera_b64.items():
+            if not b64:
                 continue
-            # 保存为 BGR jpg (cv2.imread 读时就是 BGR)
             path = os.path.join(self.tmp_dir, f"{ts}_{cam_id}.jpg")
             try:
-                bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR) if img.ndim == 3 else img
-                cv2.imwrite(path, bgr, [cv2.IMWRITE_JPEG_QUALITY, 90])
+                with open(path, "wb") as f:
+                    f.write(base64.b64decode(b64))
                 cam_paths[cam_id] = path
             except Exception as e:
                 logger.warning(f"[Mapping] 保存 {cam_id} 失败: {e}")
@@ -1219,31 +1222,29 @@ async def process_mapping_frame(message_data: dict, session_state: dict,
         pts = message_data.get('pts', None)
 
         images = message_data.get('images', {}) or {}
-        cam_arrays = {}
+        # 直接传 raw base64, 避免 decode→ndarray→re-encode 破坏原 JPEG 字节
+        # (GD/Qwen 识别分数敏感, 重编码会让结果与 run_online_map.py 漂移)
+        cam_b64 = {}
         for cam_id in ('camera_1', 'camera_2', 'camera_3', 'camera_4'):
             b64 = images.get(cam_id)
-            if not b64:
-                continue
-            img = decode_base64_image(b64)
-            if img is None:
-                continue
-            cam_arrays[cam_id] = img  # RGB ndarray
+            if b64:
+                cam_b64[cam_id] = b64
 
-        if len(cam_arrays) < 4:
-            logger.warning(f"[Mapping] 帧缺少相机: got={list(cam_arrays.keys())}")
+        if len(cam_b64) < 4:
+            logger.warning(f"[Mapping] 帧缺少相机: got={list(cam_b64.keys())}")
             return {
                 "status": "error",
                 "id": robot_id, "pts": pts,
                 "mode": "mapping",
                 "action": [[0.0, 0.0, 0.0]],
                 "task_status": "mapping",
-                "message": f"建图模式需要 camera_1..4 全部可用, 当前 {len(cam_arrays)}/4",
+                "message": f"建图模式需要 camera_1..4 全部可用, 当前 {len(cam_b64)}/4",
                 "mapping": mapping_session.status(),
             }
 
         ts = str(pts) if pts is not None else None
         log_entry = await asyncio.to_thread(
-            mapping_session.feed, cam_arrays, timestamp=ts
+            mapping_session.feed_raw, cam_b64, timestamp=ts
         )
 
         return {

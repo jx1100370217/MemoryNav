@@ -349,11 +349,16 @@ class MappingSession:
             summary["visualizations"] = None
 
         # 清理 tmp_dir (原始帧 jpg 已不再需要, 节点的 4 相机图已复制到 merged_labeled_data)
+        # 如果 mapping_frames 父目录空了也一并清理, 不留空壳
         try:
             import shutil
             if os.path.isdir(self.tmp_dir):
                 shutil.rmtree(self.tmp_dir)
                 logger.info(f"[Mapping] 已清理临时帧目录: {self.tmp_dir}")
+            parent = os.path.dirname(self.tmp_dir)
+            if os.path.isdir(parent) and not os.listdir(parent):
+                os.rmdir(parent)
+                logger.info(f"[Mapping] 已清理空父目录: {parent}")
         except Exception as e:
             logger.warning(f"[Mapping] 清理 tmp_dir 失败: {e}")
 

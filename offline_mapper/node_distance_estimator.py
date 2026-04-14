@@ -37,20 +37,37 @@ class NodeDistanceEstimator:
     def __init__(self,
                  vpr_config_path: str,
                  similarity_threshold: float = 0.50,
-                 min_frame_interval: int = 5):
+                 min_frame_interval: int = 5,
+                 extractor=None,
+                 feature_dim: Optional[int] = None):
+        """
+        Args:
+            extractor: 可选复用的 VPR extractor (如 MemoryNavigator.extractor).
+                       传入后不再新建模型实例, 节省显存.
+            feature_dim: 配合 extractor 传入时的特征维度 (可选).
+        """
         self.similarity_threshold = similarity_threshold
         self.min_frame_interval = min_frame_interval
 
-        config = load_vpr_config(vpr_config_path)
-        vpr_method = config.get('vpr_method', 'selavpr')
-        device = config.get('device', 'cuda:0')
+        if extractor is not None:
+            self.vpr_extractor = extractor
+            self.feature_dim = feature_dim or getattr(extractor, "feature_dim", None)
+            logging.info(f"NodeDistanceEstimator v4: 复用已有 extractor "
+                         f"(type={type(extractor).__name__}, dim={self.feature_dim})")
+        else:
+            config = load_vpr_config(vpr_config_path)
+            vpr_method = config.get('vpr_method', 'selavpr')
+            device = config.get('device', 'cuda:0')
 
-        extractor_info = create_vpr_extractor(
-            vpr_method=vpr_method, device=device, config=config
-        )
+            extractor_info = create_vpr_extractor(
+                vpr_method=vpr_method, device=device, config=config
+            )
 
-        self.vpr_extractor = extractor_info[0]
-        self.feature_dim = extractor_info[1] if len(extractor_info) > 1 else None
+            self.vpr_extractor = extractor_info[0]
+            self.feature_dim = extractor_info[1] if len(extractor_info) > 1 else None
+            logging.info(f"NodeDistanceEstimator v4 (MemoryVPR-consistent): "
+                         f"threshold={similarity_threshold}, "
+                         f"vpr={vpr_method}, device={device}, dim={self.feature_dim}")
 
         # 存储每个 node 的 4 camera 独立特征 (L2 归一化后)
         # {node_id: {camera_id: np.ndarray}}
@@ -58,10 +75,6 @@ class NodeDistanceEstimator:
         self.node_frames: Dict[str, int] = {}
         self._last_created_frame: int = -999
         self._last_created_id: Optional[str] = None
-
-        logging.info(f"NodeDistanceEstimator v4 (MemoryVPR-consistent): "
-                     f"threshold={similarity_threshold}, "
-                     f"vpr={vpr_method}, device={device}, dim={self.feature_dim}")
 
     # ---- 兼容旧接口 (node_features) ----
     @property

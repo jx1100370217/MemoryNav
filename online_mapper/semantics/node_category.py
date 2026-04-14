@@ -67,9 +67,16 @@ FUNCTION_AREA_WHITELIST = {
     "零食":   "零食区",
     "snack":  "零食区",
     "工位":   "工位区",
+    "工位区": "工位区",
     "open office": "办公区",
     "openoffice": "办公区",
     "open-office": "办公区",
+    # 中文规范名自匹配 (Qwen describe_scene 直接返回中文 canonical)
+    "办公区": "办公区",
+    "办公":   "办公区",
+    "休息区": "休息区",
+    "零食区": "零食区",
+    "前台区": "前台",
 }
 
 # Landmark facility whitelist

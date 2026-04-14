@@ -60,6 +60,10 @@ from memory_nav.coord_transform import (
     DEFAULT_CAMERA_HEIGHT, DEFAULT_PITCH_UP,
 )
 
+# 在线建图 (建图模式)
+from online_mapper.config import OnlineMapperConfig
+from online_mapper.core.online_mapper_core import OnlineMapperCore
+
 
 # ============================================================================
 # 日志配置
@@ -225,6 +229,138 @@ class MemoryNavState:
             'plan_path': self.plan.path if self.plan else [],
             'last_task': self.last_task,
         }
+
+# ============================================================================
+# 在线建图会话 (建图模式)
+# ============================================================================
+
+class MappingSession:
+    """每个 client 的在线建图会话, 封装 OnlineMapperCore + 独立 tmp/output 目录."""
+
+    def __init__(self, client_id: int, output_root: str = None,
+                 config_overrides: Optional[Dict] = None,
+                 shared_vpr_extractor=None):
+        self.client_id = client_id
+        self.frame_idx = 0
+        self.started_at = time.time()
+        self.finalized = False
+        self.finalize_result: Optional[Dict] = None
+
+        # 独立目录 (按 client_id + 时间戳)
+        tag = f"{int(self.started_at)}_{client_id}"
+        base = output_root or os.path.join(str(project_root), "online_mapper/output")
+        self.output_dir = os.path.join(base, f"session_{tag}", "merged_labeled_data")
+        self.tmp_dir = os.path.join(LOG_DIR, "mapping_frames", f"session_{tag}")
+        os.makedirs(self.output_dir, exist_ok=True)
+        os.makedirs(self.tmp_dir, exist_ok=True)
+
+        cfg_kwargs = dict(
+            input_dir=self.tmp_dir,  # 不会真读, process_frame 直接喂 frame
+            output_dir=self.output_dir,
+            vpr_config_path=str(project_root / "deploy/vpr_config.yaml"),
+        )
+        if config_overrides:
+            cfg_kwargs.update(config_overrides)
+        # OnlineMapperConfig 默认 input_dir 必须存在; 先放 tmp_dir (empty)
+        self.cfg = OnlineMapperConfig(**cfg_kwargs)
+        logger.info(f"[Mapping] 初始化 OnlineMapperCore (session={tag})"
+                    f"{' [共享 VPR]' if shared_vpr_extractor else ' [独立 VPR]'}")
+        self.mapper = OnlineMapperCore(self.cfg,
+                                       shared_vpr_extractor=shared_vpr_extractor)
+        # StreamLoader 已在 __init__ 里扫过 tmp_dir (空), 不影响 process_frame
+        logger.info(f"[Mapping] 会话就绪: output={self.output_dir}")
+
+    def feed(self, camera_images: Dict[str, np.ndarray], timestamp: Optional[str] = None) -> Dict:
+        """
+        Args:
+            camera_images: {'camera_1': ndarray(H,W,3,RGB), ..., 'camera_4': ...}
+            timestamp: 可选时间戳字符串, 无则用 frame_idx
+        Returns:
+            log_entry dict
+        """
+        ts = timestamp or f"{self.frame_idx:06d}"
+        cam_paths = {}
+        for cam_id, img in camera_images.items():
+            if img is None:
+                continue
+            # 保存为 BGR jpg (cv2.imread 读时就是 BGR)
+            path = os.path.join(self.tmp_dir, f"{ts}_{cam_id}.jpg")
+            try:
+                bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR) if img.ndim == 3 else img
+                cv2.imwrite(path, bgr, [cv2.IMWRITE_JPEG_QUALITY, 90])
+                cam_paths[cam_id] = path
+            except Exception as e:
+                logger.warning(f"[Mapping] 保存 {cam_id} 失败: {e}")
+
+        if len(cam_paths) < 4:
+            logger.warning(f"[Mapping] 帧 {ts} 仅 {len(cam_paths)} 个相机可用, 建议 4 个")
+
+        frame = {
+            "timestamp": ts,
+            "frame_idx": self.frame_idx,
+            "cameras": cam_paths,
+        }
+        self.frame_idx += 1
+        t0 = time.time()
+        try:
+            log_entry = self.mapper.process_frame(frame)
+        except Exception as e:
+            logger.error(f"[Mapping] process_frame 失败: {e}", exc_info=True)
+            raise
+        log_entry["_latency_ms"] = int((time.time() - t0) * 1000)
+        return log_entry
+
+    def finalize(self) -> Dict:
+        if self.finalized:
+            return self.finalize_result or {}
+        logger.info(f"[Mapping] 开始 finalize (frames={self.frame_idx})")
+        t0 = time.time()
+        self.mapper.finalize()
+        elapsed = time.time() - t0
+        summary = {
+            "output_dir": self.output_dir,
+            "n_frames_processed": self.frame_idx,
+            "finalize_seconds": round(elapsed, 2),
+            "metrics": self.mapper.metrics,
+            "artifacts": {
+                "merged_labeled_data": self.output_dir,
+                "scene_graph":   os.path.join(os.path.dirname(self.output_dir), "scene_graph.json"),
+                "pose_graph":    os.path.join(os.path.dirname(self.output_dir), "pose_graph.json"),
+                "log_jsonl":     os.path.join(os.path.dirname(self.output_dir), "online_mapping_log.jsonl"),
+                "metrics_json":  os.path.join(os.path.dirname(self.output_dir), "metrics.json"),
+            },
+        }
+
+        # 生成可视化 (pose graph + occupancy + node links)
+        try:
+            from online_mapper.viz.visualize import render_mapping_visuals
+            vis_paths = render_mapping_visuals(
+                os.path.dirname(self.output_dir),
+                mapper=self.mapper,
+            )
+            summary["visualizations"] = vis_paths
+        except Exception as e:
+            logger.warning(f"[Mapping] 可视化失败: {e}", exc_info=True)
+            summary["visualizations"] = None
+
+        self.finalized = True
+        self.finalize_result = summary
+        logger.info(f"[Mapping] 完成 ({elapsed:.1f}s): {summary['artifacts']}")
+        return summary
+
+    def status(self) -> Dict:
+        m = self.mapper.metrics
+        return {
+            "finalized": self.finalized,
+            "frames_processed": self.frame_idx,
+            "n_keyframes": m.get("n_keyframes_triggered", 0),
+            "n_nodes": len(self.mapper.topo.nodes),
+            "n_edges": len(self.mapper.topo.edges),
+            "n_loop_closures": m.get("n_loop_closures", 0),
+            "n_door_plates": m.get("n_door_plates", 0),
+            "output_dir": self.output_dir,
+        }
+
 
 def init_memory_navigator(device: str = "cuda:0", vpr_method: str = "selavpr") -> Optional[MemoryNavigator]:
     """
@@ -1061,6 +1197,73 @@ def visualize_qwen35_grounding(camera_images, grounding_result, landmark_name, p
         logger.warning(f"[Qwen35Vis] 可视化保存失败: {e}", exc_info=True)
 
 # ============================================================================
+# 建图模式帧处理
+# ============================================================================
+
+def process_mapping_frame(message_data: dict, session_state: dict,
+                           mapping_session: MappingSession) -> dict:
+    """
+    建图模式下处理单个帧请求. 不返回 action; 返回建图决策日志 + 实时状态.
+
+    请求格式 (同 nav 模式):
+      {id, pts, images: {camera_1..4: base64}, ...}
+    响应格式:
+      {status, id, pts, mode:"mapping", action:[[0,0,0]], task_status:"mapping",
+       log: <log_entry>, mapping: <status>}
+    """
+    try:
+        robot_id = message_data.get('id', None)
+        pts = message_data.get('pts', None)
+
+        images = message_data.get('images', {}) or {}
+        cam_arrays = {}
+        for cam_id in ('camera_1', 'camera_2', 'camera_3', 'camera_4'):
+            b64 = images.get(cam_id)
+            if not b64:
+                continue
+            img = decode_base64_image(b64)
+            if img is None:
+                continue
+            cam_arrays[cam_id] = img  # RGB ndarray
+
+        if len(cam_arrays) < 4:
+            logger.warning(f"[Mapping] 帧缺少相机: got={list(cam_arrays.keys())}")
+            return {
+                "status": "error",
+                "id": robot_id, "pts": pts,
+                "mode": "mapping",
+                "action": [[0.0, 0.0, 0.0]],
+                "task_status": "mapping",
+                "message": f"建图模式需要 camera_1..4 全部可用, 当前 {len(cam_arrays)}/4",
+                "mapping": mapping_session.status(),
+            }
+
+        ts = str(pts) if pts is not None else None
+        log_entry = mapping_session.feed(cam_arrays, timestamp=ts)
+
+        return {
+            "status": "success",
+            "id": robot_id, "pts": pts,
+            "mode": "mapping",
+            "action": [[0.0, 0.0, 0.0]],
+            "task_status": "mapping",
+            "log": log_entry,
+            "mapping": mapping_session.status(),
+        }
+    except Exception as e:
+        logger.error(f"建图处理异常: {e}", exc_info=True)
+        return {
+            "status": "error",
+            "id": message_data.get('id', None),
+            "pts": message_data.get('pts', None),
+            "mode": "mapping",
+            "action": [[0.0, 0.0, 0.0]],
+            "task_status": "mapping",
+            "message": f"建图处理异常: {e}",
+        }
+
+
+# ============================================================================
 # 核心推理函数 (带记忆导航)
 # ============================================================================
 
@@ -1837,12 +2040,14 @@ async def handle_client(websocket):
     session_state = {
         'last_instruction': None,
         'request_count': 0,
-        'last_task': None
+        'last_task': None,
+        'mode': 'nav',  # 'nav' | 'mapping'
     }
 
     # 每个客户端独立的记忆导航状态
     nav_state = MemoryNavState()
     memory_enabled = True  # 默认启用记忆导航
+    mapping_session: Optional[MappingSession] = None
 
     global memory_navigator
 
@@ -1945,12 +2150,80 @@ async def handle_client(websocket):
                     }
                     logger.info(f"🧠 记忆状态已重置 [{client_id}]")
 
+                # ---- 建图模式命令 ----
+                elif command == 'start_mapping':
+                    if mapping_session and not mapping_session.finalized:
+                        response = {
+                            "status": "error",
+                            "message": "建图会话已在进行, 请先 stop_mapping",
+                            "mode": session_state['mode'],
+                        }
+                    else:
+                        try:
+                            overrides = data.get('config') or {}
+                            shared_extractor = None
+                            if memory_navigator is not None and getattr(memory_navigator, "extractor", None):
+                                shared_extractor = memory_navigator.extractor
+                            mapping_session = MappingSession(
+                                client_id=client_id,
+                                config_overrides=overrides if isinstance(overrides, dict) else None,
+                                shared_vpr_extractor=shared_extractor,
+                            )
+                            session_state['mode'] = 'mapping'
+                            response = {
+                                "status": "success",
+                                "message": "建图模式已开启",
+                                "mode": "mapping",
+                                "output_dir": mapping_session.output_dir,
+                            }
+                            logger.info(f"🗺️ 建图模式开启 [{client_id}] -> {mapping_session.output_dir}")
+                        except Exception as e:
+                            logger.error(f"启动建图失败: {e}", exc_info=True)
+                            response = {"status": "error", "message": f"启动建图失败: {e}"}
+
+                elif command == 'stop_mapping':
+                    if not mapping_session:
+                        response = {"status": "error", "message": "当前没有活跃建图会话"}
+                    else:
+                        try:
+                            summary = mapping_session.finalize()
+                            session_state['mode'] = 'nav'
+                            response = {
+                                "status": "success",
+                                "message": "建图完成",
+                                "mode": "nav",
+                                "summary": summary,
+                            }
+                            logger.info(f"🗺️ 建图会话结束 [{client_id}]: {summary.get('artifacts')}")
+                        except Exception as e:
+                            logger.error(f"finalize 失败: {e}", exc_info=True)
+                            response = {"status": "error", "message": f"finalize 失败: {e}"}
+
+                elif command == 'mapping_status':
+                    if not mapping_session:
+                        response = {
+                            "status": "success",
+                            "mode": session_state['mode'],
+                            "active": False,
+                            "message": "无活跃建图会话",
+                        }
+                    else:
+                        response = {
+                            "status": "success",
+                            "mode": session_state['mode'],
+                            "active": not mapping_session.finalized,
+                            **mapping_session.status(),
+                        }
+
                 # ---- 处理推理请求 ----
                 else:
-                    response = await process_inference_with_memory(
-                        data, session_state,
-                        memory_navigator, nav_state, memory_enabled
-                    )
+                    if session_state['mode'] == 'mapping' and mapping_session:
+                        response = process_mapping_frame(data, session_state, mapping_session)
+                    else:
+                        response = await process_inference_with_memory(
+                            data, session_state,
+                            memory_navigator, nav_state, memory_enabled
+                        )
 
                 await websocket.send(json.dumps(response, ensure_ascii=False))
                 logger.info(f"已发送响应 [{client_id}]")
@@ -1971,6 +2244,13 @@ async def handle_client(websocket):
     except websockets.exceptions.ConnectionClosed:
         logger.info(f"客户端连接已关闭 [{client_id}]")
     finally:
+        # 若建图会话未 finalize, 自动 finalize 保住数据
+        if mapping_session and not mapping_session.finalized:
+            try:
+                logger.info(f"[Mapping] 客户端断开, 自动 finalize [{client_id}]")
+                mapping_session.finalize()
+            except Exception as e:
+                logger.error(f"断线自动 finalize 失败: {e}", exc_info=True)
         if client_id in connected_clients:
             del connected_clients[client_id]
         logger.info(f"客户端断开 [{client_id}]。连接数: {len(connected_clients)}")

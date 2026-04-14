@@ -47,6 +47,8 @@ class OnlineMapperConfig:
     # door plate retrospective
     enable_door_plate_detection: bool = True
     door_plate_min_score: float = 0.30
+    # 门牌扫描节流: 非关键帧每 N 帧扫一次 (1=每帧, 越大越省延迟)
+    plate_scan_every_n_frames: int = 2
 
     # connection builder (real next_positions)
     enable_real_connections: bool = True

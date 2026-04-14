@@ -50,15 +50,23 @@ CAM_IDS = ['camera_1', 'camera_2', 'camera_3', 'camera_4']
 
 
 class OnlineMapperCore:
-    def __init__(self, cfg: OnlineMapperConfig):
+    def __init__(self, cfg: OnlineMapperConfig, shared_vpr_extractor=None):
+        """
+        Args:
+            shared_vpr_extractor: 可选的复用 VPR extractor (如 MemoryNavigator.extractor).
+                                   传入后 NodeDistanceEstimator 不再新建模型, 节省显存.
+        """
         self.cfg = cfg
         self.loader = StreamLoader(cfg.input_dir)
 
         # VPR
         from offline_mapper.node_distance_estimator import NodeDistanceEstimator
-        self.vpr = NodeDistanceEstimator(cfg.vpr_config_path,
-                                         similarity_threshold=cfg.vpr_dissim_threshold,
-                                         min_frame_interval=cfg.min_keyframe_frame_interval)
+        self.vpr = NodeDistanceEstimator(
+            cfg.vpr_config_path,
+            similarity_threshold=cfg.vpr_dissim_threshold,
+            min_frame_interval=cfg.min_keyframe_frame_interval,
+            extractor=shared_vpr_extractor,
+        )
 
         # geometry
         self.depth = build_depth_estimator(cfg) if cfg.enable_depth else None
@@ -144,292 +152,316 @@ class OnlineMapperCore:
 
     # ------------------------------------------------------------------
     def run(self):
-        t0 = time.time()
+        """离线一次性跑完整个 StreamLoader, 跑完自动 finalize."""
+        self._run_start_ts = time.time()
         for frame in self.loader:
-            self.metrics["n_frames"] += 1
-            fidx = frame["frame_idx"]
-            self._all_frames_cache.append(frame)
+            self.process_frame(frame)
+        self.finalize()
 
-            front_img = cv2.imread(frame["cameras"]["camera_1"])
+    # ------------------------------------------------------------------
+    def process_frame(self, frame: Dict) -> Dict:
+        """处理单帧 (供 ws_proxy 在线建图模式调用).
 
-            t1 = time.time()
-            depth_map = None
-            if self.depth and self.depth.available and front_img is not None:
-                depth_map = self.depth.estimate(front_img)
-            self.metrics["runtime_s"]["depth"] += time.time() - t1
+        Args:
+            frame: dict with keys {timestamp, frame_idx, cameras: {camera_1..4: path}}
 
-            tvo = time.time()
-            dtrans, drot = self._vo_motion(front_img, depth_map)
-            self.metrics["runtime_s"]["vo"] += time.time() - tvo
+        Returns:
+            log_entry dict (与写入 online_mapping_log.jsonl 的一致)
+        """
+        if not hasattr(self, "_run_start_ts"):
+            self._run_start_ts = time.time()
+        self.metrics["n_frames"] += 1
+        fidx = frame["frame_idx"]
+        self._all_frames_cache.append(frame)
 
-            self.robot_theta += drot
-            self.robot_x += dtrans * math.cos(self.robot_theta)
-            self.robot_y += dtrans * math.sin(self.robot_theta)
+        front_img = cv2.imread(frame["cameras"]["camera_1"])
 
-            info_gain = 0.0
-            # 阶段 3: VGGT backend 用 dense 点云直填占据栅格
-            pts_cam = getattr(self.depth, "last_points_camera", None) if self.depth else None
-            depth_conf = getattr(self.depth, "last_depth_conf", None) if self.depth else None
-            if pts_cam is not None and getattr(self.cfg, "occ_backend", "vggt") == "vggt":
-                info_gain = self.occ.integrate_pointcloud(
-                    pts_cam, self.robot_x, self.robot_y, self.robot_theta,
-                    conf=depth_conf,
+        t1 = time.time()
+        depth_map = None
+        if self.depth and self.depth.available and front_img is not None:
+            depth_map = self.depth.estimate(front_img)
+        self.metrics["runtime_s"]["depth"] += time.time() - t1
+
+        tvo = time.time()
+        dtrans, drot = self._vo_motion(front_img, depth_map)
+        self.metrics["runtime_s"]["vo"] += time.time() - tvo
+
+        self.robot_theta += drot
+        self.robot_x += dtrans * math.cos(self.robot_theta)
+        self.robot_y += dtrans * math.sin(self.robot_theta)
+
+        info_gain = 0.0
+        pts_cam = getattr(self.depth, "last_points_camera", None) if self.depth else None
+        depth_conf = getattr(self.depth, "last_depth_conf", None) if self.depth else None
+        if pts_cam is not None and getattr(self.cfg, "occ_backend", "vggt") == "vggt":
+            info_gain = self.occ.integrate_pointcloud(
+                pts_cam, self.robot_x, self.robot_y, self.robot_theta,
+                conf=depth_conf,
+            )
+        elif depth_map is not None:
+            row = depth_map[depth_map.shape[0] // 2]
+            row = row[::max(1, len(row) // 64)]
+            info_gain = self.occ.integrate(self.robot_x, self.robot_y,
+                                            self.robot_theta, row)
+
+        self.kf_selector.update_motion(dtrans, drot, info_gain)
+
+        tv = time.time()
+        feats = self._extract_features(frame["cameras"])
+        self.metrics["runtime_s"]["vpr"] += time.time() - tv
+
+        sim_to_last = None
+        if self.last_kf_features is not None:
+            sim_to_last = self._vpr_sim(feats, self.last_kf_features)
+
+        # 主动全局闭环检测 (每帧, 不依赖 keyframe 创建)
+        if len(self.node_features) >= 2:
+            lc = self.loop_closer.detect(
+                "_current_frame", feats, self.node_features,
+                self.node_frame_idx, fidx)
+            if lc:
+                verified_lc = []
+                for old_id, sim in lc:
+                    if self.cfg.loop_closure_geom_verify:
+                        ok = self.loop_closer.geometric_verify(
+                            frame["cameras"]["camera_1"],
+                            self.topo.nodes[old_id].cameras.get("camera_1"),
+                            min_inliers=self.cfg.loop_closure_min_inliers)
+                        if not ok:
+                            continue
+                    verified_lc.append((old_id, sim))
+                if verified_lc:
+                    if not getattr(self, "_last_lc_frame", -100) or \
+                            fidx - getattr(self, "_last_lc_frame", -100) >= 3:
+                        self.metrics["n_loop_closures"] += 1
+                        self._last_lc_frame = fidx
+                        log_lc = {"frame_idx": fidx, "matches": verified_lc}
+                        if not hasattr(self, "_lc_log"):
+                            self._lc_log = []
+                        self._lc_log.append(log_lc)
+                        logger.info(f"[LoopClose] frame {fidx} -> {verified_lc}")
+                        if self.last_kf_node_id:
+                            for old_id, sim in verified_lc[:1]:
+                                if old_id != self.last_kf_node_id:
+                                    self.topo.add_edge(self.last_kf_node_id, old_id)
+                                    self.pose_graph.add_edge(
+                                        self.last_kf_node_id, old_id,
+                                        0.0, 0.0, 0.0, info=sim, kind="loop")
+
+        triggered, reason = self.kf_selector.should_trigger(fidx, sim_to_last)
+        if self.last_kf_features is None:
+            triggered, reason = True, "first_frame"
+
+        log_entry = {
+            "frame_idx": fidx, "ts": frame["timestamp"],
+            "vpr_sim_to_last": sim_to_last,
+            "info_gain": info_gain,
+            "vo_dtrans": dtrans, "vo_drot": drot,
+            "robot_pose": [self.robot_x, self.robot_y, self.robot_theta],
+            "occupancy": self.occ.stats(),
+            "keyframe": triggered, "reason": reason,
+        }
+
+        # 门牌扫描节流: 关键帧必扫; 否则每 N 帧扫一次 (大幅缓解高 VPR 相似段的延迟)
+        plate_scan_every = int(getattr(self.cfg, "plate_scan_every_n_frames", 2))
+        should_scan_plate = (
+            self.door_tracker is not None
+            and self.detector.gd_available
+            and (triggered or plate_scan_every <= 1 or (fidx % plate_scan_every == 0))
+        )
+        if should_scan_plate:
+            tp = time.time()
+            self._scan_door_plates(frame, fidx)
+            self.metrics["runtime_s"].setdefault("plate_scan", 0.0)
+            self.metrics["runtime_s"]["plate_scan"] += time.time() - tp
+        else:
+            self.metrics.setdefault("plate_scan_skipped", 0)
+            self.metrics["plate_scan_skipped"] += 1
+
+        if triggered:
+            self.metrics["n_keyframes_triggered"] += 1
+
+            td = time.time()
+            cam_objects = {}
+            for c in CAM_IDS:
+                img = cv2.imread(frame["cameras"][c])
+                if img is None:
+                    continue
+                dets = self.detector.detect(img)
+                cam_objects[c] = dets
+            self.metrics["runtime_s"]["detect"] += time.time() - td
+
+            room = ""
+            landmark = ""
+            best_obj_score = 0
+            for c, dets in cam_objects.items():
+                for d in dets:
+                    if d["score"] > best_obj_score:
+                        best_obj_score = d["score"]
+                        landmark = d["label"]
+                    if "door" in d["label"].lower() or "plate" in d["label"].lower():
+                        room = d["label"]
+
+            merge_target = semantic_dedup.find_merge_target(
+                room, landmark, feats, self.topo.nodes, self.node_features)
+
+            if merge_target:
+                log_entry["semantic_merge_into"] = merge_target
+                self.metrics["n_semantic_merges"] += 1
+                if self.last_kf_node_id and self.last_kf_node_id != merge_target:
+                    self.topo.add_edge(self.last_kf_node_id, merge_target)
+            else:
+                junction_kind = JunctionKind.UNKNOWN
+                if self.junction_detector is not None:
+                    try:
+                        jinfo = self.junction_detector.classify(frame["cameras"])
+                        junction_kind = jinfo.kind
+                        log_entry["junction"] = {
+                            "kind": jinfo.kind.value,
+                            "open_cams": jinfo.open_cams,
+                            "n_open": jinfo.n_open,
+                        }
+                    except Exception as e:
+                        logger.debug(f"junction detect fail: {e}")
+
+                plate_text = None
+                plate_verified = False
+                hits = list(self._frame_plate_hits.get(fidx, set()))
+                def _hit_priority(name):
+                    if not self.plate_voter.is_confirmed(name):
+                        return -1
+                    return 0 if is_brand_like(name) else 1
+                hits.sort(key=_hit_priority, reverse=True)
+                for name in hits:
+                    if self.plate_voter.is_confirmed(name):
+                        plate_text = name
+                        plate_verified = True
+                        break
+
+                scene_describe = None
+                scene_verified = False
+                if self.namer is not None and self.namer._qwen_server:
+                    try:
+                        front = cv2.imread(frame["cameras"]["camera_1"])
+                        if front is not None:
+                            r = self.namer._qwen_server.describe_scene(self._b64(front))
+                            if r.get("status") == "ok":
+                                cand = (r.get("name_cn") or "").strip()
+                                if cand and cand not in ("未知", "未知位置"):
+                                    scene_describe = cand
+                                    if (self.verifier
+                                            and self.verifier.available
+                                            and self.verifier.verify_scene(front, cand)):
+                                        scene_verified = True
+                    except Exception as e:
+                        logger.debug(f"scene desc fail: {e}")
+
+                decision = self.category_clf.classify(
+                    plate_text=plate_text,
+                    plate_text_verified=plate_verified,
+                    scene_describe=scene_describe,
+                    scene_verified=scene_verified,
+                    junction_kind=junction_kind,
+                    gd_landmark=landmark,
                 )
-            elif depth_map is not None:
-                row = depth_map[depth_map.shape[0] // 2]
-                row = row[::max(1, len(row) // 64)]
-                info_gain = self.occ.integrate(self.robot_x, self.robot_y,
-                                                self.robot_theta, row)
+                log_entry["category_decision"] = {
+                    "category": decision.category.value,
+                    "name": decision.final_name_cn,
+                    "reason": decision.reason,
+                    "scene_describe": scene_describe,
+                    "scene_verified": scene_verified,
+                    "plate_text": plate_text,
+                    "plate_verified": plate_verified,
+                    "gd_landmark": landmark,
+                }
+                if decision.category == NodeCategory.REJECT:
+                    self.metrics.setdefault("kf_rejected_by_category", 0)
+                    self.metrics["kf_rejected_by_category"] += 1
+                    logger.info(f"[KF-REJECT] frame {fidx}: {decision.reason}")
+                    self.kf_selector.reset(fidx)
+                    self.last_kf_features = feats
+                    self.log_lines.append(log_entry)
+                    return log_entry
 
-            self.kf_selector.update_motion(dtrans, drot, info_gain)
+                self.metrics.setdefault("kf_accepted_by_category", {})
+                cat_key = decision.category.value
+                self.metrics["kf_accepted_by_category"][cat_key] = \
+                    self.metrics["kf_accepted_by_category"].get(cat_key, 0) + 1
 
-            tv = time.time()
-            feats = self._extract_features(frame["cameras"])
-            self.metrics["runtime_s"]["vpr"] += time.time() - tv
-
-            sim_to_last = None
-            if self.last_kf_features is not None:
-                sim_to_last = self._vpr_sim(feats, self.last_kf_features)
-
-            # 主动全局闭环检测 (每帧, 不依赖 keyframe 创建)
-            # 这样即使语义合并不新建 node, 也能记录 loop closure
-            if len(self.node_features) >= 2:
-                lc = self.loop_closer.detect(
-                    "_current_frame", feats, self.node_features,
-                    self.node_frame_idx, fidx)
-                if lc:
-                    verified_lc = []
-                    for old_id, sim in lc:
-                        if self.cfg.loop_closure_geom_verify:
-                            ok = self.loop_closer.geometric_verify(
-                                frame["cameras"]["camera_1"],
-                                self.topo.nodes[old_id].cameras.get("camera_1"),
-                                min_inliers=self.cfg.loop_closure_min_inliers)
-                            if not ok:
-                                continue
-                        verified_lc.append((old_id, sim))
-                    if verified_lc:
-                        # 只记录最近的(避免每帧重复)
-                        if not getattr(self, "_last_lc_frame", -100) or \
-                                fidx - getattr(self, "_last_lc_frame", -100) >= 3:
-                            self.metrics["n_loop_closures"] += 1
-                            self._last_lc_frame = fidx
-                            log_lc = {"frame_idx": fidx, "matches": verified_lc}
-                            if not hasattr(self, "_lc_log"):
-                                self._lc_log = []
-                            self._lc_log.append(log_lc)
-                            logger.info(f"[LoopClose] frame {fidx} -> {verified_lc}")
-                            # 加边 (从最近 keyframe node 到匹配旧 node)
-                            if self.last_kf_node_id:
-                                for old_id, sim in verified_lc[:1]:
-                                    if old_id != self.last_kf_node_id:
-                                        self.topo.add_edge(self.last_kf_node_id, old_id)
-                                        self.pose_graph.add_edge(
-                                            self.last_kf_node_id, old_id,
-                                            0.0, 0.0, 0.0, info=sim, kind="loop")
-
-            triggered, reason = self.kf_selector.should_trigger(fidx, sim_to_last)
-            if self.last_kf_features is None:
-                triggered, reason = True, "first_frame"
-
-            log_entry = {
-                "frame_idx": fidx, "ts": frame["timestamp"],
-                "vpr_sim_to_last": sim_to_last,
-                "info_gain": info_gain,
-                "vo_dtrans": dtrans, "vo_drot": drot,
-                "robot_pose": [self.robot_x, self.robot_y, self.robot_theta],
-                "occupancy": self.occ.stats(),
-                "keyframe": triggered, "reason": reason,
-            }
-
-            # ---- door-plate retrospective: 在每帧 (不仅 keyframe) 上都跑 GD 找门牌 ----
-            if self.door_tracker is not None and self.detector.gd_available:
-                # 仅做轻量门牌候选 (限定 query) 以控成本
-                self._scan_door_plates(frame, fidx)
-
-            if triggered:
-                self.metrics["n_keyframes_triggered"] += 1
-
-                td = time.time()
-                cam_objects = {}
-                for c in CAM_IDS:
-                    img = cv2.imread(frame["cameras"][c])
-                    if img is None:
-                        continue
-                    dets = self.detector.detect(img)
-                    cam_objects[c] = dets
-                self.metrics["runtime_s"]["detect"] += time.time() - td
-
-                room = ""
-                landmark = ""
-                best_obj_score = 0
+                nid = str(self.next_node_id)
+                self.next_node_id += 1
+                node = TopoNode(node_id=nid, timestamp=frame["timestamp"],
+                                frame_idx=fidx, cameras=dict(frame["cameras"]),
+                                landmark_name=decision.final_name_cn or landmark,
+                                room=decision.final_name_cn or "unknown")
+                node.position_name = decision.final_name_cn
+                node.position_name_eng = decision.final_name_en
+                node.category = decision.category.value
+                if decision.category == NodeCategory.SHOP:
+                    node.name_struct = NodeName(
+                        organization=decision.final_name_cn,
+                    )
+                else:
+                    node.name_struct = NodeName(
+                        category=decision.final_name_cn,
+                        category_en=decision.final_name_en,
+                    )
                 for c, dets in cam_objects.items():
                     for d in dets:
-                        if d["score"] > best_obj_score:
-                            best_obj_score = d["score"]
-                            landmark = d["label"]
-                        if "door" in d["label"].lower() or "plate" in d["label"].lower():
-                            room = d["label"]
+                        lab = d.get("label")
+                        if lab and lab not in node.name_struct.nearby_landmarks:
+                            node.name_struct.nearby_landmarks.append(lab)
+                self.topo.add_node(node)
+                self.node_features[nid] = feats
+                self.node_frame_idx[nid] = fidx
 
-                merge_target = semantic_dedup.find_merge_target(
-                    room, landmark, feats, self.topo.nodes, self.node_features)
+                sobjs = []
+                for c, dets in cam_objects.items():
+                    for d in dets:
+                        sobjs.append(SceneObject(label=d["label"], bbox=d["bbox"],
+                                                 score=d["score"], camera=c))
+                self.scene_graph.add_node(nid, room=node.room, objects=sobjs)
 
-                if merge_target:
-                    log_entry["semantic_merge_into"] = merge_target
-                    self.metrics["n_semantic_merges"] += 1
-                    if self.last_kf_node_id and self.last_kf_node_id != merge_target:
-                        self.topo.add_edge(self.last_kf_node_id, merge_target)
-                else:
-                    # ---- 路口检测 ----
-                    junction_kind = JunctionKind.UNKNOWN
-                    if self.junction_detector is not None:
-                        try:
-                            jinfo = self.junction_detector.classify(frame["cameras"])
-                            junction_kind = jinfo.kind
-                            log_entry["junction"] = {
-                                "kind": jinfo.kind.value,
-                                "open_cams": jinfo.open_cams,
-                                "n_open": jinfo.n_open,
-                            }
-                        except Exception as e:
-                            logger.debug(f"junction detect fail: {e}")
+                self.pose_graph.add_node(nid, self.robot_x, self.robot_y, self.robot_theta)
+                if self.last_kf_node_id:
+                    self.topo.add_edge(self.last_kf_node_id, nid)
+                    last_pn = self.pose_graph.nodes[self.last_kf_node_id]
+                    c, s = math.cos(last_pn.theta), math.sin(last_pn.theta)
+                    dx_w, dy_w = self.robot_x - last_pn.x, self.robot_y - last_pn.y
+                    edx = c * dx_w + s * dy_w
+                    edy = -s * dx_w + c * dy_w
+                    self.pose_graph.add_edge(self.last_kf_node_id, nid,
+                                              edx, edy, self.robot_theta - last_pn.theta,
+                                              info=1.0, kind="odom")
 
-                    # ---- 已确认的 plate 名 (本帧 + 投票通过) ----
-                    # 优先级: functional/room/CJK plate > brand-like Latin
-                    # (避免 keyframe 因为先看到 NEUMANN 就被误标为 SHOP)
-                    confirmed_plate = None
-                    plate_text = None
-                    plate_verified = False
-                    hits = list(self._frame_plate_hits.get(fidx, set()))
-                    def _hit_priority(name):
-                        if not self.plate_voter.is_confirmed(name):
-                            return -1
-                        return 0 if is_brand_like(name) else 1
-                    hits.sort(key=_hit_priority, reverse=True)
-                    for name in hits:
-                        if self.plate_voter.is_confirmed(name):
-                            confirmed_plate = name
-                            plate_text = name
-                            plate_verified = True
-                            break
+                best, top5 = self.nbv.score_and_pick(
+                    self.occ, self.robot_x, self.robot_y,
+                    [n.landmark_name for n in self.topo.nodes.values()][-3:])
+                if best:
+                    log_entry["nbv_pick"] = best
 
-                    # ---- describe_scene 候选 + verify ----
-                    scene_describe = None
-                    scene_verified = False
-                    if self.namer is not None and self.namer._qwen_server:
-                        try:
-                            front = cv2.imread(frame["cameras"]["camera_1"])
-                            if front is not None:
-                                r = self.namer._qwen_server.describe_scene(self._b64(front))
-                                if r.get("status") == "ok":
-                                    cand = (r.get("name_cn") or "").strip()
-                                    if cand and cand not in ("未知", "未知位置"):
-                                        scene_describe = cand
-                                        if (self.verifier
-                                                and self.verifier.available
-                                                and self.verifier.verify_scene(front, cand)):
-                                            scene_verified = True
-                        except Exception as e:
-                            logger.debug(f"scene desc fail: {e}")
+                self.node_payloads[nid] = {
+                    "node": node,
+                    "objects": cam_objects,
+                    "front_img": frame["cameras"]["camera_1"],
+                }
 
-                    # ---- 分类器决策 ----
-                    decision = self.category_clf.classify(
-                        plate_text=plate_text,
-                        plate_text_verified=plate_verified,
-                        scene_describe=scene_describe,
-                        scene_verified=scene_verified,
-                        junction_kind=junction_kind,
-                        gd_landmark=landmark,
-                    )
-                    log_entry["category_decision"] = {
-                        "category": decision.category.value,
-                        "name": decision.final_name_cn,
-                        "reason": decision.reason,
-                    }
-                    if decision.category == NodeCategory.REJECT:
-                        self.metrics.setdefault("kf_rejected_by_category", 0)
-                        self.metrics["kf_rejected_by_category"] += 1
-                        logger.info(f"[KF-REJECT] frame {fidx}: {decision.reason}")
-                        self.kf_selector.reset(fidx)
-                        self.last_kf_features = feats  # 仍更新 vpr last
-                        self.log_lines.append(log_entry)
-                        continue
+                self.last_kf_node_id = nid
+                self.last_kf_features = feats
 
-                    self.metrics.setdefault("kf_accepted_by_category", {})
-                    cat_key = decision.category.value
-                    self.metrics["kf_accepted_by_category"][cat_key] = \
-                        self.metrics["kf_accepted_by_category"].get(cat_key, 0) + 1
+            self.kf_selector.reset(fidx)
 
-                    nid = str(self.next_node_id)
-                    self.next_node_id += 1
-                    node = TopoNode(node_id=nid, timestamp=frame["timestamp"],
-                                    frame_idx=fidx, cameras=dict(frame["cameras"]),
-                                    landmark_name=decision.final_name_cn or landmark,
-                                    room=decision.final_name_cn or "unknown")
-                    # 把分类决策的最终名挂在 node 上 (使用 attribute monkeypatch)
-                    node.position_name = decision.final_name_cn
-                    node.position_name_eng = decision.final_name_en
-                    node.category = decision.category.value
-                    # ---- 结构化命名: 区分 SHOP (brand 作 organization) 与其他 ----
-                    if decision.category == NodeCategory.SHOP:
-                        node.name_struct = NodeName(
-                            organization=decision.final_name_cn,
-                        )
-                    else:
-                        node.name_struct = NodeName(
-                            category=decision.final_name_cn,
-                            category_en=decision.final_name_en,
-                        )
-                    # 收集本帧的 GD landmark 进 nearby_landmarks
-                    for c, dets in cam_objects.items():
-                        for d in dets:
-                            lab = d.get("label")
-                            if lab and lab not in node.name_struct.nearby_landmarks:
-                                node.name_struct.nearby_landmarks.append(lab)
-                    self.topo.add_node(node)
-                    self.node_features[nid] = feats
-                    self.node_frame_idx[nid] = fidx
+        self.log_lines.append(log_entry)
+        return log_entry
 
-                    sobjs = []
-                    for c, dets in cam_objects.items():
-                        for d in dets:
-                            sobjs.append(SceneObject(label=d["label"], bbox=d["bbox"],
-                                                     score=d["score"], camera=c))
-                    self.scene_graph.add_node(nid, room=node.room, objects=sobjs)
-
-                    self.pose_graph.add_node(nid, self.robot_x, self.robot_y, self.robot_theta)
-                    if self.last_kf_node_id:
-                        self.topo.add_edge(self.last_kf_node_id, nid)
-                        last_pn = self.pose_graph.nodes[self.last_kf_node_id]
-                        c, s = math.cos(last_pn.theta), math.sin(last_pn.theta)
-                        dx_w, dy_w = self.robot_x - last_pn.x, self.robot_y - last_pn.y
-                        edx = c * dx_w + s * dy_w
-                        edy = -s * dx_w + c * dy_w
-                        self.pose_graph.add_edge(self.last_kf_node_id, nid,
-                                                  edx, edy, self.robot_theta - last_pn.theta,
-                                                  info=1.0, kind="odom")
-
-                    # 闭环已在帧级别检测 (见上方主动全局闭环段)
-
-                    best, top5 = self.nbv.score_and_pick(
-                        self.occ, self.robot_x, self.robot_y,
-                        [n.landmark_name for n in self.topo.nodes.values()][-3:])
-                    if best:
-                        log_entry["nbv_pick"] = best
-
-                    self.node_payloads[nid] = {
-                        "node": node,
-                        "objects": cam_objects,
-                        "front_img": frame["cameras"]["camera_1"],
-                    }
-
-                    self.last_kf_node_id = nid
-                    self.last_kf_features = feats
-
-                self.kf_selector.reset(fidx)
-
-            self.log_lines.append(log_entry)
-
+    # ------------------------------------------------------------------
+    def finalize(self):
+        """收尾: 语义节点/合并/拓扑重建/写出文件. 幂等."""
+        if getattr(self, "_finalized", False):
+            logger.warning("finalize() called twice; skipping")
+            return
+        self._finalized = True
+        t0 = getattr(self, "_run_start_ts", time.time())
         self.metrics["runtime_s"]["total"] = time.time() - t0
         self.metrics["n_nodes"] = len(self.topo.nodes)
         self.metrics["n_edges"] = len(self.topo.edges)

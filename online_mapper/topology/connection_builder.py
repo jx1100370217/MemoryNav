@@ -1,9 +1,7 @@
-"""ConnectionBuilder — 包装 offline_mapper 的 AutoSubImageExtractor
+"""ConnectionBuilder — 包装 AutoSubImageExtractor
 
 子类化 AutoSubImageExtractor 重写 generate_next_positions, 在 Hungarian
 匹配后增加相似度阈值过滤 (默认 0.40), 防止线性走廊场景出现 garbage 匹配。
-
-不修改 offline_mapper, 仅 import / 子类化。
 """
 import os, sys, logging, cv2, numpy as np
 from pathlib import Path
@@ -12,9 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logger = logging.getLogger(__name__)
 
-sys.path.insert(0, '/home/ubuntu/Disk/codes/jianxiong/MemoryNav')
-
-from offline_mapper.auto_sub_image_extractor import AutoSubImageExtractor
+from online_mapper.topology.auto_sub_image_extractor import AutoSubImageExtractor
 
 
 class ThresholdedSubImageExtractor(AutoSubImageExtractor):
@@ -213,7 +209,7 @@ class ThresholdedSubImageExtractor(AutoSubImageExtractor):
 
 
 class ConnectionBuilder:
-    """Online TopoNode -> offline_mapper-format dict, drives ThresholdedSubImageExtractor"""
+    """Online TopoNode -> merged_labeled_data-format dict, drives ThresholdedSubImageExtractor"""
 
     def __init__(self, sim_threshold: float = 0.40, device: str = "cuda:0",
                  qwen_gpu: str = "1", namer=None):

@@ -4,7 +4,7 @@
 - 真实 VO (ORB + EssentialMatrix + 深度 scale) 替换常速代理
 - Qwen 语义命名 (use_qwen=True), 接 vLLM 8199
 - DoorPlateTracker 跨帧累积门牌检测, 选 bbox 最大帧作代表
-- ConnectionBuilder (offline_mapper.AutoSubImageExtractor 子类) 生成真实
+- ConnectionBuilder (AutoSubImageExtractor 子类) 生成真实
   next_positions, sim>=0.40 阈值过滤
 - LoopCloser auto-tune threshold + 几何验证
 """
@@ -60,7 +60,7 @@ class OnlineMapperCore:
         self.loader = StreamLoader(cfg.input_dir)
 
         # VPR
-        from offline_mapper.node_distance_estimator import NodeDistanceEstimator
+        from online_mapper.vpr.node_distance_estimator import NodeDistanceEstimator
         self.vpr = NodeDistanceEstimator(
             cfg.vpr_config_path,
             similarity_threshold=cfg.vpr_dissim_threshold,
@@ -96,7 +96,7 @@ class OnlineMapperCore:
         self.namer = None
         if cfg.enable_qwen_naming:
             try:
-                from offline_mapper.auto_landmark_namer import AutoLandmarkNamer
+                from online_mapper.semantics.auto_landmark_namer import AutoLandmarkNamer
                 self.namer = AutoLandmarkNamer(use_qwen=True, gpu=cfg.qwen_gpu)
                 if not (self.namer._qwen_server and self.namer._qwen_server.is_ready):
                     logger.warning("Qwen namer not ready; falling back to placeholder names")

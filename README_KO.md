@@ -87,7 +87,7 @@ MemoryNav/
 │   │   ├── keyframe_selector.py    #   다중 트리거 키프레임 선택
 │   │   ├── loop_closure.py         #   자동 임계값 + ORB 기하 검증
 │   │   ├── connection_builder.py   #   ⭐ next_positions: 기하 방향 사전
-│   │   ├── auto_sub_image_extractor.py  # 그라운딩 crop + 복도 프레임 매칭 (구 offline_mapper)
+│   │   ├── auto_sub_image_extractor.py  # 그라운딩 crop + 복도 프레임 매칭
 │   │   └── graph.py                #   TopoGraph / TopoNode
 │   ├── semantics/                  # Semantics 계층
 │   │   ├── open_set_detector.py    #   Grounding-DINO 래퍼
@@ -96,10 +96,10 @@ MemoryNav/
 │   │   ├── node_category.py        # ⭐ 노드 카테고리 분류기 + CN/EN 매핑
 │   │   ├── node_naming.py          # ⭐ 구조화 명명 NodeName (NEW v2.3)
 │   │   ├── colocation_merger.py    # ⭐ 동일 위치 병합 (NodeName.merge_names 사용)
-│   │   ├── auto_landmark_namer.py  # Qwen3.5 장면 명명 (vLLM, 구 offline_mapper)
+│   │   ├── auto_landmark_namer.py  # Qwen3.5 장면 명명 (vLLM)
 │   │   └── scene_graph.py          #   계층적 씬 그래프
 │   ├── vpr/                        # VPR 계층
-│   │   └── node_distance_estimator.py   # VPR 노드 거리 추정 (구 offline_mapper)
+│   │   └── node_distance_estimator.py   # VPR 노드 거리 추정
 │   ├── viz/                        # 시각화 계층
 │   │   └── visualize.py            #   finalize 시 pose_graph.png / occupancy.png / keyframe_timeline.png / scene_overview.txt 생성
 │   └── io/
@@ -342,7 +342,6 @@ python tests/test_memory_ws.py --mode mapping
   - **테스트 데이터 (49 프레임) 최종 결과**: 고품질 노드 5 개 (인쇄 구역 / 리셉션 / NEUMANN 전기실 / 케어 룸 / DEEPROUTE.AI 리셉션), 환각 0 / 중복 0 / 루프 클로저 2 회, validator 5/5 통과
   - 전체 설계 문서: **[`docs/online_mapper.md`](docs/online_mapper.md)**
   - 이터레이션 기록 (r1→r6): [`online_mapper/RESULTS.md`](online_mapper/RESULTS.md)
-- **🧹 `offline_mapper/` 제거**: 오프라인 배치 맵핑 경로는 제거되었고, 아직 사용되는 3 개 모듈은 `online_mapper/` 로 이전됨 — `auto_sub_image_extractor.py` → `online_mapper/topology/`, `auto_landmark_namer.py` → `online_mapper/semantics/`, `node_distance_estimator.py` → `online_mapper/vpr/` (신규 서브디렉토리).
 - **🌐 WebSocket 듀얼 모드**: `deploy/ws_proxy_with_memory.py` 가 nav 와 mapping 두 모드를 동시 지원. 클라이언트가 `start_mapping` / `stop_mapping` / `mapping_status` 로 전환. SelaVPR 모델 공유, 산출물은 `deploy/logs/mapping_output/session_{ts}_{cid}/`, 연결 끊김 시 자동 finalize.
 - **🧪 병합된 테스트 스크립트**: `tests/test_memory_ws.py --mode {nav,mapping}` 로 통합. 구 `deploy/test_mapping_client.py` 삭제됨.
 - **📊 online_mapper 시각화**: `online_mapper/viz/visualize.py` 추가, finalize 시 `pose_graph.png` / `occupancy.png` / `keyframe_timeline.png` / `scene_overview.txt` 생성.

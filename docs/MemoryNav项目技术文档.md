@@ -31,7 +31,11 @@
   - [4.4 语义层](#44-语义层)
   - [4.5 输出与终结化](#45-输出与终结化)
   - [4.6 配置项](#46-配置项)
-- [5. 离线建图](#5-离线建图)
+- [5. WebSocket 建图模式](#5-websocket-建图模式-ws_proxy-双模式接入)
+  - [5.1 命令协议](#51-命令协议)
+  - [5.2 关键实现](#52-关键实现)
+  - [5.3 节点展示帧选取](#53-节点展示帧选取)
+  - [5.4 客户端测试](#54-客户端测试)
 - [6. 部署与运维](#6-部署与运维)
 - [附录 A: 关键阈值汇总](#附录-a-关键阈值汇总)
 - [附录 B: WebSocket 协议详情](#附录-b-websocket-协议详情)
@@ -117,7 +121,7 @@ MemoryNav/
 │   │   ├── keyframe_selector.py      # 多触发关键帧选择
 │   │   ├── loop_closure.py           # 闭环检测 (auto-tune)
 │   │   ├── connection_builder.py     # 邻接构建 (几何先验 α=0.2)
-│   │   ├── auto_sub_image_extractor.py  # 子图提取 (原 offline_mapper 迁入, 被 connection_builder 继承)
+│   │   ├── auto_sub_image_extractor.py  # 子图提取 (被 connection_builder 继承)
 │   │   └── graph.py                  # TopoGraph / TopoNode
 │   ├── semantics/
 │   │   ├── open_set_detector.py      # Grounding-DINO 封装
@@ -127,9 +131,9 @@ MemoryNav/
 │   │   ├── node_naming.py            # 结构化命名 NodeName
 │   │   ├── colocation_merger.py      # 同位置节点合并
 │   │   ├── scene_graph.py            # 层次场景图
-│   │   └── auto_landmark_namer.py    # 地标命名 (Qwen vLLM, 原 offline_mapper 迁入)
+│   │   └── auto_landmark_namer.py    # 地标命名 (Qwen vLLM)
 │   ├── vpr/
-│   │   └── node_distance_estimator.py  # 节点距离估计 (原 offline_mapper 迁入)
+│   │   └── node_distance_estimator.py  # 节点距离估计
 │   ├── viz/
 │   │   └── visualize.py              # finalize 末尾出 pose_graph / occupancy / keyframe_timeline / scene_overview
 │   └── io/

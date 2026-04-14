@@ -479,19 +479,18 @@ python tests/test_memory_ws.py --mode mapping
 
 ### v2.3.0
 
-- **🛰️ Online Active Mapping Module** (`online_mapper/`): A brand-new streaming online mapping module with a 3-layer architecture (Geometry + Topology + Semantics), complementary to `offline_mapper/`
+- **🛰️ Online Active Mapping Module** (`online_mapper/`): streaming online mapping with a 3-layer architecture (Geometry + Topology + Semantics)
   - **Geometry layer**: Monocular ORB+EssentialMatrix VO, Depth-Anything-V2, scipy LM pose graph, 2D occupancy grid, 4-camera depth junction detector
   - **Topology layer**: Multi-trigger keyframes (VPR + translation + rotation + info gain), auto-tune + ORB-verified global loop closure, spatial-KNN ∪ temporal-adjacent neighbour rebuild
   - **Semantics layer**: STRICT prompt + QwenVerifier 2nd-pass verification + MultiFrameVoter multi-frame voting + substring variant merging + 7-class whitelist (NodeCategoryClassifier) + ColocationMerger co-location merge + CN/EN bilingual naming + NameDeduplicator suffix-based dedup
-  - Output schema 100% compatible with `offline_mapper/`; additionally writes `scene_graph.json` / `pose_graph.json` / `online_mapping_log.jsonl` / `metrics.json`
-  - **Test data (49 frames) final result**: 5 high-quality nodes (Printing Area / Reception / NEUMANN Electrical Closet / Care Room / DEEPROUTE.AI Reception), 0 hallucinations, 0 duplicates, 2 loop closures, validator 5/5 passed
+  - Produces `merged_labeled_data/` schema plus `scene_graph.json` / `pose_graph.json` / `online_mapping_log.jsonl` / `metrics.json`
+  - **Test data (49 frames) final result**: 5 high-quality nodes (Printing Area / Reception / NEUMANN Electrical Closet / Care Room / DEEPROUTE.AI Reception), 0 hallucinations, 0 duplicates, 2 loop closures
   - Full design doc: **[`docs/online_mapper.md`](docs/online_mapper.md)** (~47k characters, 13 chapters)
   - Iteration history (r1→r6): [`online_mapper/RESULTS.md`](online_mapper/RESULTS.md)
-- **🔁 `auto_mapper/` renamed to `offline_mapper/`**: Aligned with `online_mapper/` to clearly distinguish offline vs online mapping scenarios. Internal class names (`AutoMapperCore` / `AutoSubImageExtractor` etc.) are intentionally preserved; only import paths are migrated.
 
 ### v2.2.0
 
-- **🆕 Auto-mapping Module**: New `auto_mapper/` module (renamed to `offline_mapper/` in v2.3.0) for fully automatic topological graph generation from image sequences
+- **🆕 Auto-mapping Module**: fully automatic topological graph generation from image sequences
   - 3-phase pipeline: VPR node creation → semantic augmentation (door plate/sign detection) → connection generation (grounding + crop)
   - Qwen3.5 vLLM inference backend for scene naming, text recognition, and point grounding
   - Semantic node detector auto-identifies meeting room names, room numbers, and other navigation-relevant signs

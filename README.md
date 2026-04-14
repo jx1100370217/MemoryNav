@@ -93,7 +93,7 @@ MemoryNav/
 │   │   ├── loop_closure.py         #   auto-tune + ORB 几何验证闭环
 │   │   ├── frontier_nbv.py         #   frontier / NBV 候选推荐
 │   │   ├── connection_builder.py   #   ⭐ next_positions: 几何方向先验
-│   │   └── auto_sub_image_extractor.py  # 打点裁剪 + 走廊中间帧匹配 (原 offline_mapper)
+│   │   └── auto_sub_image_extractor.py  # 打点裁剪 + 走廊中间帧匹配
 │   ├── semantics/                  # Semantics 层
 │   │   ├── open_set_detector.py    #   Grounding-DINO 封装
 │   │   ├── scene_graph.py          #   层次场景图
@@ -103,9 +103,9 @@ MemoryNav/
 │   │   ├── hallucination_filter.py # ⭐ STRICT prompt + QwenVerifier + MultiFrameVoter
 │   │   ├── colocation_merger.py    # ⭐ 同位置合并 (用 NodeName.merge_names)
 │   │   ├── semantic_dedup.py       #   语义重名去重
-│   │   └── auto_landmark_namer.py  #   Qwen3.5 场景命名 (原 offline_mapper)
+│   │   └── auto_landmark_namer.py  #   Qwen3.5 场景命名
 │   ├── vpr/
-│   │   └── node_distance_estimator.py  # VPR 节点距离估计 (原 offline_mapper)
+│   │   └── node_distance_estimator.py  # VPR 节点距离估计
 │   ├── viz/visualize.py            #   finalize 末尾产出 pose_graph / occupancy / timeline
 │   └── io/
 │       └── merged_data_writer.py   #   输出 merged_labeled_data + 结构化字段
@@ -366,7 +366,7 @@ anyloc:
 
 ## 🛰️ 在线建图 (online_mapper)
 
-`online_mapper/` 是当前唯一的建图模块 (自 v2.3.0 起移除了旧的 `offline_mapper/`), 采用三层架构 (Geometry + Topology + Semantics) 流式在线建图, 输出与 `merged_labeled_data/` schema 完全兼容.
+`online_mapper/` 是 MemoryNav 的建图模块, 采用三层架构 (Geometry + Topology + Semantics) 流式在线建图, 产出 `merged_labeled_data/` schema.
 
 - **Geometry 层**: VGGT-1B 几何前端 (depth + VO + 占据栅格 dense 点云 单次推理), scipy LM pose graph, 4-camera depth 路口检测
 - **Topology 层**: 多触发关键帧 (VPR + 位移 + 旋转 + 信息增益 + 路口), auto-tune + ORB 几何验证闭环, ConnectionBuilder 几何方向先验
@@ -611,25 +611,23 @@ python tests/test_memory_ws.py --mode mapping
 
 ### v2.3.0
 
-- **🛰️ 在线主动建图模块** (`online_mapper/`)：全新的流式在线建图模块, 三层架构 (Geometry + Topology + Semantics), 与 `offline_mapper/` 互补
+- **🛰️ 在线主动建图模块** (`online_mapper/`): 流式在线建图, 三层架构 (Geometry + Topology + Semantics)
   - **Geometry 层**: 单目 ORB+EssentialMatrix VO, Depth-Anything-V2, scipy LM pose graph, 2D 占据栅格, 4-camera depth 路口检测
   - **Topology 层**: 多触发关键帧 (VPR + 位移 + 旋转 + 信息增益), auto-tune + ORB 几何验证的全局闭环, 空间 KNN + 时间相邻并集的邻接重建
   - **Semantics 层**: STRICT prompt + QwenVerifier 二次验证 + MultiFrameVoter 多帧投票 + substring 变体合并 + 7 大类别白名单 (NodeCategoryClassifier) + ColocationMerger 同位置节点合并 + CN/EN 双语命名 + NameDeduplicator 重名后缀
-  - 输出 schema 与 `offline_mapper/` 100% 兼容, 额外产出 `scene_graph.json` / `pose_graph.json` / `online_mapping_log.jsonl` / `metrics.json`
-  - **测试数据 (49 帧) 最终结果**: 5 个高质量 node (打印区 / 前台 / NEUMANN强电井 / 关爱室 / DEEPROUTE.AI前台), 0 幻觉, 0 重名, 2 loop closures, validator 5/5 通过
+  - 输出 `merged_labeled_data/` schema, 额外产出 `scene_graph.json` / `pose_graph.json` / `online_mapping_log.jsonl` / `metrics.json`
+  - **测试数据 (49 帧) 最终结果**: 5 个高质量 node (打印区 / 前台 / NEUMANN强电井 / 关爱室 / DEEPROUTE.AI前台), 0 幻觉, 0 重名, 2 loop closures
   - 完整设计文档: **[`docs/online_mapper.md`](docs/online_mapper.md)** (约 47000 字, 13 章)
   - 迭代历史 (r1→r6): [`online_mapper/RESULTS.md`](online_mapper/RESULTS.md)
-- **🔁 `auto_mapper/` 重命名为 `offline_mapper/`**: 与 `online_mapper/` 对应, 明确区分离线/在线两种建图场景. 内部类名 (`AutoMapperCore` / `AutoSubImageExtractor` 等) 保持不变, 仅 import 路径迁移
 
 ### v2.2.0
 
-- **🆕 自动建图模块**：新增 `auto_mapper/` 模块（v2.3.0 已重命名为 `offline_mapper/`），从图像序列全自动生成拓扑导航图
-  - 三阶段 Pipeline：VPR 节点创建 → 语义增补（门牌/标识检测）→ 连接生成（打点 + crop）
-  - Qwen3.5 vLLM 推理后端，支持场景命名、文字识别、打点定位
+- **🆕 自动建图模块**: 从图像序列全自动生成拓扑导航图, 输出与手工标注 `merged_labeled_data/` 完全兼容
+  - 三阶段 Pipeline: VPR 节点创建 → 语义增补 (门牌/标识检测) → 连接生成 (打点 + crop)
+  - Qwen3.5 vLLM 推理后端, 支持场景命名、文字识别、打点定位
   - 语义节点检测器自动识别会议室名、门牌号等有导航意义的标识
   - DINOv3 走廊中间帧匹配 + 匈牙利算法最优 camera→邻居分配
-  - 4 cameras 并行调用 vLLM（Phase 1.5 加速 1.3x，Phase 2 加速 1.6x，总体 315s→238s）
-  - 输出格式与手工标注 `merged_labeled_data/` 完全兼容，可直接用于记忆构建
+  - 4 cameras 并行调用 vLLM (Phase 1.5 加速 1.3x, Phase 2 加速 1.6x, 总体 315s→238s)
 
 ### v2.1.0 (文档同步)
 

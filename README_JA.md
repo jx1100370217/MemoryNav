@@ -343,7 +343,7 @@ python tests/test_memory_ws.py --mode mapping
 
 ### v2.3.0
 
-- **🛰️ オンライン能動建図モジュール** (`online_mapper/`): 3 層アーキテクチャ (Geometry + Topology + Semantics) によるストリーミング オンライン建図モジュールを新設、`offline_mapper/` と相補関係
+- **🛰️ オンライン能動建図モジュール** (`online_mapper/`): 3 層アーキテクチャ (Geometry + Topology + Semantics) によるストリーミング オンライン建図モジュール
   - **Geometry 層**: 単眼 ORB+EssentialMatrix VO、Depth-Anything-V2、scipy LM ポーズグラフ、2D 占有グリッド、4 カメラ深度交差点検出
   - **Topology 層**: マルチトリガー キーフレーム、自動閾値 + ORB 幾何検証によるグローバルループクロージャ、空間 KNN ∪ 時間隣接による隣接関係再構築
   - **Semantics 層**: STRICT プロンプト + QwenVerifier 二次検証 + MultiFrameVoter 多フレーム投票 + サブストリング変異マージ + 7 カテゴリーホワイトリスト + ColocationMerger 同一位置マージ + CN/EN バイリンガル命名 + NameDeduplicator サフィックス重複解消
@@ -351,11 +351,10 @@ python tests/test_memory_ws.py --mode mapping
   - **テストデータ (49 フレーム) 最終結果**: 5 ノード (印刷エリア / 受付 / NEUMANN 電気室 / ケアルーム / DEEPROUTE.AI 受付)、幻覚 0 / 重複 0 / ループクロージャ 2 回、validator 5/5 合格
   - 完全設計ドキュメント: **[`docs/online_mapper.md`](docs/online_mapper.md)**
   - イテレーション履歴 (r1→r6): [`online_mapper/RESULTS.md`](online_mapper/RESULTS.md)
-- **🔁 `auto_mapper/` を `offline_mapper/` に改名**: `online_mapper/` と対応させ、オフライン/オンライン建図を明確に区別。内部クラス名 (`AutoMapperCore` 等) は意図的に保持し、import パスのみ移行。
 
 ### v2.2.0
 
-- **🆕 自動建図モジュール**：`auto_mapper/`モジュール (v2.3.0 で `offline_mapper/` に改名) を新設、画像シーケンスからトポロジカルグラフを全自動生成
+- **🆕 自動建図モジュール**: 画像シーケンスからトポロジカルグラフを全自動生成
   - 3段階Pipeline：VPRノード作成→語義増補→接続生成
   - Qwen3.5 vLLM推論バックエンド
   - DINOv3廊下中間フレームマッチング + ハンガリアンアルゴリズム

@@ -1,6 +1,6 @@
 # online_mapper 设计文档 (v2.4.0)
 
-> 当前版本: **v2.4.0** — offline_mapper 已并入本模块, 新增 WebSocket 建图模式与双模式路由
+> 当前版本: **v2.4.0** — 新增 WebSocket 建图模式与双模式路由
 >
 > 代码根: `MemoryNav/online_mapper/`
 > 第三方源码: `MemoryNav/third_party/vggt_space/` (VGGT, .gitignore)
@@ -12,7 +12,7 @@
 
 ## 1. 定位与能力
 
-`online_mapper` 是**流式在线主动建图模块**, 在机器人边走边拍的场景下实时构建用于导航的**高质量语义拓扑图**. v2.4.0 已吸收原 `offline_mapper/` 的 `AutoSubImageExtractor` / `NodeDistanceEstimator` / `AutoLandmarkNamer` 三个核心类到各自子目录 (`topology/` / `vpr/` / `semantics/`), 不再依赖外部模块.
+`online_mapper` 是**流式在线主动建图模块**, 在机器人边走边拍的场景下实时构建用于导航的**高质量语义拓扑图**.
 
 ### 特性一览
 

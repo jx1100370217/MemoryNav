@@ -72,21 +72,12 @@ MemoryNav/
 │   └── memory_visualization_server.py  # 可視化サービス (サブ画像 + 打点 + 遮蔽検出)
 ├── pretrained/                     # 事前学習モデル (YOLOv8n, DINOv3等)
 ├── merged_labeled_data/            # 記憶アノテーションデータ
-├── offline_mapper/                 # 🗺️ オフライン建図モジュール (旧 auto_mapper)
-│   ├── run_auto_map.py             # エントリースクリプト
-│   ├── auto_mapper_core.py         # コアコントローラー (3段階Pipeline)
-│   ├── node_distance_estimator.py  # VPRノード距離推定
-│   ├── auto_landmark_namer.py      # Qwen3.5シーン命名 (vLLM)
-│   ├── semantic_node_detector.py   # ドアプレート/標識文字認識
-│   ├── auto_node_generator.py      # ノードディレクトリ・メタデータ生成
-│   ├── auto_sub_image_extractor.py # グラウンディングcrop + 廊下フレームマッチング
-│   └── validate_output.py          # 出力フォーマット検証
 ├── online_mapper/                  # 🛰️ オンライン能動建図モジュール (v2.3.0, 3 層)
 │   ├── run_online_map.py           # CLI エントリ
 │   ├── config.py                   # グローバル設定 (depth/vo/occ_backend スイッチ)
-│   ├── core/online_mapper_core.py  # ⭐ メインオーケストレーター (~870 行)
+│   ├── core/online_mapper_core.py  # ⭐ メインオーケストレーター (process_frame + finalize)
 │   ├── geometry/                   # Geometry 層 (VGGT-1B 幾何フロントエンド)
-│   │   ├── vggt_backend.py         # ⭐ VGGT-1B シングルトン + スライディングウィンドウ (NEW v2.2)
+│   │   ├── vggt_backend.py         # ⭐ VGGT-1B シングルトン + スライディングウィンドウ
 │   │   ├── depth_estimator.py      #   DA-V2 + VGGTDepthEstimator + ファクトリ
 │   │   ├── visual_odometry.py      #   MonoVO + VGGTVisualOdometry + ファクトリ
 │   │   ├── pose_graph.py           #   scipy LM ポーズグラフ
@@ -96,15 +87,21 @@ MemoryNav/
 │   │   ├── keyframe_selector.py    #   多トリガー キーフレーム選択
 │   │   ├── loop_closure.py         #   自動閾値 + ORB 幾何検証ループクロージャ
 │   │   ├── connection_builder.py   #   ⭐ next_positions: 幾何方向先験
-│   │   └── graph.py                #   TopoGraph / TopoNode
+│   │   ├── graph.py                #   TopoGraph / TopoNode
+│   │   └── auto_sub_image_extractor.py  # グラウンディングcrop + 廊下フレームマッチング
 │   ├── semantics/                  # Semantics 層
 │   │   ├── open_set_detector.py    #   Grounding-DINO ラッパー
 │   │   ├── door_plate_tracker.py   #   ドアプレート代表フレーム選択
 │   │   ├── hallucination_filter.py # ⭐ STRICT プロンプト + QwenVerifier + MultiFrameVoter
 │   │   ├── node_category.py        # ⭐ ノードカテゴリー分類器 + CN/EN マップ
-│   │   ├── node_naming.py          # ⭐ 構造化命名 NodeName (NEW v2.3)
+│   │   ├── node_naming.py          # ⭐ 構造化命名 NodeName
 │   │   ├── colocation_merger.py    # ⭐ 同一位置マージ (NodeName.merge_names を使用)
-│   │   └── scene_graph.py          #   階層的シーングラフ
+│   │   ├── scene_graph.py          #   階層的シーングラフ
+│   │   └── auto_landmark_namer.py  #   Qwen3.5シーン命名 (vLLM)
+│   ├── vpr/
+│   │   └── node_distance_estimator.py  # VPRノード距離推定
+│   ├── viz/
+│   │   └── visualize.py            # pose_graph.png / occupancy.png / keyframe_timeline.png / scene_overview.txt
 │   └── io/
 │       └── merged_data_writer.py   #   出力ライター + 構造化フィールド
 ├── third_party/vggt_space/         # VGGT ソース (.gitignore, HF Space からダウンロード)
@@ -213,104 +210,41 @@ camera_3またはcamera_4（後方向き）がマッチングに成功した場�
 
 ---
 
-## 🗂️ 建図モジュール比較
+## 🛰️ オンライン能動建図 (online_mapper)
 
-MemoryNav は**相補的な 2 つ**の建図モジュールを提供します:
+オンライン能動建図モジュール (`online_mapper/`) は、ロボット走行中のストリーミングフレームに対して、フレームごとに geometry → VPR → ループ → プレートスキャン → KF トリガー → 分類 → ノード生成を実行し、`merged_labeled_data/` スキーマを生成します。
 
-| 項目 | `offline_mapper/` (オフライン) | `online_mapper/` (オンライン能動) |
-|---|---|---|
-| **位置付け** | 録画完了後の一括後処理 | ロボット走行中のストリーミング決定 |
-| **時系列前提** | 全フレーム可視 | 「到達済み」フレームのみ |
-| **メインループ** | 3 段階 Pipeline (Phase1 → 1.5 → 2) | フレームごと: geometry → VPR → ループ → プレートスキャン → KF トリガー → 分類 → ノード生成 |
-| **キーフレーム戦略** | VPR 類似度 + 最小フレーム間隔 | VPR + 累積並進 + 累積回転 + 情報ゲイン + 交差点 + セマンティックホワイトリスト |
-| **ループクロージャ** | 先頭-末尾比較 (任意) | 全域 VPR + ORB 幾何検証、毎フレーム実行 |
-| **命名** | Qwen describe_scene / detect_text (単一フレーム) | 多フレーム投票 + 二次検証 + カテゴリーホワイトリスト + CN/EN バイリンガル |
-| **ノードフィルタ** | なし (全 VPR トリガーでノード生成) | 7 カテゴリーホワイトリスト、装飾壁 / 観葉植物 / 空廊下を拒否 |
-| **幻覚防御** | なし | STRICT プロンプト + QwenVerifier + MultiFrameVoter + サブストリング変異マージ |
-| **出力スキーマ** | `merged_labeled_data/` | **完全互換** `merged_labeled_data/` + 追加の `scene_graph.json` / `pose_graph.json` / `online_mapping_log.jsonl` / `metrics.json` |
-| **コード関係** | スタンドアロン | `offline_mapper.AutoSubImageExtractor` / `AutoLandmarkNamer` / `NodeDistanceEstimator` をサブクラス化・再利用 (offline_mapper は不変) |
+| 項目 | `online_mapper/` (オンライン能動) |
+|---|---|
+| **位置付け** | ロボット走行中のストリーミング決定 |
+| **時系列前提** | 「到達済み」フレームのみ |
+| **メインループ** | フレームごと: geometry → VPR → ループ → プレートスキャン → KF トリガー → 分類 → ノード生成 |
+| **キーフレーム戦略** | VPR + 累積並進 + 累積回転 + 情報ゲイン + 交差点 + セマンティックホワイトリスト |
+| **ループクロージャ** | 全域 VPR + ORB 幾何検証、毎フレーム実行 |
+| **命名** | 多フレーム投票 + 二次検証 + カテゴリーホワイトリスト + CN/EN バイリンガル |
+| **ノードフィルタ** | 7 カテゴリーホワイトリスト、装飾壁 / 観葉植物 / 空廊下を拒否 |
+| **幻覚防御** | STRICT プロンプト + QwenVerifier + MultiFrameVoter + サブストリング変異マージ |
+| **出力スキーマ** | `merged_labeled_data/` スキーマを生成 + 追加の `scene_graph.json` / `pose_graph.json` / `online_mapping_log.jsonl` / `metrics.json` |
+| **API** | `OnlineMapperCore.process_frame` + `finalize` (ストリーミング対応) |
+| **可視化** | `finalize` 時に `pose_graph.png` / `occupancy.png` / `keyframe_timeline.png` / `scene_overview.txt` を生成 |
 
-両者の**出力スキーマは同一**で、いずれも `deploy/build_memory.sh` で直接記憶構築に使用できます。
+出力は `deploy/build_memory.sh` で直接記憶構築に使用できます。
 
 完全な online_mapper 設計ドキュメント: **[`docs/online_mapper.md`](docs/online_mapper.md)** (v2.3.0, 12 章)
 online_mapper イテレーション履歴 (v2.1.0 → v2.3.0): [`docs/online_mapper.md` §10](docs/online_mapper.md). 初期 r1→r6 メトリクス: **[`online_mapper/RESULTS.md`](online_mapper/RESULTS.md)**
 
----
+### 🔌 WebSocket デュアルモード
 
-## 🗺️ オフライン建図 (offline_mapper)
+`deploy/ws_proxy_with_memory.py` はナビゲーションとオンライン建図の**両モード**をサポートします:
 
-オフライン建図モジュール（`offline_mapper/`、旧 `auto_mapper`）は、ロボットが撮影した画像シーケンスからトポロジカルナビゲーショングラフを全自動生成します。手動アノテーション不要です。
-
-### 3段階Pipeline
-
-```
-Phase 1: VPR 粗粒度ノード作成
-  ├─ フレーム順に4カメラ画像をスキャン
-  ├─ VPR特徴量抽出 → 最近ノードとの類似度比較
-  ├─ 類似度 < 閾値(0.70) → 新ノード作成
-  └─ Qwen3.5 VLMで自動命名(中国語/英語)
-
-Phase 1.5: 語義増補
-  ├─ ノード間の中間フレームをスキャン
-  ├─ Qwen3.5文字認識：ドアプレート、標識、会議室名を検出
-  ├─ 品質フィルタリング：ブラックリストで無意味な標識を除外
-  ├─ 名前正規化：数字/英語を自動補完(10 → 10号会議室, MOORE → ムーア会議室)
-  └─ 空間位置に新ノード挿入 + リナンバリング
-
-Phase 2: 接続生成
-  ├─ Qwen3.5 PointGrounderで隣接ノードペアをグラウンディング
-  ├─ 廊下中間フレームマッチング：DINOv3 CLS特徴量で最適camera選択
-  ├─ ハンガリアンアルゴリズム：camera→隣接ノードの最適割当
-  ├─ 3段階crop切り出し(big/mid/small) + Y座標補正
-  └─ 出力フォーマット検証 (validate_output.py)
-```
-
-### 使用方法
-
-```bash
-python offline_mapper/run_auto_map.py \
-    --input_dir memory_test_data \
-    --output_dir offline_mapper/merged_labeled_data \
-    --vpr_config deploy/vpr_config.yaml
-```
-
-### パラメータ
-
-| パラメータ | デフォルト | 説明 |
-|-----------|---------|------|
-| `--input_dir` | `memory_test_data` | 入力画像ディレクトリ |
-| `--output_dir` | `offline_mapper/merged_labeled_data` | 出力ディレクトリ |
-| `--vpr_config` | `deploy/vpr_config.yaml` | VPR設定ファイル |
-| `--similarity_threshold` | `0.70` | VPR類似度閾値 |
-| `--min_frame_interval` | `5` | 最小フレーム間隔 |
-| `--use_qwen_naming` | `true` | Qwen3.5自動命名 |
-| `--qwen_gpu` | `1` | Qwen3.5用GPU |
-
-### 前提条件
-
-1. **vLLMサービス**：`bash deploy/start_qwen_vllm.sh`
-2. **VPRモデル**：設定したVPR手法の事前学習重み
-3. **DINOv3モデル**：廊下中間フレームマッチング用
-
-### 出力フォーマット
-
-手動アノテーションの`merged_labeled_data/`と完全互換。自動建図データで直接記憶構築：
-
-```bash
-bash deploy/build_memory.sh --data_dir offline_mapper/merged_labeled_data
-```
-
-### コアコンポーネント
-
-| コンポーネント | 説明 |
-|-------------|------|
-| `offline_mapper/auto_mapper_core.py` | コアコントローラー、3段階Pipelineを編成 |
-| `node_distance_estimator.py` | VPR特徴量比較、新ノード作成判定 |
-| `auto_landmark_namer.py` | Qwen3.5 vLLMシーン記述 + ランドマーク命名 |
-| `semantic_node_detector.py` | ドアプレート/標識文字認識 + 名前正規化 |
-| `auto_node_generator.py` | ノードディレクトリ作成、メタデータJSON生成 |
-| `auto_sub_image_extractor.py` | PointGrounding + DINOv3廊下フレームマッチング + crop切り出し |
-| `validate_output.py` | 出力フォーマット検証 |
+| 項目 | 説明 |
+|---|---|
+| **ポート** | 9528 で待機 |
+| **デフォルトモード** | `session_state['mode']` は `nav` |
+| **マッピング切替コマンド** | `start_mapping` / `stop_mapping` / `mapping_status` (クライアントが明示的に切替) |
+| **成果物保存先** | `deploy/logs/mapping_output/session_{ts}_{cid}/` |
+| **自動 finalize** | 切断時に自動で `finalize` を呼び出し、frame-tmp を自動クリーンアップ |
+| **モデル共有** | SelaVPR モデルを両モード間で共有 |
 
 ---
 
@@ -387,6 +321,21 @@ python deploy/ws_proxy_with_memory.py
 | `memory_status` | 記憶ナビ詳細（利用可能な目的地一覧含む） |
 | `reset_memory` | 記憶状態のみリセット（Agent履歴保持） |
 | `session_status` | セッション状態表示 |
+| `start_mapping` / `stop_mapping` / `mapping_status` | オンライン建図モードの開始 / 停止 / 状態確認 |
+
+---
+
+## 🧪 テスト
+
+統合テストスクリプト `tests/test_memory_ws.py` は `--mode` フラグでナビゲーション / マッピング両モードを検証できます:
+
+```bash
+# デフォルト nav モード
+python tests/test_memory_ws.py
+
+# マッピング全量再生
+python tests/test_memory_ws.py --mode mapping
+```
 
 ---
 
@@ -398,7 +347,7 @@ python deploy/ws_proxy_with_memory.py
   - **Geometry 層**: 単眼 ORB+EssentialMatrix VO、Depth-Anything-V2、scipy LM ポーズグラフ、2D 占有グリッド、4 カメラ深度交差点検出
   - **Topology 層**: マルチトリガー キーフレーム、自動閾値 + ORB 幾何検証によるグローバルループクロージャ、空間 KNN ∪ 時間隣接による隣接関係再構築
   - **Semantics 層**: STRICT プロンプト + QwenVerifier 二次検証 + MultiFrameVoter 多フレーム投票 + サブストリング変異マージ + 7 カテゴリーホワイトリスト + ColocationMerger 同一位置マージ + CN/EN バイリンガル命名 + NameDeduplicator サフィックス重複解消
-  - 出力スキーマは `offline_mapper/` と 100% 互換、追加で `scene_graph.json` / `pose_graph.json` / `online_mapping_log.jsonl` / `metrics.json` を出力
+  - `merged_labeled_data/` スキーマを生成、追加で `scene_graph.json` / `pose_graph.json` / `online_mapping_log.jsonl` / `metrics.json` を出力
   - **テストデータ (49 フレーム) 最終結果**: 5 ノード (印刷エリア / 受付 / NEUMANN 電気室 / ケアルーム / DEEPROUTE.AI 受付)、幻覚 0 / 重複 0 / ループクロージャ 2 回、validator 5/5 合格
   - 完全設計ドキュメント: **[`docs/online_mapper.md`](docs/online_mapper.md)**
   - イテレーション履歴 (r1→r6): [`online_mapper/RESULTS.md`](online_mapper/RESULTS.md)

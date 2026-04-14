@@ -23,8 +23,7 @@ MemoryNav 是一个面向移动机器人的视觉记忆导航系统。系统通�
 
 ### 核心能力
 
-- **🗺️ 离线建图** (`offline_mapper/`)：三阶段 Pipeline（VPR 节点创建 → 语义增补 → 连接生成）从图像序列全自动生成拓扑导航图，无需人工标注
-- **🛰️ 在线主动建图** (`online_mapper/`, **v2.3.0**)：三层架构（Geometry+Topology+Semantics）流式在线建图。**VGGT-1B 几何前端**（depth + VO + 占据栅格 dense 点云 单次推理同时供给）、**结构化节点命名** `NodeName(category, organization, nearby_plates, ...)`（`前台·DEEPROUTE.AI` 取代 `DEEPROUTE.AI前台` 字符串拼接）、门牌**两阶段归属**（防 EUMANN 串扰）、ConnectionBuilder **几何方向先验**（cos 相似度 + 反向硬惩罚修复 cam→neighbor 错配）、多帧投票幻觉过滤、闭环几何验证、双语命名、空间 KNN 邻接重建；输出兼容 `offline_mapper/` schema 并新增 `category/organization/nearby_plates/nearby_landmarks` 字段。完整设计见 [`docs/online_mapper.md`](docs/online_mapper.md)
+- **🛰️ 在线主动建图** (`online_mapper/`, **v2.3.0**)：三层架构（Geometry+Topology+Semantics）流式在线建图。**VGGT-1B 几何前端**（depth + VO + 占据栅格 dense 点云 单次推理同时供给）、**结构化节点命名** `NodeName(category, organization, nearby_plates, ...)`（`前台·DEEPROUTE.AI` 取代 `DEEPROUTE.AI前台` 字符串拼接）、门牌**两阶段归属**（防 EUMANN 串扰）、ConnectionBuilder **几何方向先验**（cos 相似度 + 反向硬惩罚修复 cam→neighbor 错配）、多帧投票幻觉过滤、闭环几何验证、双语命名、空间 KNN 邻接重建；输出 `merged_labeled_data/` schema 并新增 `category/organization/nearby_plates/nearby_landmarks` 字段。完整设计见 [`docs/online_mapper.md`](docs/online_mapper.md)
 - **🔍 多方案 VPR 定位**：支持 4 种 SOTA 视觉位置识别方案，统一配置文件一键切换
 - **🗺️ 拓扑记忆图**：自动从标注数据构建节点-边拓扑图，支持最短路径规划
 - **🔄 循环移位匹配**：4 相机循环移位算法，支持任意朝向下的定位与偏转角估计
@@ -77,39 +76,37 @@ MemoryNav/
 │   └── memory_visualization_server.py  # 可视化服务 (子图匹配 + 打点 + 遮挡检测)
 ├── pretrained/                     # 预训练模型 (YOLOv8n, DINOv3 等)
 ├── merged_labeled_data/            # 记忆标注数据
-├── offline_mapper/                 # 🗺️ 离线建图模块 (原 auto_mapper)
-│   ├── run_auto_map.py             # 离线建图入口脚本
-│   ├── auto_mapper_core.py         # 核心控制器 (三阶段 Pipeline)
-│   ├── node_distance_estimator.py  # VPR 节点距离估计
-│   ├── auto_landmark_namer.py      # Qwen3.5 场景命名 (vLLM)
-│   ├── semantic_node_detector.py   # 门牌/标识文字识别
-│   ├── auto_node_generator.py      # 节点目录与元数据生成
-│   ├── auto_sub_image_extractor.py # 打点裁剪 + 走廊中间帧匹配
-│   └── validate_output.py          # 输出格式验证
 ├── online_mapper/                  # 🛰️ 在线主动建图模块 (v2.3.0, 三层架构)
-│   ├── run_online_map.py           # CLI 入口
 │   ├── config.py                   # 全局配置 (含 depth/vo/occ_backend 开关)
-│   ├── core/online_mapper_core.py  # ⭐ 主编排器 (~870 行 流式主循环)
+│   ├── run_online_map.py           # CLI 入口 (baseline 离线回放)
+│   ├── core/online_mapper_core.py  # ⭐ run() + process_frame() + finalize() 流式主循环
 │   ├── geometry/                   # Geometry 层 (VGGT-1B 几何前端)
-│   │   ├── vggt_backend.py         # ⭐ VGGT-1B 单例 + 滑窗 (NEW v2.2)
+│   │   ├── vggt_backend.py         #   VGGT-1B 单例 + 滑窗
 │   │   ├── depth_estimator.py      #   DA-V2 + VGGTDepthEstimator + 工厂
 │   │   ├── visual_odometry.py      #   MonoVO + VGGTVisualOdometry + 工厂
 │   │   ├── pose_graph.py           #   scipy LM pose graph
 │   │   ├── junction_detector.py    #   4-camera depth 路口判定 (stateless)
 │   │   └── occupancy.py            #   1D ray-cast + dense 点云直填
 │   ├── topology/                   # Topology 层
+│   │   ├── graph.py                #   TopoGraph / TopoNode
 │   │   ├── keyframe_selector.py    #   多触发关键帧选择
 │   │   ├── loop_closure.py         #   auto-tune + ORB 几何验证闭环
+│   │   ├── frontier_nbv.py         #   frontier / NBV 候选推荐
 │   │   ├── connection_builder.py   #   ⭐ next_positions: 几何方向先验
-│   │   └── graph.py                #   TopoGraph / TopoNode
+│   │   └── auto_sub_image_extractor.py  # 打点裁剪 + 走廊中间帧匹配 (原 offline_mapper)
 │   ├── semantics/                  # Semantics 层
 │   │   ├── open_set_detector.py    #   Grounding-DINO 封装
-│   │   ├── door_plate_tracker.py   #   门牌多帧代表帧选择
-│   │   ├── hallucination_filter.py # ⭐ STRICT prompt + QwenVerifier + MultiFrameVoter
+│   │   ├── scene_graph.py          #   层次场景图
+│   │   ├── door_plate_tracker.py   #   门牌多帧代表帧选择 + 两阶段归属
+│   │   ├── node_naming.py          # ⭐ 结构化命名 NodeName
 │   │   ├── node_category.py        # ⭐ 节点类别分类器 + CN/EN 映射
-│   │   ├── node_naming.py          # ⭐ 结构化命名 NodeName (NEW v2.3)
+│   │   ├── hallucination_filter.py # ⭐ STRICT prompt + QwenVerifier + MultiFrameVoter
 │   │   ├── colocation_merger.py    # ⭐ 同位置合并 (用 NodeName.merge_names)
-│   │   └── scene_graph.py          #   层次场景图
+│   │   ├── semantic_dedup.py       #   语义重名去重
+│   │   └── auto_landmark_namer.py  #   Qwen3.5 场景命名 (原 offline_mapper)
+│   ├── vpr/
+│   │   └── node_distance_estimator.py  # VPR 节点距离估计 (原 offline_mapper)
+│   ├── viz/visualize.py            #   finalize 末尾产出 pose_graph / occupancy / timeline
 │   └── io/
 │       └── merged_data_writer.py   #   输出 merged_labeled_data + 结构化字段
 ├── third_party/vggt_space/         # VGGT 源码 (.gitignore, 从 HF Space 下载)
@@ -367,140 +364,49 @@ anyloc:
 
 ---
 
-## 🗂️ 建图模块对比
+## 🛰️ 在线建图 (online_mapper)
 
-MemoryNav 提供**两个互补**的建图模块, 分别对应两种典型使用场景:
+`online_mapper/` 是当前唯一的建图模块 (自 v2.3.0 起移除了旧的 `offline_mapper/`), 采用三层架构 (Geometry + Topology + Semantics) 流式在线建图, 输出与 `merged_labeled_data/` schema 完全兼容.
 
-| 维度 | `offline_mapper/` (离线建图) | `online_mapper/` (在线主动建图) |
-|---|---|---|
-| **定位** | 录制好数据后一次性后处理 | 机器人边走边拍, 流式决策 |
-| **时序假设** | 全部帧可见 | 只能看到"已到达"帧 |
-| **主循环** | 三阶段 Pipeline (Phase1 → 1.5 → 2) | 逐帧: 几何 → VPR → 闭环 → 门牌扫描 → KF 触发 → 分类 → 建 node |
-| **关键帧策略** | VPR 相似度 + 最小帧间隔 | VPR + 累积位移 + 累积旋转 + 信息增益 + 路口 + 语义白名单 |
-| **闭环** | 首尾对比 (可选) | 全局 VPR + ORB 几何验证, 每帧触发 |
-| **命名** | Qwen describe_scene / detect_text (单帧) | 多帧投票 + 二次验证 + 类别白名单 + CN/EN 双语 |
-| **节点过滤** | 无 (所有 VPR 触发点都建 node) | 7 大类白名单, 拒绝装饰墙面 / 绿植 / 空走廊 |
-| **幻觉防御** | 无 | STRICT prompt + QwenVerifier + MultiFrameVoter + substring 合并 |
-| **输出 schema** | `merged_labeled_data/` | **完全兼容** `merged_labeled_data/` + 额外 `scene_graph.json` / `pose_graph.json` / `online_mapping_log.jsonl` / `metrics.json` |
-| **代码关系** | 独立 | 子类化复用 `offline_mapper.AutoSubImageExtractor` / `AutoLandmarkNamer` / `NodeDistanceEstimator`, 不修改 offline_mapper |
+- **Geometry 层**: VGGT-1B 几何前端 (depth + VO + 占据栅格 dense 点云 单次推理), scipy LM pose graph, 4-camera depth 路口检测
+- **Topology 层**: 多触发关键帧 (VPR + 位移 + 旋转 + 信息增益 + 路口), auto-tune + ORB 几何验证闭环, ConnectionBuilder 几何方向先验
+- **Semantics 层**: STRICT prompt + QwenVerifier + MultiFrameVoter 多帧投票, 7 大类白名单, ColocationMerger 同位置合并, 结构化 NodeName + CN/EN 双语命名
+- **API**: `OnlineMapperCore.run()` / `process_frame(frame)` / `finalize()`, 支持流式输入
+- **可视化**: `finalize()` 末尾自动产出 `pose_graph.png` / `occupancy.png` / `keyframe_timeline.png` / `scene_overview.txt`
 
-两者**输出 schema 一致**, 均可被 `deploy/build_memory.sh` 直接用于记忆构建.
+完整设计文档见 **[`docs/online_mapper.md`](docs/online_mapper.md)** (v2.3.0, 12 章).
+迭代历史 (v2.1.0 → v2.3.0) 见 [`docs/online_mapper.md` §10](docs/online_mapper.md). r1→r6 早期 metrics 见 **[`online_mapper/RESULTS.md`](online_mapper/RESULTS.md)**.
 
-完整的 online_mapper 设计文档见 **[`docs/online_mapper.md`](docs/online_mapper.md)** (v2.3.0, 12 章).
-online_mapper 迭代历史 (v2.1.0 → v2.3.0) 见 [`docs/online_mapper.md` §10](docs/online_mapper.md). r1→r6 早期 metrics 见 **[`online_mapper/RESULTS.md`](online_mapper/RESULTS.md)**.
-
----
-
-## 🗺️ 离线建图 (offline_mapper)
-
-离线建图模块（`offline_mapper/`，原名 `auto_mapper`）可从机器人采集的图像序列全自动生成拓扑导航图，无需人工标注。
-
-### 三阶段 Pipeline
-
-```
-Phase 1: VPR 粗粒度节点创建
-  ├─ 按帧序扫描 4 相机图像
-  ├─ VPR 特征提取 → 与最近节点比较相似度
-  ├─ 相似度 < 阈值(0.70) → 创建新节点
-  └─ Qwen3.5 VLM 为节点自动命名(中/英文)
-
-Phase 1.5: 语义增补
-  ├─ 扫描节点之间的中间帧
-  ├─ Qwen3.5 文字识别：检测门牌、标识、会议室名
-  ├─ 质量过滤：黑名单排除无意义标识(安全出口、消防等)
-  ├─ 名称规范化：裸数字/英文自动补全(10 → 10号会议室, MOORE → 摩尔会议室)
-  └─ 按空间位置插入新节点 + 重编号
-
-Phase 2: 连接生成
-  ├─ Qwen3.5 PointGrounder 对每对相邻节点打点定位
-  ├─ 走廊中间帧匹配：用 DINOv3 CLS 特征找到最相关 camera
-  ├─ 匈牙利算法：最优分配 camera → 邻居节点
-  ├─ 三级 crop 裁剪(big/mid/small) + Y坐标修正
-  └─ 输出格式验证 (validate_output.py)
-```
-
-### 使用方式
+### 基线离线回放
 
 ```bash
-# 基本用法
-python offline_mapper/run_auto_map.py \
+python online_mapper/run_online_map.py \
     --input_dir memory_test_data \
-    --output_dir offline_mapper/merged_labeled_data \
+    --output_dir online_mapper/output \
     --vpr_config deploy/vpr_config.yaml
-
-# 完整参数
-python offline_mapper/run_auto_map.py \
-    --input_dir memory_test_data \
-    --output_dir offline_mapper/merged_labeled_data \
-    --vpr_config deploy/vpr_config.yaml \
-    --start_id 1 \
-    --similarity_threshold 0.70 \
-    --min_frame_interval 5 \
-    --use_qwen_naming \
-    --qwen_gpu 1
 ```
 
-### 参数说明
+### WebSocket 双模式接入
 
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `--input_dir` | `memory_test_data` | 输入图像目录（包含 `*_camera_*.jpg` 文件） |
-| `--output_dir` | `offline_mapper/merged_labeled_data` | 输出目录（`merged_labeled_data` 格式） |
-| `--vpr_config` | `deploy/vpr_config.yaml` | VPR 配置文件路径 |
-| `--start_id` | `1` | 起始节点 ID |
-| `--similarity_threshold` | `0.70` | VPR 相似度阈值（低于此值创建新节点） |
-| `--min_frame_interval` | `5` | 最小帧间隔（避免过密建节点） |
-| `--use_qwen_naming` | `true` | 使用 Qwen3.5 自动命名 |
-| `--qwen_gpu` | `1` | Qwen3.5 使用的 GPU 编号 |
-| `--dry_run` | `false` | 仅验证输入，不实际执行 |
+`deploy/ws_proxy_with_memory.py` 监听 **9528** 端口, 单个连接同时支持**导航**与**建图**两种模式, 由 `session_state['mode']` 管理 (默认 `nav`).
 
-### 前置条件
+| 命令 | 说明 |
+|------|------|
+| `{"command": "start_mapping"}` | 切换到 mapping 模式, 初始化 `OnlineMapperCore` |
+| `{"command": "stop_mapping"}` | 停止建图, 触发 `finalize()` 并切回 nav |
+| `{"command": "mapping_status"}` | 查询当前建图状态 (模式 / 已处理帧数 / 产物路径) |
 
-1. **vLLM 服务**：需先启动 Qwen3.5 vLLM 服务用于场景命名和文字识别
-   ```bash
-   bash deploy/start_qwen_vllm.sh
-   ```
-2. **VPR 模型**：按 `deploy/vpr_config.yaml` 配置的 VPR 方案准备预训练权重
-3. **DINOv3 模型**：用于子图裁剪时的走廊中间帧匹配
+- **建图帧**: 每帧 `{id, pts, images: {camera_1..4}}` 走 `process_mapping_frame`, 调用 `OnlineMapperCore.process_frame` + 最终 `finalize`
+- **模型共享**: 双模式共享 `MemoryNavigator.extractor` (SelaVPR), 避免重复加载
+- **产物目录**: `deploy/logs/mapping_output/session_{ts}_{client_id}/` (仅 `run_online_map.py` baseline 仍沿用 `online_mapper/output/`)
+- **临时帧目录**: `deploy/logs/mapping_frames/session_*/`, `finalize` 后自动清理
+- **断线保护**: 客户端断开时服务端自动 `finalize` 保住数据
 
-### 输出格式
-
-自动建图输出与手工标注的 `merged_labeled_data/` 格式完全兼容：
-
-```
-merged_labeled_data/
-├── 1/                          # 节点 1
-│   ├── position_info.json      # 节点元数据 (名称、相机图片、连接信息)
-│   ├── <timestamp>_camera_1.jpg
-│   ├── <timestamp>_camera_2.jpg
-│   ├── <timestamp>_camera_3.jpg
-│   ├── <timestamp>_camera_4.jpg
-│   └── crops/                  # 三级注意力子图
-│       ├── to_2_camera_2_big.jpg
-│       ├── to_2_camera_2_mid.jpg
-│       └── to_2_camera_2_small.jpg
-├── 2/
-│   └── ...
-```
-
-生成的数据可直接用于记忆构建：
+生成的数据可直接用于记忆构建:
 
 ```bash
-# 用自动建图数据构建记忆
-bash deploy/build_memory.sh --data_dir offline_mapper/merged_labeled_data
+bash deploy/build_memory.sh --data_dir deploy/logs/mapping_output/session_*/merged_labeled_data
 ```
-
-### 核心组件
-
-| 组件 | 说明 |
-|------|------|
-| `offline_mapper/auto_mapper_core.py` | 核心控制器，编排三阶段 Pipeline |
-| `node_distance_estimator.py` | VPR 特征比较，判断是否创建新节点 |
-| `auto_landmark_namer.py` | Qwen3.5 vLLM 场景描述 + 地标识别命名 |
-| `semantic_node_detector.py` | 门牌/标识文字识别 + 名称规范化 + 黑名单过滤 |
-| `auto_node_generator.py` | 节点目录创建、元数据 JSON 生成 |
-| `auto_sub_image_extractor.py` | PointGrounding 打点 + DINOv3 走廊帧匹配 + 匈牙利分配 + crop 裁剪 |
-| `validate_output.py` | 输出格式完整性验证 |
 
 ---
 
@@ -686,13 +592,18 @@ if match and match['match']['found']:
 # 单元测试
 python -m pytest tests/unit_test/test_basic.py -v
 
-# WebSocket 集成测试 (含逐帧决策日志 + 统计报告)
+# WebSocket 导航回放 (默认 nav 模式, 含逐帧决策日志 + 统计报告)
 python tests/test_memory_ws.py
+python tests/test_memory_ws.py --mode nav
+
+# WebSocket 建图回放 (start_mapping → 全量 49 帧 → stop_mapping)
+python tests/test_memory_ws.py --mode mapping
 ```
 
-测试输出包含：
-- 📊 逐帧详情（VPR 匹配、子图匹配置信度、lookahead 置信度、camera、action、决策类型）
-- 📋 统计报告（VPR 匹配率、子图匹配率、Lookahead 双重确认统计、节点分布、决策分布）
+`test_memory_ws.py` 是双模式合并脚本 (替代原 `deploy/test_mapping_client.py`):
+
+- **nav 模式**: 原有导航回放, 输出 VPR 匹配、子图匹配置信度、lookahead 置信度、camera、action、决策类型 + 节点/决策分布统计
+- **mapping 模式**: 自动跑 start_mapping → 逐帧喂入 → stop_mapping, 打印拓扑/关键帧/门牌/runtime 分解 + 产物路径
 
 ---
 

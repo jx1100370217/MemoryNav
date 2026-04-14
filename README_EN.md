@@ -23,8 +23,7 @@ MemoryNav is a visual memory navigation system for mobile robots. It collects im
 
 ### Key Capabilities
 
-- **🗺️ Offline mapping** (`offline_mapper/`): 3-phase pipeline (VPR node creation → semantic augmentation → connection generation) automatically builds topological navigation graphs from image sequences — no manual annotation required
-- **🛰️ Online active mapping** (`online_mapper/`): Three-layer architecture (Geometry + Topology + Semantics) for streaming online mapping, with category whitelist, multi-frame hallucination voting, co-location merging, real VO, loop closure verification, bilingual naming, and spatial-KNN neighbour rebuild. Output schema is fully compatible with `offline_mapper/`. See [`docs/online_mapper.md`](docs/online_mapper.md) for the full design.
+- **🛰️ Online active mapping** (`online_mapper/`): Three-layer architecture (Geometry + Topology + Semantics) for streaming online mapping, with category whitelist, multi-frame hallucination voting, co-location merging, real VO, loop closure verification, bilingual naming, and spatial-KNN neighbour rebuild. Produces `merged_labeled_data/` schema. See [`docs/online_mapper.md`](docs/online_mapper.md) for the full design.
 - **🔍 Multi-scheme VPR Localization**: Supports 4 SOTA VPR methods, switchable via a single config file
 - **🗺️ Topological Memory Graph**: Automatically builds a node-edge topology from annotated data; supports shortest-path planning (BFS/Dijkstra)
 - **🔄 Cyclic-shift Matching**: 4-camera cyclic-shift algorithm for orientation-agnostic localization and heading estimation
@@ -77,19 +76,10 @@ MemoryNav/
 │   └── memory_visualization_server.py  # Visualization (sub-image + grounding + occlusion)
 ├── pretrained/                     # Pretrained models (YOLOv8n, DINOv3, etc.)
 ├── merged_labeled_data/            # Memory annotated data
-├── offline_mapper/                 # 🗺️ Offline mapping module (formerly auto_mapper)
-│   ├── run_auto_map.py             # Entry script
-│   ├── auto_mapper_core.py         # Core controller (3-phase pipeline)
-│   ├── node_distance_estimator.py  # VPR node distance estimation
-│   ├── auto_landmark_namer.py      # Qwen3.5 scene naming (vLLM)
-│   ├── semantic_node_detector.py   # Door plate / sign text recognition
-│   ├── auto_node_generator.py      # Node directory & metadata generation
-│   ├── auto_sub_image_extractor.py # Grounding crop + corridor frame matching
-│   └── validate_output.py          # Output format validation
 ├── online_mapper/                  # 🛰️ Online active mapping (v2.3.0, 3-layer)
 │   ├── run_online_map.py           # CLI entry
 │   ├── config.py                   # Global config (depth/vo/occ_backend switches)
-│   ├── core/online_mapper_core.py  # ⭐ Main orchestrator (~870 lines streaming loop)
+│   ├── core/online_mapper_core.py  # ⭐ Main orchestrator (streaming: process_frame + finalize)
 │   ├── geometry/                   # Geometry layer (VGGT-1B frontend)
 │   │   ├── vggt_backend.py         # ⭐ VGGT-1B singleton + sliding window (NEW v2.2)
 │   │   ├── depth_estimator.py      #   DA-V2 + VGGTDepthEstimator + factory
@@ -101,6 +91,7 @@ MemoryNav/
 │   │   ├── keyframe_selector.py    #   Multi-trigger keyframe selection
 │   │   ├── loop_closure.py         #   auto-tune + ORB geometric verification
 │   │   ├── connection_builder.py   #   ⭐ next_positions: geo prior
+│   │   ├── auto_sub_image_extractor.py  # Grounding crop + corridor frame matching (migrated)
 │   │   └── graph.py                #   TopoGraph / TopoNode
 │   ├── semantics/                  # Semantics layer
 │   │   ├── open_set_detector.py    #   Grounding-DINO wrapper
@@ -109,7 +100,12 @@ MemoryNav/
 │   │   ├── node_category.py        # ⭐ Node category classifier + CN/EN map
 │   │   ├── node_naming.py          # ⭐ Structured naming NodeName (NEW v2.3)
 │   │   ├── colocation_merger.py    # ⭐ Co-location merge (uses NodeName.merge_names)
+│   │   ├── auto_landmark_namer.py  #   Qwen3.5 scene naming (migrated)
 │   │   └── scene_graph.py          #   Hierarchical scene graph
+│   ├── vpr/                        # VPR helpers
+│   │   └── node_distance_estimator.py  # VPR node distance estimation (migrated)
+│   ├── viz/                        # Visualization
+│   │   └── visualize.py            #   pose_graph.png / occupancy.png / keyframe_timeline.png
 │   └── io/
 │       └── merged_data_writer.py   #   Output writer + structured fields
 ├── third_party/vggt_space/         # VGGT source (.gitignore, from HF Space)
@@ -304,139 +300,28 @@ anyloc:
 
 ---
 
-## 🗂️ Mapping Modules at a Glance
+## 🛰️ Online Mapping (online_mapper)
 
-MemoryNav ships **two complementary** mapping modules for two typical usage scenarios:
-
-| Dimension | `offline_mapper/` (offline) | `online_mapper/` (online active) |
-|---|---|---|
-| **Positioning** | One-shot post-processing after recording | Robot walks and streams, per-frame decisions |
-| **Temporal assumption** | All frames visible | Only "already-arrived" frames |
-| **Main loop** | 3-phase pipeline (Phase1 → 1.5 → 2) | Per-frame: geometry → VPR → loop → plate scan → KF trigger → classify → build node |
-| **Keyframe strategy** | VPR similarity + min frame interval | VPR + accumulated translation + rotation + info gain + junction + semantic whitelist |
-| **Loop closure** | First-last comparison (optional) | Global VPR + ORB geometric verification, every frame |
-| **Naming** | Qwen describe_scene / detect_text (single-frame) | Multi-frame voting + 2nd-pass verification + category whitelist + CN/EN bilingual |
-| **Node filtering** | None (all VPR triggers create nodes) | 7-class whitelist, rejects decorative walls / plants / empty corridors |
-| **Hallucination defense** | None | STRICT prompt + QwenVerifier + MultiFrameVoter + substring variant merging |
-| **Output schema** | `merged_labeled_data/` | **Fully compatible** with `merged_labeled_data/` + extra `scene_graph.json` / `pose_graph.json` / `online_mapping_log.jsonl` / `metrics.json` |
-| **Code relation** | Standalone | Subclasses & reuses `offline_mapper.AutoSubImageExtractor` / `AutoLandmarkNamer` / `NodeDistanceEstimator` without modifying offline_mapper |
-
-Both modules produce **schema-identical outputs**, both can be consumed directly by `deploy/build_memory.sh`.
+The `online_mapper/` module performs streaming online active mapping with a 3-layer architecture (Geometry + Topology + Semantics). It consumes per-frame inputs via `OnlineMapperCore.process_frame(frame)` and flushes artifacts via `finalize()`, producing `merged_labeled_data/` plus `scene_graph.json` / `pose_graph.json` / `online_mapping_log.jsonl` / `metrics.json`, with visualizations `pose_graph.png` / `occupancy.png` / `keyframe_timeline.png` / `scene_overview.txt` emitted by `online_mapper/viz/visualize.py`.
 
 Full `online_mapper` design doc: **[`docs/online_mapper.md`](docs/online_mapper.md)** (13 chapters, ~47k characters).
 `online_mapper` iteration history (r1→r6) and detailed before/after metrics: **[`online_mapper/RESULTS.md`](online_mapper/RESULTS.md)**.
 
----
+### 🌐 WebSocket Dual-Mode Access
 
-## 🗺️ Offline Mapping (offline_mapper)
+`deploy/ws_proxy_with_memory.py` listens on port **9528** and supports **two modes** through a single connection. `session_state['mode']` defaults to **nav**; clients explicitly switch modes via control commands.
 
-The offline mapping module (`offline_mapper/`, formerly `auto_mapper`) automatically generates topological navigation graphs from robot-captured image sequences — no manual annotation required.
+| Command | Effect |
+|---------|--------|
+| `{"command": "start_mapping"}` | Switch session to mapping mode, initialize `OnlineMapperCore` |
+| `{"command": "stop_mapping"}` | Finalize mapping, flush artifacts, switch back to nav |
+| `{"command": "mapping_status"}` | Report current mode + mapping progress |
 
-### 3-Phase Pipeline
+In mapping mode, each `{id, pts, images: {camera_1..4}}` frame is routed through `process_mapping_frame` → `OnlineMapperCore.process_frame` and flushed on `finalize`. The SelaVPR extractor is **shared** between nav and mapping modes via `MemoryNavigator.extractor` to avoid loading twice.
 
-```
-Phase 1: VPR Coarse-grained Node Creation
-  ├─ Scan 4-camera images frame by frame
-  ├─ VPR feature extraction → compare similarity with nearest node
-  ├─ Similarity < threshold (0.70) → create new node
-  └─ Qwen3.5 VLM auto-naming (Chinese/English)
-
-Phase 1.5: Semantic Augmentation
-  ├─ Scan intermediate frames between nodes
-  ├─ Qwen3.5 text recognition: detect door plates, signs, meeting room names
-  ├─ Quality filtering: blacklist excludes meaningless signs (exit, fire, etc.)
-  ├─ Name normalization: bare numbers/English auto-completed (10 → Room 10, MOORE → Moore Meeting Room)
-  └─ Insert new nodes at spatial positions + renumber
-
-Phase 2: Connection Generation
-  ├─ Qwen3.5 PointGrounder for pairwise adjacent node grounding
-  ├─ Corridor mid-frame matching: DINOv3 CLS features find best camera
-  ├─ Hungarian algorithm: optimal camera → neighbor assignment
-  ├─ 3-scale crop (big/mid/small) + Y-coordinate correction
-  └─ Output format validation (validate_output.py)
-```
-
-### Usage
-
-```bash
-# Basic usage
-python offline_mapper/run_auto_map.py \
-    --input_dir memory_test_data \
-    --output_dir offline_mapper/merged_labeled_data \
-    --vpr_config deploy/vpr_config.yaml
-
-# Full parameters
-python offline_mapper/run_auto_map.py \
-    --input_dir memory_test_data \
-    --output_dir offline_mapper/merged_labeled_data \
-    --vpr_config deploy/vpr_config.yaml \
-    --start_id 1 \
-    --similarity_threshold 0.70 \
-    --min_frame_interval 5 \
-    --use_qwen_naming \
-    --qwen_gpu 1
-```
-
-### Parameters
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `--input_dir` | `memory_test_data` | Input image directory (containing `*_camera_*.jpg` files) |
-| `--output_dir` | `offline_mapper/merged_labeled_data` | Output directory (`merged_labeled_data` format) |
-| `--vpr_config` | `deploy/vpr_config.yaml` | VPR config file path |
-| `--start_id` | `1` | Starting node ID |
-| `--similarity_threshold` | `0.70` | VPR similarity threshold (below = create new node) |
-| `--min_frame_interval` | `5` | Minimum frame interval (prevents over-dense nodes) |
-| `--use_qwen_naming` | `true` | Use Qwen3.5 auto-naming |
-| `--qwen_gpu` | `1` | GPU device for Qwen3.5 |
-| `--dry_run` | `false` | Validate input only, skip execution |
-
-### Prerequisites
-
-1. **vLLM Service**: Start Qwen3.5 vLLM server for scene naming and text recognition
-   ```bash
-   bash deploy/start_qwen_vllm.sh
-   ```
-2. **VPR Model**: Pretrained weights for the VPR method configured in `deploy/vpr_config.yaml`
-3. **DINOv3 Model**: For corridor mid-frame matching during crop extraction
-
-### Output Format
-
-Auto-mapping output is fully compatible with manually annotated `merged_labeled_data/`:
-
-```
-merged_labeled_data/
-├── 1/                          # Node 1
-│   ├── position_info.json      # Node metadata (name, camera images, connections)
-│   ├── <timestamp>_camera_1.jpg
-│   ├── <timestamp>_camera_2.jpg
-│   ├── <timestamp>_camera_3.jpg
-│   ├── <timestamp>_camera_4.jpg
-│   └── crops/                  # 3-scale attention crops
-│       ├── to_2_camera_2_big.jpg
-│       ├── to_2_camera_2_mid.jpg
-│       └── to_2_camera_2_small.jpg
-├── 2/
-│   └── ...
-```
-
-Use auto-mapped data directly for memory building:
-
-```bash
-bash deploy/build_memory.sh --data_dir offline_mapper/merged_labeled_data
-```
-
-### Core Components
-
-| Component | Description |
-|-----------|-------------|
-| `offline_mapper/auto_mapper_core.py` | Core controller orchestrating the 3-phase pipeline |
-| `node_distance_estimator.py` | VPR feature comparison for new node decisions |
-| `auto_landmark_namer.py` | Qwen3.5 vLLM scene description + landmark naming |
-| `semantic_node_detector.py` | Door plate/sign text recognition + name normalization + blacklist filtering |
-| `auto_node_generator.py` | Node directory creation, metadata JSON generation |
-| `auto_sub_image_extractor.py` | PointGrounding + DINOv3 corridor frame matching + Hungarian assignment + crop extraction |
-| `validate_output.py` | Output format integrity validation |
+- Artifact path: `deploy/logs/mapping_output/session_{ts}_{client_id}/` (distinct from `online_mapper/output/`, which is reserved for the `run_online_map.py` baseline)
+- Temp frame dir: `deploy/logs/mapping_frames/session_*/`, auto-cleaned on finalize
+- Client disconnect auto-finalizes the active session to preserve data
 
 ---
 
@@ -578,7 +463,14 @@ Cyclic-shift matching supports 4 heading offsets: `0°`, `-75°`, `180°`, `+105
 
 ```bash
 python -m pytest tests/unit_test/test_basic.py -v
+
+# Navigation replay (default)
 python tests/test_memory_ws.py
+python tests/test_memory_ws.py --mode nav
+
+# Mapping replay — auto runs start_mapping → feeds all 49 frames → stop_mapping,
+# prints topology / keyframes / door-plates / runtime breakdown + artifact paths
+python tests/test_memory_ws.py --mode mapping
 ```
 
 ---

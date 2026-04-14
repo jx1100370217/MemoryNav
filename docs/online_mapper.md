@@ -1,34 +1,34 @@
-# online_mapper 设计文档 (v2.3.0)
+# online_mapper 设计文档 (v2.4.0)
 
-> 当前版本: **v2.3.0** — 完整 VGGT-1B 几何前端 + 结构化节点命名
+> 当前版本: **v2.4.0** — offline_mapper 已并入本模块, 新增 WebSocket 建图模式与双模式路由
 >
 > 代码根: `MemoryNav/online_mapper/`
-> 关联根: `MemoryNav/offline_mapper/` (只读)
 > 第三方源码: `MemoryNav/third_party/vggt_space/` (VGGT, .gitignore)
 > 模型权重: `MemoryNav/pretrained/` (.gitignore, 各模型本地化路径)
 >
-> 本文档以 v2.3.0 架构为准. 历史迭代见末尾"迭代历史"章节, r1→r6 的早期 metrics 见 `online_mapper/RESULTS.md`.
+> 本文档以 v2.4.0 架构为准. 历史迭代见末尾"迭代历史"章节, r1→r6 的早期 metrics 见 `online_mapper/RESULTS.md`.
 
 ---
 
 ## 1. 定位与能力
 
-`online_mapper` 是**流式在线主动建图模块**, 在机器人边走边拍的场景下实时构建用于导航的**高质量语义拓扑图**.
+`online_mapper` 是**流式在线主动建图模块**, 在机器人边走边拍的场景下实时构建用于导航的**高质量语义拓扑图**. v2.4.0 已吸收原 `offline_mapper/` 的 `AutoSubImageExtractor` / `NodeDistanceEstimator` / `AutoLandmarkNamer` 三个核心类到各自子目录 (`topology/` / `vpr/` / `semantics/`), 不再依赖外部模块.
 
-| 维度 | offline_mapper | **online_mapper (v2.3.0)** |
-|---|---|---|
-| 时序 | 一次性看到所有帧 | 流式, 逐帧决策 |
-| 几何前端 | — | **VGGT-1B** 单次推理同时输出 depth / pose / dense point cloud |
-| VO | — | 复用 VGGT pose, 零额外推理 |
-| 占据栅格 | — | VGGT dense point map 直填 (替代 1D ray-cast) |
-| 关键帧 | VPR + 最小帧间隔 | VPR + 累积位移 + 累积旋转 + 信息增益 + 路口 + 语义白名单 |
-| 闭环 | 首尾对比 (可选) | 全局 VPR + 几何验证, 每帧检测, auto-tune |
-| 节点命名 | 单帧 describe_scene | **结构化** `NodeName(category, organization, nearby_plates, ...)`, 多帧投票 + 二次验证 + 类别白名单 + 防串扰 |
-| 显示拼接 | 字符串 | `category·organization`, 例如 `前台·DEEPROUTE.AI` (不再有 `DEEPROUTE.AI前台` 粘连) |
-| cam→neighbor 匹配 | 纯视觉 CLS Hungarian | + 几何方向先验 (`cos(robot_ang - cam_ang)`) |
-| 输出 | merged_labeled_data/ | 完全兼容旧 schema + 结构化命名字段 + scene_graph / pose_graph / metrics |
+### 特性一览
 
-**硬约束**: 不修改 `offline_mapper/` 与导航 runtime, 仅 import 复用 (`NodeDistanceEstimator` / `AutoSubImageExtractor` / `AutoLandmarkNamer`).
+| 维度 | **online_mapper (v2.4.0)** |
+|---|---|
+| 时序 | 流式, 逐帧决策 (`process_frame` + `finalize`) |
+| 几何前端 | **VGGT-1B** 单次推理同时输出 depth / pose / dense point cloud |
+| VO | 复用 VGGT pose, 零额外推理 |
+| 占据栅格 | VGGT dense point map 直填 (替代 1D ray-cast) |
+| 关键帧 | VPR + 累积位移 + 累积旋转 + 信息增益 + 路口 + 语义白名单 |
+| 闭环 | 全局 VPR + 几何验证, 每帧检测, auto-tune |
+| 节点命名 | **结构化** `NodeName(category, organization, nearby_plates, ...)`, 多帧投票 + 二次验证 + 类别白名单 + 防串扰 |
+| 显示拼接 | `category·organization`, 例如 `前台·DEEPROUTE.AI` (不再有 `DEEPROUTE.AI前台` 粘连) |
+| cam→neighbor 匹配 | 视觉 CLS Hungarian + 几何方向先验 (`cos(robot_ang - cam_ang)`, α=0.2) |
+| 接入方式 | CLI 一次性跑 (`run_online_map.py`) **或** WebSocket 流式建图模式 (`ws_proxy_with_memory.py` 的 mapping 模式) |
+| 输出 | `merged_labeled_data/` schema + 结构化命名字段 + `scene_graph.json` / `pose_graph.json` / `metrics.json` / `online_mapping_log.jsonl` + 可视化 PNG (`viz/visualize.py`) |
 
 ### v2.3.0 测试集 (memory_test_data 49 帧, GPU0 L40 + Qwen3.5-9B vLLM)
 
@@ -299,7 +299,7 @@ dyaw = atan2(R_rel[0,2], R_rel[2,2])  # 绕 y 轴 (OpenCV camera frame)
 
 ### 5.3 ConnectionBuilder (topology/connection_builder.py) ⭐ v2.3.0 重写匹配
 
-子类化 `offline_mapper.AutoSubImageExtractor`, 在 Hungarian 匹配后增加 (1) 阈值过滤 (2) 几何方向先验.
+子类化 `online_mapper.topology.AutoSubImageExtractor`, 在 Hungarian 匹配后增加 (1) 阈值过滤 (2) 几何方向先验.
 
 #### 5.3.1 几何方向先验
 
@@ -616,7 +616,7 @@ CUDA_VISIBLE_DEVICES=1 python -m vllm.entrypoints.openai.api_server \
   --model Qwen/Qwen3.5-9B --port 8199 --max-model-len 4096 &
 ```
 
-### 9.2 端到端建图
+### 9.2 端到端建图 (CLI)
 
 ```bash
 conda activate internvla
@@ -627,7 +627,38 @@ CUDA_VISIBLE_DEVICES=0 python online_mapper/run_online_map.py \
   --log_level INFO
 ```
 
-**注意**: 不要加 `--no_grounding_dino`, 否则门牌检测路径完全不跑, 不会有 SHOP / 强电井 / 关爱室等 node.
+**注意**: 不要加 `--no_grounding_dino`, 否则门牌检测路径完全不跑, 不会有 SHOP / 关爱室 等 node.
+
+### 9.2.x WebSocket 建图模式 (双模式 ws_proxy)
+
+`deploy/ws_proxy_with_memory.py` 同时承载**导航 (nav)** 和**建图 (mapping)** 两种模式, 通过 `session_state['mode']` 路由:
+
+- 默认 `mode='nav'`, 走原有记忆导航三层策略.
+- 客户端发送 `{"command": "start_mapping"}` 切到 `mode='mapping'`, 创建独立 `MappingSession`.
+- 之后每帧 `{id, pts, images: {camera_1..4}}` 走 `process_mapping_frame` → `OnlineMapperCore.process_frame`.
+- 发送 `{"command": "stop_mapping"}` 触发 `finalize` + 可视化, 切回 nav.
+- 还支持 `{"command": "mapping_status"}` 查询当前进度.
+
+关键实现要点 (踩过的坑):
+
+- `MappingSession.__init__` / `feed_raw` / `finalize` 都通过 `asyncio.to_thread` 走线程池, 避免 CPU-heavy 同步调用阻塞 asyncio 事件循环造成 ws ping 超时 (`1011 keepalive timeout`).
+- `feed_raw(camera_b64)` 直接 `base64.b64decode + open(w, 'wb')` 写原 JPEG 字节, **不做解码/重编码**, 保证与 `run_online_map.py` cv2.imread 的像素完全一致 (否则 GD/Qwen 分数漂移会改变门牌检测结果).
+- `shared_vpr_extractor` 传入记忆导航的 SelaVPR 实例, mapping session 不重复加载 VPR 模型.
+- 产物路径: `deploy/logs/mapping_output/session_{ts}_{client_id}/`, 临时帧 `deploy/logs/mapping_frames/session_*/` finalize 后自动清理.
+- 断线 (`websockets.ConnectionClosed`) 会在 `handle_client` 的 `finally` 中自动 finalize 保住数据.
+
+端到端测试:
+
+```bash
+# 一个终端启 ws_proxy
+cd MemoryNav
+python deploy/ws_proxy_with_memory.py
+
+# 另一个终端跑建图客户端 (全量 49 帧)
+python tests/test_memory_ws.py --mode mapping
+```
+
+测试脚本汇总打印拓扑/关键帧/门牌/runtime 分解 + 产物路径. `--mode nav` 则跑原有记忆导航回放.
 
 ### 9.3 切回旧后端 (回归测试)
 
@@ -643,8 +674,17 @@ cfg = OnlineMapperConfig(
 
 ### 9.4 schema 校验
 
+`merged_labeled_data/{node_id}/node_position_info.json` 应包含:
+- `self_position`: `position_id` / `position_name` / `position_name_eng` / `camera_1..4`
+- `next_positions`: list of `{position_id, camera_name, landmark_name, big_box/mid_box/small_box, crop_image_paths{big,mid,small}, position_name_eng, landmark_name_eng}`
+
+可用 `jq` 快速检查:
+
 ```bash
-python offline_mapper/validate_output.py online_mapper/output/merged_labeled_data
+for d in online_mapper/output/merged_labeled_data/*/; do
+  jq -e '.self_position.position_id and (.next_positions | type == "array")' $d/node_position_info.json > /dev/null \
+    || echo "FAIL $d"
+done
 ```
 
 ---

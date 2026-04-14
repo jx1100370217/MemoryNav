@@ -116,7 +116,8 @@ MemoryNav/
 │   ├── topology/
 │   │   ├── keyframe_selector.py      # 多触发关键帧选择
 │   │   ├── loop_closure.py           # 闭环检测 (auto-tune)
-│   │   ├── connection_builder.py     # 邻接构建 (几何先验)
+│   │   ├── connection_builder.py     # 邻接构建 (几何先验 α=0.2)
+│   │   ├── auto_sub_image_extractor.py  # 子图提取 (原 offline_mapper 迁入, 被 connection_builder 继承)
 │   │   └── graph.py                  # TopoGraph / TopoNode
 │   ├── semantics/
 │   │   ├── open_set_detector.py      # Grounding-DINO 封装
@@ -125,16 +126,14 @@ MemoryNav/
 │   │   ├── node_category.py          # 节点类别分类器
 │   │   ├── node_naming.py            # 结构化命名 NodeName
 │   │   ├── colocation_merger.py      # 同位置节点合并
-│   │   └── scene_graph.py            # 层次场景图
+│   │   ├── scene_graph.py            # 层次场景图
+│   │   └── auto_landmark_namer.py    # 地标命名 (Qwen vLLM, 原 offline_mapper 迁入)
+│   ├── vpr/
+│   │   └── node_distance_estimator.py  # 节点距离估计 (原 offline_mapper 迁入)
+│   ├── viz/
+│   │   └── visualize.py              # finalize 末尾出 pose_graph / occupancy / keyframe_timeline / scene_overview
 │   └── io/
 │       └── merged_data_writer.py     # 输出写入器
-│
-├── offline_mapper/                   # 离线建图 (只读, 供 online_mapper import)
-│   ├── auto_mapper_core.py
-│   ├── auto_sub_image_extractor.py   # 子图提取 (被 connection_builder 继承)
-│   ├── auto_landmark_namer.py        # 地标命名 (Qwen vLLM)
-│   ├── node_distance_estimator.py    # 节点距离估计
-│   └── validate_output.py            # 输出校验
 │
 ├── merged_labeled_data/              # 记忆数据 (44 个节点目录)
 ├── pretrained/                       # 模型权重 (.gitignore)
@@ -1000,18 +999,20 @@ process_inference_with_memory():
                                                └─────────────────────┘
 ```
 
-#### 与离线建图的对比
+#### 特性一览 (v2.4.0)
 
-| 维度 | offline_mapper | online_mapper v2.3.0 |
-|------|---------------|---------------------|
-| 时序 | 一次性看到所有帧 | 流式, 逐帧决策 |
-| 几何前端 | — | VGGT-1B (depth + pose + point cloud 一次推理) |
-| VO | — | 复用 VGGT pose, 零额外推理 |
-| 占据栅格 | — | VGGT dense point map 直填 |
-| 关键帧 | VPR + 最小帧间隔 | VPR + 累积位移 + 累积旋转 + 信息增益 |
-| 闭环 | 首尾对比 | 全局 VPR + ORB 几何验证, auto-tune 阈值 |
-| 节点命名 | 单帧 describe_scene | 结构化 NodeName + 多帧投票 + 二次验证 |
-| cam→neighbor | 纯视觉 Hungarian | + 几何方向先验 |
+| 维度 | online_mapper (v2.4.0) |
+|------|---------------------|
+| 时序 | 流式, 逐帧决策 (`process_frame` + `finalize`) |
+| 几何前端 | VGGT-1B (depth + pose + point cloud 一次推理) |
+| VO | 复用 VGGT pose, 零额外推理 |
+| 占据栅格 | VGGT dense point map 直填 |
+| 关键帧 | VPR + 累积位移 + 累积旋转 + 信息增益 |
+| 闭环 | 全局 VPR + ORB 几何验证, auto-tune 阈值 |
+| 节点命名 | 结构化 NodeName + 多帧投票 + 二次验证 + 类别白名单 |
+| cam→neighbor | 视觉 Hungarian + 几何方向先验 (α=0.2) |
+| 接入 | CLI (`run_online_map.py`) 或 WebSocket 建图模式 (`ws_proxy_with_memory.py`) |
+| 可视化 | `viz/visualize.py` 输出 `pose_graph.png` / `occupancy.png` / `keyframe_timeline.png` / `scene_overview.txt` |
 
 ### 4.2 几何层
 
@@ -1187,7 +1188,7 @@ def _cyclic_similarity(self, feat_a, feat_b):
 
 #### 4.3.3 邻接构建 (`topology/connection_builder.py`)
 
-`ThresholdedSubImageExtractor` 继承自 `offline_mapper.AutoSubImageExtractor`，增加了**几何方向先验**：
+`ThresholdedSubImageExtractor` 继承自 `online_mapper.topology.AutoSubImageExtractor`,增加了**几何方向先验**(α=0.2):
 
 ```
 对每个节点的 4 个相机 ↔ 所有邻居节点:
@@ -1487,18 +1488,48 @@ CUDA_VISIBLE_DEVICES=0 python online_mapper/run_online_map.py \
 
 ---
 
-## 5. 离线建图
+## 5. WebSocket 建图模式 (ws_proxy 双模式接入)
 
-`offline_mapper/` 是最早的建图模块，现在主要作为 **只读依赖** 供 online_mapper import 复用：
+`deploy/ws_proxy_with_memory.py` 在 9528 端口同时承载**导航 (nav)** 与**建图 (mapping)** 两种模式, 每 client 独立 `session_state['mode']`, 默认 `nav`.
 
-| 模块 | 被复用于 |
-|------|---------|
-| `AutoSubImageExtractor` | `connection_builder.ThresholdedSubImageExtractor` (继承) |
-| `AutoLandmarkNamer` | online_mapper 的场景描述和地标命名 |
-| `NodeDistanceEstimator` | 节点间距离估计 |
-| `validate_output.py` | 输出格式校验 |
+### 5.1 命令协议
 
-独立运行：`python offline_mapper/run_auto_map.py`
+| 命令 | 作用 |
+|---|---|
+| `{"command": "start_mapping"}` | 创建 `MappingSession`, 切到 `mapping` 模式 |
+| `{"command": "stop_mapping"}` | 触发 `finalize` + 可视化, 返回产物路径并切回 `nav` |
+| `{"command": "mapping_status"}` | 查询当前 session 进度 (帧数 / 节点数 / 闭环数) |
+| `{"command": "reset"/"reset_memory"/"toggle_memory"/"memory_status"/"session_status"}` | 原有导航控制命令 |
+| 普通帧请求 `{id, pts, images:{camera_1..4}}` | 根据 `session_state['mode']` 分流到 `process_inference_with_memory` (nav) 或 `process_mapping_frame` (mapping) |
+
+### 5.2 关键实现
+
+- `MappingSession` 封装 `OnlineMapperCore` + 独立 `tmp_dir` + `output_dir`:
+  - 产物: `deploy/logs/mapping_output/session_{ts}_{cid}/`
+  - 临时帧: `deploy/logs/mapping_frames/session_*/`, `finalize()` 后自动 `rmtree` + 清空父目录
+- `feed_raw(camera_b64)` **直接写原 JPEG 字节** (`base64.b64decode + open('wb').write`), 不做 decode → re-encode, 保证与 `run_online_map.py` 像素一致
+- 三处 CPU-heavy 同步调用全部走 `asyncio.to_thread` 线程池 (`MappingSession.__init__` / `feed_raw` / `finalize`), 避免阻塞 asyncio 事件循环导致 `websockets 1011 keepalive ping timeout`
+- `shared_vpr_extractor=memory_navigator.extractor`: mapping 复用导航侧已加载的 SelaVPR, 不重复加载
+- `handle_client` 的 `finally` 在断线 / 异常时自动 `finalize` 保住数据
+
+### 5.3 节点展示帧选取
+
+`_create_door_plate_nodes` 第二遍做 brand-attach (例如 `DEEPROUTE.AI` 归入 `前台` 节点) 时, 是否将节点的 `timestamp / cameras` 重定位到 brand 最佳帧的决策,取决于 target 节点自身来源:
+
+- **plate-sourced** (`node._from_plate_best=True`): 节点本身就是由某个门牌的 best-view 建出来的, 例如 `关爱室` 节点对应 `关爱室` plate 最大 bbox 帧 (到门口近视图) → **保留原帧** (RELOCATE-KEEP-DISPLAY).
+- **keyframe-sourced** (无 `_from_plate_best`): 节点来自 `acc_rot / acc_trans / vpr<0.5` 触发的 keyframe, 位置较"任意" → **relocate 到 brand 最佳帧** (brand best-view 通常更接近语义中心).
+  - 例: `前台` 节点 keyframe 触发在 frame 46 (走廊中段), `DEEPROUTE.AI` best frame 48 (前台柜台+招牌近视) → 重定位到 frame 48.
+
+### 5.4 客户端测试
+
+`tests/test_memory_ws.py` 合并为双模式脚本:
+
+| 调用 | 行为 |
+|---|---|
+| `python tests/test_memory_ws.py` | 默认 `--mode nav`, 原有记忆导航回放 |
+| `python tests/test_memory_ws.py --mode mapping` | 自动 `start_mapping` → 喂 49 帧 → `stop_mapping`, 打印拓扑/关键帧/门牌/runtime 分解 + 产物路径 |
+
+连接前会自动为 `127.0.0.1` / `localhost` 设置 `no_proxy`, 并在 `websockets.connect(proxy=None)` 显式禁用代理, 避开 `https_proxy` / `all_proxy` 误路由.
 
 ---
 

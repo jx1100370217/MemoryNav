@@ -688,16 +688,28 @@ class OnlineMapperCore:
                         replaced_org = True
                     else:
                         ts.nearby_plates.append(vote_key)
-                # 重定位 (仅显示层): 把 target 的 timestamp/cameras 改成 brand
-                # 门牌 bbox 最大的那一帧 — 输出最清晰的视角.
-                # frame_idx / pose 不变, 避免触发 coloc merger 错误合并.
-                if replaced_org:
+                # 重定位 (仅显示层): 仅当 target 是纯 brand (SHOP) 节点时才改 display
+                # 到 brand 最大 bbox 帧. 功能性节点 (function_area / landmark_facility
+                # / ROOM) 应保留自己的原始帧, 因为用户想看"到门口了"的视角, 而不是
+                # 看 brand sticker 最清楚的视角.
+                # 例: 关爱室 node 附加了 NEUMANN brand, 保留关爱室门口帧;
+                #     独立 DEEPROUTE.AI 店铺节点则可以切到品牌招牌最清晰的帧.
+                is_shop_only_target = (
+                    getattr(target, "category", "") == NodeCategory.SHOP.value
+                    and not ts.category
+                )
+                if replaced_org and is_shop_only_target:
                     target.timestamp = obs.timestamp
                     target.cameras = dict(obs.cameras)
                     logger.info(f"[DoorPlate-RELOCATE-DISPLAY] node {nearest_nid} "
                                 f"display ts -> {obs.timestamp} "
                                 f"(brand '{vote_key}' best view); "
                                 f"topology frame_idx stays at {target.frame_idx}")
+                elif replaced_org:
+                    logger.info(f"[DoorPlate-ATTACH-KEEP-DISPLAY] node {nearest_nid} "
+                                f"({target.position_name or target.category}) "
+                                f"brand '{vote_key}' attached but keeping functional view "
+                                f"at ts={target.timestamp}")
                 target.position_name = ts.display_cn()
                 target.position_name_eng = ts.display_en()
                 self.metrics.setdefault("plate_attached_to_keyframe", 0)

@@ -1,6 +1,6 @@
 # MemoryNav 项目技术文档
 
-> **版本**: 基于最新代码，截止 2026-04-13
+> **版本**: v2.4.0 — offline_mapper 并入 online_mapper, ws_proxy 双模式接入, 截止 2026-04-14
 >
 > **代码根**: `/home/ubuntu/Disk/codes/jianxiong/MemoryNav/`
 
@@ -1505,6 +1505,115 @@ CUDA_VISIBLE_DEVICES=0 python online_mapper/run_online_map.py \
 | `{"command": "mapping_status"}` | 查询当前 session 进度 (帧数 / 节点数 / 闭环数) |
 | `{"command": "reset"/"reset_memory"/"toggle_memory"/"memory_status"/"session_status"}` | 原有导航控制命令 |
 | 普通帧请求 `{id, pts, images:{camera_1..4}}` | 根据 `session_state['mode']` 分流到 `process_inference_with_memory` (nav) 或 `process_mapping_frame` (mapping) |
+
+#### 请求示例
+
+**开启建图会话**:
+
+```json
+{"command": "start_mapping"}
+```
+
+响应:
+
+```json
+{
+  "status": "success",
+  "message": "建图模式已开启",
+  "mode": "mapping",
+  "output_dir": "/home/ubuntu/.../deploy/logs/mapping_output/session_1776156750_140.../merged_labeled_data"
+}
+```
+
+**喂入单帧 (mapping 模式)** — `task` 字段被忽略, 只作占位:
+
+```json
+{
+  "id": "test_robot",
+  "task": "mapping",
+  "pts": 1770097806,
+  "images": {
+    "camera_1": "<base64 jpg>",
+    "camera_2": "<base64 jpg>",
+    "camera_3": "<base64 jpg>",
+    "camera_4": "<base64 jpg>",
+    "front_1":  "<base64 jpg>"
+  }
+}
+```
+
+响应 (摘要):
+
+```json
+{
+  "status": "success",
+  "mode": "mapping",
+  "task_status": "mapping",
+  "action": [[0.0, 0.0, 0.0]],
+  "log": {
+    "frame_idx": 16,
+    "ts": "1770097806",
+    "vpr_sim_to_last": 0.471,
+    "info_gain": 0.0000,
+    "keyframe": true,
+    "reason": "vpr<0.5",
+    "category_decision": {"category": "function_area", "name": "前台", "reason": "function_area scene='前台'"}
+  },
+  "mapping": {"frames_processed": 17, "n_keyframes": 3, "n_nodes": 2, "n_loop_closures": 0}
+}
+```
+
+**查询建图状态**:
+
+```json
+{"command": "mapping_status"}
+```
+
+**结束并生成产物**:
+
+```json
+{"command": "stop_mapping"}
+```
+
+响应 (摘要):
+
+```json
+{
+  "status": "success",
+  "mode": "nav",
+  "summary": {
+    "n_frames_processed": 49,
+    "finalize_seconds": 24.4,
+    "metrics": {"n_nodes": 4, "n_edges": 3, "n_loop_closures": 2, "n_door_plates": 32, "...": "..."},
+    "artifacts": {
+      "merged_labeled_data": ".../session_*/merged_labeled_data",
+      "scene_graph":         ".../session_*/scene_graph.json",
+      "pose_graph":          ".../session_*/pose_graph.json",
+      "log_jsonl":           ".../session_*/online_mapping_log.jsonl",
+      "metrics_json":        ".../session_*/metrics.json"
+    },
+    "visualizations": {
+      "pose_graph":        ".../session_*/pose_graph.png",
+      "occupancy":         ".../session_*/occupancy.png",
+      "keyframe_timeline": ".../session_*/keyframe_timeline.png",
+      "scene_overview":    ".../session_*/scene_overview.txt"
+    }
+  }
+}
+```
+
+**导航模式帧请求**(`session_state['mode']` 未切到 `mapping` 时走此链路):
+
+```json
+{
+  "id": "test_robot",
+  "task": "前往C8前台",
+  "pts": 1770097806,
+  "images": {"front_1": "<base64>", "camera_1": "<base64>", "...": "..."}
+}
+```
+
+响应包含 `task_status` (`executing` / `end`) / `action` / `memory_info` (phase / current_step / vpr_matched_node 等) / `sub_image_match` / `pixel_target` — 具体字段见附录 B WebSocket 协议详情.
 
 ### 5.2 关键实现
 

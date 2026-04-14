@@ -39,6 +39,13 @@ import base64
 import time
 from collections import defaultdict
 
+# --- 代理豁免: 避免 websockets 把 127.0.0.1 也走 HTTPS_PROXY / ALL_PROXY ---
+_no_proxy = os.environ.get('no_proxy', os.environ.get('NO_PROXY', ''))
+_local_hosts = 'localhost,127.0.0.1,::1'
+if not all(h in _no_proxy for h in ('127.0.0.1', 'localhost')):
+    os.environ['no_proxy'] = f"{_no_proxy},{_local_hosts}" if _no_proxy else _local_hosts
+    os.environ['NO_PROXY'] = os.environ['no_proxy']
+
 WS_URL = "ws://127.0.0.1:9528"
 PROJECT_ROOT = "/home/ubuntu/Disk/codes/jianxiong/MemoryNav"
 DATA_DIR = os.path.join(PROJECT_ROOT, "memory_test_data")
@@ -206,6 +213,7 @@ async def run_test_nav():
                 open_timeout=30,
                 ping_interval=30,
                 ping_timeout=10,
+                proxy=None,  # 本机连接, 绕过 HTTPS_PROXY / ALL_PROXY
             )
             break
         except Exception as e:
@@ -689,6 +697,7 @@ async def run_test_mapping():
                 open_timeout=30,
                 ping_interval=30,
                 ping_timeout=10,
+                proxy=None,  # 本机连接, 绕过 HTTPS_PROXY / ALL_PROXY
             )
             break
         except Exception as e:

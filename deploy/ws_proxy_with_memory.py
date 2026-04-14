@@ -247,8 +247,10 @@ class MappingSession:
         self.finalize_result: Optional[Dict] = None
 
         # 独立目录 (按 client_id + 时间戳)
+        # - 产物放 deploy/logs/mapping_output/session_*/  (和其他 deploy 日志同根)
+        # - 临时帧放 deploy/logs/mapping_frames/session_*/ (finalize 后会被清理)
         tag = f"{int(self.started_at)}_{client_id}"
-        base = output_root or os.path.join(str(project_root), "online_mapper/output")
+        base = output_root or os.path.join(LOG_DIR, "mapping_output")
         self.output_dir = os.path.join(base, f"session_{tag}", "merged_labeled_data")
         self.tmp_dir = os.path.join(LOG_DIR, "mapping_frames", f"session_{tag}")
         os.makedirs(self.output_dir, exist_ok=True)
@@ -345,6 +347,15 @@ class MappingSession:
         except Exception as e:
             logger.warning(f"[Mapping] 可视化失败: {e}", exc_info=True)
             summary["visualizations"] = None
+
+        # 清理 tmp_dir (原始帧 jpg 已不再需要, 节点的 4 相机图已复制到 merged_labeled_data)
+        try:
+            import shutil
+            if os.path.isdir(self.tmp_dir):
+                shutil.rmtree(self.tmp_dir)
+                logger.info(f"[Mapping] 已清理临时帧目录: {self.tmp_dir}")
+        except Exception as e:
+            logger.warning(f"[Mapping] 清理 tmp_dir 失败: {e}")
 
         self.finalized = True
         self.finalize_result = summary

@@ -710,8 +710,8 @@ async def run_test_mapping():
                 sys.exit(1)
     print(f"{C_GREEN}✅ 已连接{C_RESET}")
 
-    # --- 1. 启动建图会话 ---
-    start_resp = await send_command(ws, 'start_mapping')
+    # --- 1. 启动建图会话 (首次会加载 Depth/GroundingDINO/Qwen verifier, 给足超时) ---
+    start_resp = await send_command_with_timeout(ws, 'start_mapping', timeout=180)
     if start_resp.get('status') != 'success':
         print(f"{C_RED}❌ start_mapping 失败: {start_resp.get('message')}{C_RESET}")
         await ws.close(); sys.exit(1)

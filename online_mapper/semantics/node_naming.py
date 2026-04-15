@@ -28,6 +28,7 @@ _SEMANTIC_RANK = {
     "room_numbered":      65,
     "function_area":      60,
     "landmark_facility":  50,
+    "building_landmark":  45,   # 园区楼栋标识, 略低于功能设施(电梯/楼梯)但高于 SHOP
     "junction_cross":     30,
     "junction_t":         25,
     "shop":               20,   # 单独的 shop 节点优先级低于功能区, 鼓励作为 organization 附加

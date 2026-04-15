@@ -37,6 +37,7 @@ class NodeCategory(Enum):
     FUNCTION_AREA = "function_area"         # 打印区 / 前台 / 茶水间
     SHOP = "shop"                           # storefront with brand sign
     LANDMARK_FACILITY = "landmark_facility" # 电梯 / 楼梯 / 卫生间 / 强电井
+    BUILDING_LANDMARK = "building_landmark" # A座 / B座入口 / 13号楼 / D栋 — 园区楼栋标识
     REJECT = "reject"
 
 
@@ -73,6 +74,15 @@ FUNCTION_AREA_WHITELIST = {
     "休息区": "休息区",
     "零食区": "零食区",
     "前台区": "前台",
+    # 园区/楼宇公共区 (campus-level lobbies and service points)
+    "快递柜":   "快递柜区",
+    "快递柜区": "快递柜区",
+    "外卖柜":   "外卖柜区",
+    "外卖寄存": "外卖柜区",
+    "智能取餐柜": "外卖柜区",
+    "储物柜":   "储物柜区",
+    "储物柜区": "储物柜区",
+    "locker":   "储物柜区",
 }
 
 # Landmark facility whitelist
@@ -88,7 +98,21 @@ LANDMARK_FACILITY_WHITELIST = {
     "厕所":   "卫生间",
     "toilet": "卫生间",
     "wc":     "卫生间",
+    # 园区可见的服务/住宿设施 (整栋建筑级地标, 比楼栋标识更具体)
+    "酒店":   "酒店",
+    "hotel":  "酒店",
+    "前台大堂": "大堂",     # 仅当 plate 明确写"前台大堂"才命中, 不收单独的"大堂"
 }
+
+# Building-landmark patterns: 园区中 'X座' / 'X座入口' / 'X号楼' / 'X栋'
+# 不同于其它白名单, 这里 canonical 名称就是原文本身(每栋楼是唯一的).
+# 见 match_building_landmark.
+BUILDING_LANDMARK_PATTERNS = [
+    re.compile(r"^[A-Za-z]座(入口|大堂)?$"),       # A座 / B座入口 / C座大堂
+    re.compile(r"^[0-9]{1,3}号楼(入口|大堂)?$"),    # 13号楼 / 1号楼入口
+    re.compile(r"^[A-Za-z]栋(入口|大堂)?$"),       # D栋 / D栋入口
+    re.compile(r"^[0-9]{1,3}栋(入口|大堂)?$"),      # 5栋
+]
 
 # Meeting room indicator
 MEETING_ROOM_KEYWORDS = ["会议室", "meeting", "conference"]
@@ -114,6 +138,12 @@ CN_EN_MAP = {
     "消防设施":   "Fire Equipment",
     "十字路口":   "Cross Junction",
     "丁字路口":   "T Junction",
+    # 园区/服务点扩展
+    "快递柜区":   "Parcel Lockers",
+    "外卖柜区":   "Food Lockers",
+    "储物柜区":   "Storage Lockers",
+    "酒店":       "Hotel",
+    "大堂":       "Lobby",
 }
 
 
@@ -164,23 +194,41 @@ def _norm(text: str) -> str:
 
 
 def has_room_number(text: str) -> Optional[str]:
-    """Return the matched room-number string or None."""
+    """Return the matched room-number string or None.
+
+    严格 fullmatch: 防止 '13号楼' / '2号柜' / '11层电梯' 之类的非房间数字串
+    被当成 ROOM_NUMBERED. 'X号' 后缀必须为空或房间相关词.
+    """
     if not text:
         return None
     t = text.strip()
     # Quick digit check
     if not any(c.isdigit() for c in t):
         return None
-    # Pure 3-4 digit room number
+    # Pure 3-4 digit room number (101 / 1023)
     if re.fullmatch(r"\d{3,4}", t):
         return t
-    # X号 / X号房间 / X号会议室
-    m = re.match(r"^([0-9]{1,4})(号)([房会教办]?[间室]?)?", t)
-    if m:
+    # X号 / X号房间 / X号室 / X号会议室 / X号教室 / X号办公室 / X号工作室
+    if re.fullmatch(r"[0-9]{1,4}号(房|室|房间|会议室|教室|办公室|工作室)?", t):
         return t
-    # Letter+digit (A301)
+    # Letter+digit (A301 / B12)
     if re.fullmatch(r"[A-Za-z]\d{1,4}", t):
         return t
+    return None
+
+
+def match_building_landmark(text: str) -> Optional[str]:
+    """Return the canonical building-landmark text or None.
+
+    匹配 'A座' / 'B座入口' / '13号楼' / 'D栋' 这种园区级楼栋标识.
+    canonical 名称就是原文 (每栋楼是独一无二的, 不做归一化).
+    """
+    if not text:
+        return None
+    t = text.strip()
+    for pat in BUILDING_LANDMARK_PATTERNS:
+        if pat.fullmatch(t):
+            return t
     return None
 
 
@@ -328,6 +376,16 @@ class NodeCategoryClassifier:
                 return CategoryDecision(
                     NodeCategory.ROOM_NAMED, t, cn_to_en(t) if t in CN_EN_MAP else t,
                     reason=f"generic_X室 plate='{t}'")
+
+        # ---- D3. Building landmark: X座 / X座入口 / X号楼 / X栋 ----
+        # 园区级楼栋标识. canonical 即原文 (每栋楼独一无二). 必须放在 SHOP
+        # 之前: 'D栋' 含 Latin 字母, 否则会被 E 段 SHOP 误抢.
+        if plate_text_verified and plate_text:
+            bl = match_building_landmark(plate_text)
+            if bl:
+                return CategoryDecision(
+                    NodeCategory.BUILDING_LANDMARK, bl, bl,
+                    reason=f"building_landmark plate='{plate_text}'")
 
         # ---- E. Shop / proper-noun storefront ----
         if plate_text_verified and plate_text:

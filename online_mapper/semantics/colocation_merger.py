@@ -32,6 +32,7 @@ _CATEGORY_RANK = {
     NodeCategory.ROOM_NUMBERED.value:     6,
     NodeCategory.FUNCTION_AREA.value:     5,
     NodeCategory.LANDMARK_FACILITY.value: 4,
+    NodeCategory.BUILDING_LANDMARK.value: 4,   # 园区楼栋标识, 与 LANDMARK_FACILITY 同级
     NodeCategory.SHOP.value:              3,
     NodeCategory.JUNCTION_CROSS.value:    2,
     NodeCategory.JUNCTION_T.value:        1,

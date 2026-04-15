@@ -314,13 +314,34 @@ class MultiFrameVoter:
                 return True
         return False
 
+    @staticmethod
+    def _edit_distance(a: str, b: str) -> int:
+        """经典 Levenshtein 编辑距离 (短串场景, O(len_a*len_b) 即可)."""
+        la, lb = len(a), len(b)
+        if la == 0: return lb
+        if lb == 0: return la
+        prev = list(range(lb + 1))
+        for i in range(1, la + 1):
+            cur = [i] + [0] * lb
+            for j in range(1, lb + 1):
+                cost = 0 if a[i - 1] == b[j - 1] else 1
+                cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+            prev = cur
+        return prev[lb]
+
     def merge_substring_variants(self):
-        """Merge votes for partial-OCR variants of the same string.
-        e.g. EUMANN votes are merged into NEUMANN if NEUMANN exists and
-        EUMANN is a strict substring of length >= 4.
+        """Merge votes for OCR variants of the same string.
+
+        两类合并:
+        1. 严格子串 + 长度差 <= 2 (e.g. EUMANN -> NEUMANN)
+        2. 全大写 Latin 串 + edit_distance <= 2 + 长度 >= 4
+           (e.g. HIOF/KHIOH/HIOH/EXHIOH 这种园区招牌的 OCR 抖动)
+
+        合并方向: 票数多的吸收票数少的; 同票时取长度更长的(更"完整"的串).
         """
+        import re as _re
         keys = list(self._votes.keys())
-        # 按长度降序: 先 NEUMANN, 后 EUMANN
+        # 第 1 阶段: 严格子串合并
         keys_sorted = sorted(keys, key=lambda k: -len(k))
         merged_into: Dict[str, str] = {}
         for i, longer in enumerate(keys_sorted):
@@ -331,12 +352,39 @@ class MultiFrameVoter:
                     continue
                 if len(shorter) < 4:
                     continue
-                # 严格子串 + 长度差 <= 2 才视为 OCR 残缺
                 if shorter in longer and len(longer) - len(shorter) <= 2:
                     self._votes[longer].extend(self._votes[shorter])
                     merged_into[shorter] = longer
                     logger.info(f"[Voter] merged variant '{shorter}' -> '{longer}'")
         for k in merged_into:
+            self._votes.pop(k, None)
+
+        # 第 2 阶段: 全大写 Latin OCR 模糊聚类
+        # 仅作用于 4-8 字符全大写英文串 (招牌典型形态), 中文/混合不动
+        is_caps = lambda s: bool(_re.fullmatch(r"[A-Z]{4,8}", s))
+        latin_keys = [k for k in self._votes.keys() if is_caps(k)]
+        if len(latin_keys) < 2:
+            return
+        # 按票数降序作 anchor (票多的吃票少的)
+        latin_keys.sort(key=lambda k: (-len(self._votes[k]), -len(k)))
+        absorbed: Dict[str, str] = {}
+        for i, anchor in enumerate(latin_keys):
+            if anchor in absorbed:
+                continue
+            for cand in latin_keys[i + 1:]:
+                if cand in absorbed:
+                    continue
+                if abs(len(anchor) - len(cand)) > 2:
+                    continue
+                d = self._edit_distance(anchor, cand)
+                # 距离阈值: 长度 4 -> 1, 长度 >=5 -> 2
+                max_d = 1 if min(len(anchor), len(cand)) <= 4 else 2
+                if d <= max_d:
+                    self._votes[anchor].extend(self._votes[cand])
+                    absorbed[cand] = anchor
+                    logger.info(f"[Voter] OCR-fuzzy merged '{cand}' -> '{anchor}' "
+                                f"(edit_distance={d})")
+        for k in absorbed:
             self._votes.pop(k, None)
 
     def confirmed_names(self) -> List[str]:

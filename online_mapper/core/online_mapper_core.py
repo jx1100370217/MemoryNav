@@ -856,6 +856,20 @@ class OnlineMapperCore:
         with open(out_root.parent / "metrics.json", "w", encoding="utf-8") as f:
             json.dump(self.metrics, f, ensure_ascii=False, indent=2)
 
+        # DEBUG dump: 每个 plate 的所有 voter 观测 (frame_idx/camera/area/conf), 用于 round-4 分析
+        try:
+            voter_dump = {
+                name: [
+                    {"frame_idx": v.frame_idx, "camera": v.camera,
+                     "area": v.area, "confidence": v.confidence}
+                    for v in votes
+                ] for name, votes in self.plate_voter._votes.items()
+            }
+            with open(out_root.parent / "plate_voter_dump.json", "w", encoding="utf-8") as f:
+                json.dump(voter_dump, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning(f"voter dump failed: {e}")
+
         logger.info(f"Online mapping complete: {self.metrics}")
 
     # ------------------------------------------------------------------
@@ -909,16 +923,78 @@ class OnlineMapperCore:
             groups.setdefault((cat, key_name), []).append(nid)
 
         def _best_obs_for_group(name: str, alias_names: List[str]):
-            """在 base 名 + 全部 alias 名(X座入口/X座大堂)中取 plate area 最大."""
-            if not self.door_tracker:
-                return None
-            best = None
-            for n in [name] + alias_names:
-                obs = self.door_tracker.best(n)
-                if obs is None: continue
-                if best is None or obs.area > best.area:
-                    best = obs
-            return best
+            """选该 group 的代表帧.
+            优先级:
+              1. 带 '入口' 的 variant (X座入口) — 机器人站在入口前, 位置语义最具体
+              2. 带 '大堂' 的 variant
+              3. 裸 base name (X座)
+            再在选定的 variant 里取 plate bbox 面积最大那帧.
+            (不能无脑跨 variant 取 max area, 因为远看整栋楼 '座' 字 bbox 也大,
+             会选到机器人已经走过入口后的帧.)
+            用 door_tracker + voter 双来源: door_tracker 有 timestamp/cameras,
+            voter 更可靠地 index 了 plate name (voter 用的 vote_name 可能与
+            tracker key 不一致).
+            """
+            all_names = [name] + [n for n in alias_names if n != name]
+            entries = [n for n in all_names if "入口" in n]
+            lobbies = [n for n in all_names if "大堂" in n]
+            bases   = [n for n in all_names if n not in entries and n not in lobbies]
+
+            def _resolve(group_names):
+                best_obs, best_area = None, 0.0
+                for n in group_names:
+                    # 先试 tracker (有 timestamp/cameras 信息)
+                    if self.door_tracker:
+                        obs = self.door_tracker.best(n)
+                        if obs is not None and obs.area > best_area:
+                            best_obs, best_area = obs, obs.area
+                    # 再查 voter, 如果 tracker 没这 key 或 area 较小
+                    votes = self.plate_voter.votes_for(n)
+                    if votes:
+                        vbest = max(votes, key=lambda v: v.area or 0.0)
+                        if (vbest.area or 0.0) > best_area:
+                            # 从 tracker 找该 (frame, cam) 的 obs 拿 timestamp
+                            best_obs_fallback = None
+                            if self.door_tracker:
+                                for nn in group_names:
+                                    for obs in self.door_tracker._observations.get(nn, []):
+                                        if obs.frame_idx == vbest.frame_idx:
+                                            best_obs_fallback = obs
+                                            break
+                                    if best_obs_fallback: break
+                            if best_obs_fallback is not None:
+                                best_obs, best_area = best_obs_fallback, vbest.area or 0.0
+                            elif best_obs is None:
+                                # 没 tracker obs 就用 voter 帧手工构造 obs
+                                from online_mapper.semantics.door_plate_tracker import PlateObservation
+                                # 从 log_lines 找该 frame 的 timestamp/cameras
+                                ts, cams = None, {}
+                                for ln in self.log_lines:
+                                    if ln.get("frame_idx") == vbest.frame_idx:
+                                        ts = ln.get("ts")
+                                        break
+                                # 再从 _all_frames_cache (finalize 阶段常存在) 取 cameras
+                                if hasattr(self, "_all_frames_cache") and self._all_frames_cache:
+                                    for fr in self._all_frames_cache:
+                                        if fr.get("frame_idx") == vbest.frame_idx:
+                                            cams = dict(fr.get("cameras") or {})
+                                            ts = ts or fr.get("timestamp")
+                                            break
+                                if ts and cams:
+                                    best_obs = PlateObservation(
+                                        frame_idx=vbest.frame_idx, timestamp=ts,
+                                        cameras=cams, camera=vbest.camera,
+                                        bbox=[0,0,0,0], score=0.0, text=n,
+                                        name_cn=n, name_en="",
+                                        pose=(0.0,0.0,0.0), area=vbest.area or 0.0)
+                                    best_area = vbest.area or 0.0
+                return best_obs
+
+            for group in (entries, lobbies, bases):
+                obs = _resolve(group)
+                if obs is not None:
+                    return obs
+            return None
 
         for (cat, base_name), ids in groups.items():
             if len(ids) < 2:
@@ -971,21 +1047,50 @@ class OnlineMapperCore:
             return best.frame_idx, best.area or 0.0
 
         # ---- Pass B: 复合 plate 优先, 重命名节点 (H座 -> H座电梯) ----
-        # 触发条件: confirmed 复合 plate, 帧距 ≤ 12 内有 BUILDING_LANDMARK
-        # 或 LANDMARK_FACILITY 节点 → 改其 display name.
+        # 按 specificity 排序, 每个 anchor 只被 rename 一次, 挑最具体的复合 plate:
+        #   X座电梯 / X座楼梯  (楼栋级)         -- 最具体
+        #   X号楼电梯 / X栋电梯
+        #   X层电梯   (仅楼层, 不知道是哪栋)   -- 最宽泛
         prefix_pat = _re.compile(
             r"^([A-Za-z]|[0-9]{1,3}号|[0-9]{1,3}层|[0-9]{1,3})(座|楼|栋)?(电梯|楼梯)$")
+
+        def _composite_specificity(plate_text: str) -> int:
+            """越大越具体; 优先分配."""
+            m = prefix_pat.fullmatch(plate_text)
+            if not m: return 0
+            prefix, suffix_type, kind = m.group(1), m.group(2), m.group(3)
+            s = 0
+            if suffix_type in ("座", "栋"):    # 明确楼栋
+                s += 30
+            elif suffix_type == "楼":            # X号楼 明确楼栋
+                s += 25
+            elif "层" in prefix:                # 仅楼层
+                s += 10
+            else:                                # 裸数字 (e.g. 11电梯) 最差
+                s += 5
+            # 字母楼栋 (A-Z) 比数字更稳 (楼栋编号常是字母)
+            if len(prefix) == 1 and prefix.isalpha():
+                s += 3
+            return s
+
+        candidates_B = []
         for plate_text in list(self.plate_voter._votes.keys()):
             if not prefix_pat.fullmatch(plate_text or ""):
                 continue
             if not self.plate_voter.is_confirmed(plate_text):
                 continue
-            target_frame, _area = _best_frame_for_voter(plate_text)
+            target_frame, area = _best_frame_for_voter(plate_text)
             if target_frame is None:
                 continue
+            candidates_B.append((plate_text, target_frame, area,
+                                  _composite_specificity(plate_text)))
+        # 高 specificity 优先; 同级按 area 降序
+        candidates_B.sort(key=lambda x: (-x[3], -x[2]))
+        anchored = set()
+        for plate_text, target_frame, _area, _spec in candidates_B:
             cands = [
                 nid for nid, n in self.topo.nodes.items()
-                if nid not in alias
+                if nid not in alias and nid not in anchored
                 and (getattr(n, "category", "") in (
                     NodeCategory.BUILDING_LANDMARK.value,
                     NodeCategory.LANDMARK_FACILITY.value))
@@ -1000,12 +1105,37 @@ class OnlineMapperCore:
             if ns is not None:
                 ns.category = plate_text
                 ns.category_en = plate_text
-                # 清掉可能干扰 display 的 organization (如 'NEUMANN'), 保持
-                # H座电梯 干净; brand attach 在后续仍会按需重新添加.
             target.position_name = plate_text
             target.position_name_eng = plate_text
             target.room = plate_text
-            logger.info(f"[CompositePlate] '{plate_text}' → node {anchor}")
+            # 搬 timestamp/frame/cameras 到 plate 最大 bbox 那帧, 给用户最近视角.
+            # 优先用 door_tracker (有 timestamp/cameras), 否则从 _all_frames_cache
+            # 按 voter 的 best vote frame_idx 反查 (door_tracker 可能以 text 单字母
+            # 为 key 找不到复合 plate, e.g. 'H' vs 'H座电梯').
+            votes = self.plate_voter.votes_for(plate_text)
+            best_v = max(votes, key=lambda v: v.area or 0) if votes else None
+            obs = None
+            if self.door_tracker:
+                obs = self.door_tracker.best(plate_text)
+            new_frame = None; new_ts = None; new_cams = None
+            if obs is not None:
+                new_frame, new_ts, new_cams = obs.frame_idx, obs.timestamp, dict(obs.cameras)
+            elif best_v is not None and self._all_frames_cache:
+                for fr in self._all_frames_cache:
+                    if fr.get("frame_idx") == best_v.frame_idx:
+                        new_frame = best_v.frame_idx
+                        new_ts = fr.get("timestamp")
+                        new_cams = dict(fr.get("cameras") or {})
+                        break
+            if new_frame is not None and target.frame_idx != new_frame and new_ts and new_cams:
+                target.frame_idx = new_frame
+                target.timestamp = new_ts
+                target.cameras = new_cams
+                if anchor in self.node_features:
+                    self.node_features[anchor] = self._extract_features(new_cams)
+                self.node_frame_idx[anchor] = new_frame
+            anchored.add(anchor)
+            logger.info(f"[CompositePlate] '{plate_text}' spec={_spec} → node {anchor} ts→{new_ts}")
 
         # ---- Pass C: 数字+柜 复合 plate (2号柜/1号柜) 命名外卖柜区/储物柜区 ----
         cabinet_pat = _re.compile(r"^([0-9]{1,3})号柜$")
@@ -1014,6 +1144,22 @@ class OnlineMapperCore:
             "储物柜区": "储物柜",
             "快递柜区": "快递柜",
         }
+        # 辅助: 返回帧 f 附近 (±window) 内某 plate 的最大 area
+        def _nearest_plate_area(plate_name: str, f: int, window: int = 12) -> float:
+            votes = self.plate_voter.votes_for(plate_name)
+            if not votes:
+                return 0.0
+            near = [v for v in votes if abs(v.frame_idx - f) <= window]
+            if not near: return 0.0
+            return max((v.area or 0.0) for v in near)
+
+        # 外卖柜 vs 储物柜 判断: 哪个 plate 在该 N 号柜附近 frame 里出现的 area 更大,
+        # 就是哪种柜. Qwen 的 scene_describe '储物柜区' / '外卖柜区' 不总准(Qwen 把
+        # 外卖柜帧读成"储物柜区"曾发生), 用 plate 实证更可靠.
+        KIND_PLATES = {"外卖柜": "外卖柜", "储物柜": "储物柜", "快递柜": "快递柜"}
+        KIND_TO_SHORT = {"外卖柜": "外卖柜", "储物柜": "储物柜", "快递柜": "快递柜"}
+        KIND_TO_ROOM = {"外卖柜": "外卖柜区", "储物柜": "储物柜区", "快递柜": "快递柜区"}
+
         for plate_text in list(self.plate_voter._votes.keys()):
             m = cabinet_pat.fullmatch(plate_text or "")
             if not m: continue
@@ -1032,17 +1178,217 @@ class OnlineMapperCore:
                 self.topo.nodes[i].frame_idx - target_frame))
             target = self.topo.nodes[anchor]
             base_canon = (target.position_name or "").split("·")[0]
-            if base_canon not in cabinet_categories: continue
-            short = cabinet_categories[base_canon]
+            # 根据 N 号柜 plate 周围 confirmed 的 '外卖柜'/'储物柜'/'快递柜' plate
+            # 选 kind. 偏好规则:
+            #   - 专用命名 (2 字招牌 "外卖柜"/"快递柜") 读到的文字比 scene describe
+            #     "储物柜"/"储物柜区" 更可信 (Qwen 有把外卖柜区当储物柜区的倾向).
+            #   - 加 prior boost 给 '外卖柜'/'快递柜', 只有在它们在附近明显缺席
+            #     (area 低于 10% of 储物柜) 时才选 '储物柜'.
+            window = 12
+            kind_scores = {}
+            for kname in KIND_PLATES:
+                if self.plate_voter.is_confirmed(kname):
+                    a = _nearest_plate_area(kname, target_frame, window=window)
+                    if a > 0:
+                        kind_scores[kname] = a
+            chosen_kind = None
+            if kind_scores:
+                outbox = kind_scores.get("外卖柜", 0)
+                express = kind_scores.get("快递柜", 0)
+                storage = kind_scores.get("储物柜", 0)
+                # 若 '外卖柜' 或 '快递柜' 有近视证据 (area > 10000), 直接选它;
+                # 两者都有则选 area 更大的. 否则退化到 '储物柜'.
+                if outbox >= 10000 or express >= 10000:
+                    chosen_kind = "外卖柜" if outbox >= express else "快递柜"
+                else:
+                    chosen_kind = max(kind_scores.items(), key=lambda kv: kv[1])[0]
+            else:
+                chosen_kind = base_canon.replace("区", "") if base_canon.endswith("区") else None
+                if chosen_kind not in KIND_TO_SHORT:
+                    chosen_kind = None
+            if chosen_kind is None: continue
+            short = KIND_TO_SHORT[chosen_kind]
             composite = f"{num}号{short}"
             ns = getattr(target, "name_struct", None)
             if ns is not None:
                 ns.category = composite
                 ns.category_en = composite
+                # 清掉 EXHIOH 这种伪 brand (它本身就是 hallucinated plate)
+                if ns.organization and not any(c.isascii() and c.isalnum()
+                                                for c in ns.organization):
+                    pass  # 中文 org 保留
+                else:
+                    # 英文 org 若与柜区无关 (EXHIOH/HIOF 等), drop
+                    ns.organization = ""
             target.position_name = composite
             target.position_name_eng = composite
             target.room = composite
-            logger.info(f"[CabinetPlate] '{plate_text}' + '{base_canon}' → '{composite}' on node {anchor}")
+            logger.info(f"[CabinetPlate] '{plate_text}' near frame {target_frame} "
+                        f"kind={chosen_kind} → '{composite}' on node {anchor} "
+                        f"(was: {base_canon})")
+
+        # ---- Pass D: 保安亭 ----
+        # 策略 A: 若 scene 识别为 "岗亭"/"保安亭" 的帧(即使 reject 未建 node)
+        # 存在, 且附近有 BUILDING_LANDMARK, 重命名该建筑节点为 "X座保安亭".
+        # 策略 B: 若已建 FUNCTION_AREA=保安亭 节点, 合并到最近建筑.
+        BOOTH_TOKENS = {"岗亭", "保安亭", "值班亭", "门岗"}
+        booth_frames = []
+        for ln in self.log_lines:
+            cd = ln.get("category_decision") or {}
+            sd = cd.get("scene_describe") or ""
+            if sd in BOOTH_TOKENS:
+                booth_frames.append(ln.get("frame_idx"))
+
+        building_nodes = [
+            (nid, n) for nid, n in self.topo.nodes.items()
+            if nid not in alias
+            and getattr(n, "category", "") == NodeCategory.BUILDING_LANDMARK.value
+        ]
+        booth_node_nodes = [
+            (nid, n) for nid, n in self.topo.nodes.items()
+            if nid not in alias
+            and (getattr(n, "name_struct", None) is not None
+                 and getattr(n.name_struct, "category", "") == "保安亭")
+        ]
+
+        used_buildings = set()
+        # 先 case B (已有保安亭 node)
+        for (bn_id, bn) in list(booth_node_nodes):
+            if bn_id in alias: continue
+            if not building_nodes: break
+            nearest = min(building_nodes,
+                          key=lambda p: abs(p[1].frame_idx - bn.frame_idx))
+            if abs(nearest[1].frame_idx - bn.frame_idx) > 12: continue
+            bld_name = (_node_canon(nearest[1]) or "").strip()
+            if not bld_name: continue
+            composite = f"{bld_name}保安亭"
+            ns = getattr(bn, "name_struct", None)
+            if ns is not None:
+                ns.category = composite; ns.category_en = composite
+                ns.organization = ""
+            bn.position_name = composite
+            bn.position_name_eng = composite
+            bn.room = composite
+            alias[nearest[0]] = bn_id
+            used_buildings.add(nearest[0])
+            logger.info(f"[Booth-B] merge {nearest[0]}({bld_name}) → {bn_id} ({composite})")
+
+        # case A: scene 提示岗亭但没单独建节点; 直接 rename 最近 building
+        for bf in booth_frames:
+            if bf is None: continue
+            cands = [
+                (nid, n) for nid, n in self.topo.nodes.items()
+                if nid not in alias and nid not in used_buildings
+                and getattr(n, "category", "") == NodeCategory.BUILDING_LANDMARK.value
+                and abs(n.frame_idx - bf) <= 10
+            ]
+            if not cands: continue
+            nid_b, n_b = min(cands, key=lambda p: abs(p[1].frame_idx - bf))
+            bld_name = (_node_canon(n_b) or "").strip()
+            composite = f"{bld_name}保安亭"
+            ns = getattr(n_b, "name_struct", None)
+            if ns is not None:
+                # 保留楼栋前缀, 把 base category 改成复合名; organization (如 HIOF) 可保留
+                ns.category = composite
+                ns.category_en = composite
+            n_b.position_name = ns.display_cn() if ns else composite
+            n_b.position_name_eng = ns.display_en() if ns else composite
+            n_b.room = composite
+            used_buildings.add(nid_b)
+            logger.info(f"[Booth-A] scene=岗亭 frame {bf} → rename node {nid_b} '{bld_name}' → '{composite}'")
+
+        # ---- Pass E: HIOF/EXHIOH 这类 'SHOP' 节点 brand-attach 到相近 FUNCTION_AREA ----
+        # 如果 SHOP 节点名(organization) 与相邻非 SHOP FUNCTION 节点在 frame 差 ≤ 12,
+        # 应当合并 SHOP 进 FUNCTION, 以 FUNCTION 为主名, SHOP 作 organization.
+        for sid, snode in list(self.topo.nodes.items()):
+            if sid in alias: continue
+            if getattr(snode, "category", "") != NodeCategory.SHOP.value: continue
+            sns = getattr(snode, "name_struct", None)
+            if sns is None or not sns.organization: continue
+            # 找相邻非 SHOP 节点
+            nearby = [
+                (fid, fn) for fid, fn in self.topo.nodes.items()
+                if fid not in alias and fid != sid
+                and getattr(fn, "category", "") in (
+                    NodeCategory.FUNCTION_AREA.value,
+                    NodeCategory.BUILDING_LANDMARK.value,
+                    NodeCategory.LANDMARK_FACILITY.value,
+                    NodeCategory.ROOM_NAMED.value,
+                    NodeCategory.ROOM_NUMBERED.value)
+                and abs(fn.frame_idx - snode.frame_idx) <= 12
+            ]
+            if not nearby: continue
+            anchor_id, anchor_node = min(
+                nearby, key=lambda p: abs(p[1].frame_idx - snode.frame_idx))
+            ans = getattr(anchor_node, "name_struct", None)
+            if ans is None: continue
+            # 融合 organization
+            if not ans.organization:
+                ans.organization = sns.organization
+            elif ans.organization != sns.organization:
+                if sns.organization not in ans.nearby_plates:
+                    ans.nearby_plates.append(sns.organization)
+            anchor_node.position_name = ans.display_cn()
+            anchor_node.position_name_eng = ans.display_en()
+            alias[sid] = anchor_id
+            logger.info(f"[ShopAttach] merge SHOP {sid}({sns.organization}) → "
+                        f"{anchor_id}({anchor_node.position_name})")
+
+        # ---- Pass F: 所有 BUILDING_LANDMARK / 含保安亭/电梯/楼梯 的节点
+        # 强制把 display 帧搬到其 canonical plate 的 best-area 帧 (优先 "入口"
+        # 变体). Pass A 内部 fallback 对单字母 tracker key 不稳, 这里用 voter
+        # 直接作最终 re-center, 确保用户看到离招牌最近的帧.
+        def _final_recenter(node, canonical_base: str):
+            # 收集相关 plate variants: 基础 + 入口 + 大堂 + 复合 (电梯/楼梯)
+            relevant = set()
+            for k in self.plate_voter._votes.keys():
+                if not k: continue
+                if k == canonical_base: relevant.add(k)
+                elif k.startswith(canonical_base) and any(s in k for s in ("入口","大堂","电梯","楼梯")):
+                    relevant.add(k)
+            if not relevant: return
+            # 优先选 "入口" variant 的 best
+            def pick(keys):
+                best_f, best_a = None, 0.0
+                for k in keys:
+                    for v in self.plate_voter.votes_for(k):
+                        if (v.area or 0) > best_a:
+                            best_a = v.area or 0
+                            best_f = v.frame_idx
+                return best_f
+            entry_keys = [k for k in relevant if "入口" in k]
+            base_keys = [k for k in relevant if k == canonical_base]
+            target_frame = pick(entry_keys) or pick(base_keys)
+            if target_frame is None or target_frame == node.frame_idx:
+                return
+            # 从 _all_frames_cache 取 ts 与 cameras
+            for fr in self._all_frames_cache:
+                if fr.get("frame_idx") == target_frame:
+                    node.frame_idx = target_frame
+                    node.timestamp = fr.get("timestamp") or node.timestamp
+                    cams = dict(fr.get("cameras") or {})
+                    if cams: node.cameras = cams
+                    # 重建 VPR features 以保持一致
+                    nid = None
+                    for k, v in self.topo.nodes.items():
+                        if v is node: nid = k; break
+                    if nid and nid in self.node_features and cams:
+                        try:
+                            self.node_features[nid] = self._extract_features(cams)
+                            self.node_frame_idx[nid] = target_frame
+                        except Exception: pass
+                    logger.info(f"[Recenter] node -> frame {target_frame} ts={node.timestamp} "
+                                f"(canonical={canonical_base}, via keys {list(relevant)[:3]})")
+                    break
+
+        import re as _re_f
+        bld_base_re = _re_f.compile(r"^([A-Za-z0-9]+(?:号)?(?:座|楼|栋))")
+        for nid, node in self.topo.nodes.items():
+            if nid in alias: continue
+            name = (getattr(node, "position_name", "") or "").split("·")[0]
+            m = bld_base_re.match(name)
+            if m:
+                _final_recenter(node, m.group(1))
 
         return alias
 

@@ -1832,7 +1832,14 @@ async def process_inference_with_memory(message_data, session_state,
                     _fb_pixel = nav_state.fallback_pixel_target
                     # Qwen3.5打点结果的相机来自fallback_camera_name，不用预设step.camera_name
                     _fb_cam = nav_state.fallback_camera_name
-                    if _fb_pixel and _fb_cam and len(_fb_pixel) >= 2:
+                    if _fb_cam in ('camera_3', 'camera_4') and _fb_pixel and len(_fb_pixel) >= 2:
+                        # 侧面相机 → 原地旋转朝向目标，与 build_memory_response 保持一致
+                        _fb_vec, _fb_debug = _pixel_target_to_robot_action(_fb_pixel[0], _fb_pixel[1], _fb_cam)
+                        _yaw_deg = _fb_debug.get('yaw_global_deg', 0)
+                        _yaw_rad = math.radians(_yaw_deg)
+                        _fb_action = [[0.0, 0.0, _yaw_rad]]
+                        logger.info(f"🔄 [Memory] Qwen3.5 兜底侧面相机 {_fb_cam}, yaw={_yaw_deg:.1f}° → {_yaw_rad:.3f}rad, action={_fb_action[0]}")
+                    elif _fb_pixel and _fb_cam and len(_fb_pixel) >= 2:
                         _fb_vec, _fb_debug = _pixel_target_to_robot_action(_fb_pixel[0], _fb_pixel[1], _fb_cam)
                         _fb_action = [_fb_vec]
                     else:

@@ -252,6 +252,11 @@ class MultiFrameVoter:
 
     MIN_FRAMES = 2
     MIN_CAMERAS = 2
+    # 任何一票的 bbox 像素面积下限 (1920x1536 帧, ~0.3%).
+    # 用于过滤 Qwen 在远处的小检测上做的文字幻觉 (典型例: '酒店' / 'EXHIOH'
+    # 在 30~40 px 的小 bbox 上"读"出文字, 实际牌子并不存在).
+    # 任意一帧的 bbox 大于此值即视为有"近距离实证", 可信度足够.
+    MIN_MAX_AREA = 8000
     # Whitelist keywords that allow single-frame confirmation if Qwen
     # reports high confidence on the strict prompt.
     SINGLE_FRAME_WHITELIST_KEYWORDS = (
@@ -262,11 +267,14 @@ class MultiFrameVoter:
     )
 
     def __init__(self, min_frames: int = None, min_cameras: int = None,
-                 allow_single_frame_whitelist: bool = True):
+                 allow_single_frame_whitelist: bool = True,
+                 min_max_area: float = None):
         if min_frames is not None:
             self.MIN_FRAMES = min_frames
         if min_cameras is not None:
             self.MIN_CAMERAS = min_cameras
+        if min_max_area is not None:
+            self.MIN_MAX_AREA = min_max_area
         self._votes: Dict[str, List[NameVote]] = {}
         self.allow_single_frame_whitelist = allow_single_frame_whitelist
 
@@ -297,14 +305,20 @@ class MultiFrameVoter:
         vs = self._votes.get(name, [])
         if not vs:
             return False
+        # 任意一票 bbox 面积必须超过下限 — 否则视为远距离 OCR 幻觉
+        # (白名单高置信单帧 fast-pass 不强制此条, 否则会丢 'NEUMANN' 这种
+        # 单镜头近距离品牌牌)
+        max_area = max((v.area or 0.0) for v in vs)
+        meets_area = max_area >= self.MIN_MAX_AREA
+
         distinct_frames = {v.frame_idx for v in vs}
-        if len(distinct_frames) >= self.MIN_FRAMES:
+        if len(distinct_frames) >= self.MIN_FRAMES and meets_area:
             return True
         # same-frame multi-camera
         per_frame_cams: Dict[int, set] = {}
         for v in vs:
             per_frame_cams.setdefault(v.frame_idx, set()).add(v.camera)
-        if any(len(cs) >= self.MIN_CAMERAS for cs in per_frame_cams.values()):
+        if any(len(cs) >= self.MIN_CAMERAS for cs in per_frame_cams.values()) and meets_area:
             return True
         # single-frame whitelist fast-pass:
         # 接受 medium / high 任一 confidence + (含数字 OR 命中白名单)

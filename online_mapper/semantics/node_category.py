@@ -83,6 +83,11 @@ FUNCTION_AREA_WHITELIST = {
     "储物柜":   "储物柜区",
     "储物柜区": "储物柜区",
     "locker":   "储物柜区",
+    # 园区保安亭 / 岗亭: 常与楼栋伴生, 后续 Pass D 会自动 prefix 楼栋号
+    "保安亭":   "保安亭",
+    "岗亭":     "保安亭",
+    "值班亭":   "保安亭",
+    "门岗":     "保安亭",
 }
 
 # Landmark facility whitelist
@@ -142,6 +147,7 @@ CN_EN_MAP = {
     "快递柜区":   "Parcel Lockers",
     "外卖柜区":   "Food Lockers",
     "储物柜区":   "Storage Lockers",
+    "保安亭":     "Guard Booth",
     "酒店":       "Hotel",
     "大堂":       "Lobby",
 }

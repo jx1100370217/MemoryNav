@@ -773,6 +773,18 @@ class OnlineMapperCore:
             # 用空 names dict 应用 alias (names 还没生成)
             self._apply_node_alias(coloc_alias, {})
 
+        # 1.6 同名 BUILDING_LANDMARK / LANDMARK_FACILITY 合并:
+        # ColocationMerger 受限于 frame_gap/spatial_dist, 在多视角观察 (例如
+        # 走过 C 座 3 次, 每次离 5m+) 同栋楼时不会合并. 这里强制按 canonical
+        # name 合并, 并把 anchor 的 display 帧搬到该名字 plate bbox 最大的帧
+        # (door_tracker.best(name)), 给后续 ConnectionBuilder/导航更近视角.
+        same_name_alias = self._merge_by_canonical_name()
+        if same_name_alias:
+            self._apply_node_alias(same_name_alias, {})
+            self.metrics.setdefault("same_name_merge", {})
+            self.metrics["same_name_merge"]["aliases"] = dict(same_name_alias)
+            self.metrics["same_name_merge"]["count"] = len(same_name_alias)
+
         # 1.7 拓扑邻接重建: 用空间最近邻 + 时间相邻并集
         # 之前的 keyframe-only 链 + door-plate prev/next 边在 coloc merge
         # 后会留下 stale edge (e.g. 5↔7), 这里全部清空重建.
@@ -845,6 +857,194 @@ class OnlineMapperCore:
             json.dump(self.metrics, f, ensure_ascii=False, indent=2)
 
         logger.info(f"Online mapping complete: {self.metrics}")
+
+    # ------------------------------------------------------------------
+    def _merge_by_canonical_name(self) -> Dict[str, str]:
+        """同 base building 的 BUILDING_LANDMARK 节点 + 同 canonical name 的
+        LANDMARK_FACILITY 节点强制合并; 并把"复合 plate"(如 'H座电梯', '2号外卖柜')
+        作为更具体的 display name 优先采用.
+
+        BUILDING_LANDMARK 的 base 提取规则:
+          'C座' / 'C座入口' / 'C座大堂' → base 'C座' (全归同栋楼)
+          '13号楼' / '13号楼入口' → base '13号楼'
+          'D栋' / 'D栋入口' → base 'D栋'
+
+        anchor 选: 离 plate-best frame 最近的 node, 并把 timestamp/cameras 搬到
+        bbox 最大那帧, 给用户看到最近最大的招牌视角.
+
+        return: {sub_id -> anchor_id} alias map, 调用方传给 _apply_node_alias.
+        """
+        from online_mapper.semantics.node_category import NodeCategory
+        import re as _re
+        alias: Dict[str, str] = {}
+
+        # base building 提取: '<X>座/楼/栋' 取裸名, 去掉 入口/大堂 后缀
+        base_re = _re.compile(r"^([A-Za-z0-9]+(?:号)?(?:座|楼|栋))(?:入口|大堂|电梯)?$")
+        def _building_base(name: str) -> str:
+            if not name: return ""
+            m = base_re.match(name.strip())
+            return m.group(1) if m else name.strip()
+
+        def _node_canon(node) -> str:
+            ns = getattr(node, "name_struct", None)
+            if ns and (ns.category or ns.organization):
+                base = ns.category or ns.organization
+            else:
+                base = (getattr(node, "position_name", "") or "").split("·")[0]
+            return base.strip()
+
+        # ---- Pass A: 同 base building / 同 canonical 强制合并 ----
+        groups: Dict[tuple, List[str]] = {}
+        for nid, node in self.topo.nodes.items():
+            cat = getattr(node, "category", "") or ""
+            if cat not in (NodeCategory.BUILDING_LANDMARK.value,
+                           NodeCategory.LANDMARK_FACILITY.value):
+                continue
+            name = _node_canon(node)
+            if not name:
+                continue
+            # building 用 base 收纳; landmark facility 用原 canonical
+            key_name = (_building_base(name)
+                        if cat == NodeCategory.BUILDING_LANDMARK.value else name)
+            groups.setdefault((cat, key_name), []).append(nid)
+
+        def _best_obs_for_group(name: str, alias_names: List[str]):
+            """在 base 名 + 全部 alias 名(X座入口/X座大堂)中取 plate area 最大."""
+            if not self.door_tracker:
+                return None
+            best = None
+            for n in [name] + alias_names:
+                obs = self.door_tracker.best(n)
+                if obs is None: continue
+                if best is None or obs.area > best.area:
+                    best = obs
+            return best
+
+        for (cat, base_name), ids in groups.items():
+            if len(ids) < 2:
+                continue
+            # 同组内的实际 plate 名变体集合 (X座 + X座入口 + X座大堂 ...)
+            variants = list({_node_canon(self.topo.nodes[i]) for i in ids})
+            best_obs = _best_obs_for_group(base_name, variants)
+            if best_obs is not None:
+                anchor_id = min(ids, key=lambda i: abs(
+                    self.topo.nodes[i].frame_idx - best_obs.frame_idx))
+            else:
+                anchor_id = min(ids, key=lambda i: self.topo.nodes[i].frame_idx)
+            # 把 anchor 改名成 base name (统一 X座入口/X座大堂 → X座)
+            if cat == NodeCategory.BUILDING_LANDMARK.value:
+                target = self.topo.nodes[anchor_id]
+                ns = getattr(target, "name_struct", None)
+                if ns is not None:
+                    ns.category = base_name
+                    ns.category_en = base_name
+                target.position_name = base_name
+                target.position_name_eng = base_name
+                target.room = base_name
+            for sid in ids:
+                if sid != anchor_id and sid not in alias:
+                    alias[sid] = anchor_id
+            if best_obs is not None:
+                target = self.topo.nodes[anchor_id]
+                if target.frame_idx != best_obs.frame_idx:
+                    logger.info(f"[SameName-RELOCATE] node {anchor_id} '{base_name}' "
+                                f"frame {target.frame_idx} -> {best_obs.frame_idx} "
+                                f"(plate area={best_obs.area:.0f})")
+                    target.frame_idx = best_obs.frame_idx
+                    target.timestamp = best_obs.timestamp
+                    target.cameras = dict(best_obs.cameras)
+                    if anchor_id in self.node_features:
+                        self.node_features[anchor_id] = self._extract_features(best_obs.cameras)
+                    self.node_frame_idx[anchor_id] = best_obs.frame_idx
+            logger.info(f"[SameName] '{base_name}' [{cat}] variants={variants}: "
+                        f"keep {anchor_id}, absorb {[i for i in ids if i != anchor_id]}")
+
+        # ---- 工具: 直接遍历 voter 找 plate_text 的代表帧 ----
+        # 注意: door_tracker 与 plate_voter 用不同 key (前者 text 优先, 后者
+        # name_cn 优先). 复合 plate (H座电梯) 大概率只在 voter 里, tracker 里
+        # 是裸 'H座'. 因此 Pass B/C 必须以 voter._votes 为来源.
+        def _best_frame_for_voter(plate_text: str):
+            votes = self.plate_voter.votes_for(plate_text)
+            if not votes:
+                return None, None
+            best = max(votes, key=lambda v: v.area or 0)
+            return best.frame_idx, best.area or 0.0
+
+        # ---- Pass B: 复合 plate 优先, 重命名节点 (H座 -> H座电梯) ----
+        # 触发条件: confirmed 复合 plate, 帧距 ≤ 12 内有 BUILDING_LANDMARK
+        # 或 LANDMARK_FACILITY 节点 → 改其 display name.
+        prefix_pat = _re.compile(
+            r"^([A-Za-z]|[0-9]{1,3}号|[0-9]{1,3}层|[0-9]{1,3})(座|楼|栋)?(电梯|楼梯)$")
+        for plate_text in list(self.plate_voter._votes.keys()):
+            if not prefix_pat.fullmatch(plate_text or ""):
+                continue
+            if not self.plate_voter.is_confirmed(plate_text):
+                continue
+            target_frame, _area = _best_frame_for_voter(plate_text)
+            if target_frame is None:
+                continue
+            cands = [
+                nid for nid, n in self.topo.nodes.items()
+                if nid not in alias
+                and (getattr(n, "category", "") in (
+                    NodeCategory.BUILDING_LANDMARK.value,
+                    NodeCategory.LANDMARK_FACILITY.value))
+                and abs(n.frame_idx - target_frame) <= 12
+            ]
+            if not cands:
+                continue
+            anchor = min(cands, key=lambda i: abs(
+                self.topo.nodes[i].frame_idx - target_frame))
+            target = self.topo.nodes[anchor]
+            ns = getattr(target, "name_struct", None)
+            if ns is not None:
+                ns.category = plate_text
+                ns.category_en = plate_text
+                # 清掉可能干扰 display 的 organization (如 'NEUMANN'), 保持
+                # H座电梯 干净; brand attach 在后续仍会按需重新添加.
+            target.position_name = plate_text
+            target.position_name_eng = plate_text
+            target.room = plate_text
+            logger.info(f"[CompositePlate] '{plate_text}' → node {anchor}")
+
+        # ---- Pass C: 数字+柜 复合 plate (2号柜/1号柜) 命名外卖柜区/储物柜区 ----
+        cabinet_pat = _re.compile(r"^([0-9]{1,3})号柜$")
+        cabinet_categories = {
+            "外卖柜区": "外卖柜",
+            "储物柜区": "储物柜",
+            "快递柜区": "快递柜",
+        }
+        for plate_text in list(self.plate_voter._votes.keys()):
+            m = cabinet_pat.fullmatch(plate_text or "")
+            if not m: continue
+            if not self.plate_voter.is_confirmed(plate_text): continue
+            target_frame, _ = _best_frame_for_voter(plate_text)
+            if target_frame is None: continue
+            num = m.group(1)
+            cands = [
+                nid for nid, n in self.topo.nodes.items()
+                if nid not in alias
+                and (getattr(n, "position_name", "") or "").split("·")[0] in cabinet_categories
+                and abs(n.frame_idx - target_frame) <= 16
+            ]
+            if not cands: continue
+            anchor = min(cands, key=lambda i: abs(
+                self.topo.nodes[i].frame_idx - target_frame))
+            target = self.topo.nodes[anchor]
+            base_canon = (target.position_name or "").split("·")[0]
+            if base_canon not in cabinet_categories: continue
+            short = cabinet_categories[base_canon]
+            composite = f"{num}号{short}"
+            ns = getattr(target, "name_struct", None)
+            if ns is not None:
+                ns.category = composite
+                ns.category_en = composite
+            target.position_name = composite
+            target.position_name_eng = composite
+            target.room = composite
+            logger.info(f"[CabinetPlate] '{plate_text}' + '{base_canon}' → '{composite}' on node {anchor}")
+
+        return alias
 
     # ------------------------------------------------------------------
     def _rebuild_topology_neighbors_spatial(self, k_spatial: int = 2, k_temporal: int = 1):
@@ -975,14 +1175,20 @@ class OnlineMapperCore:
             e for e in self.pose_graph.edges
             if e.a not in alias_map and e.b not in alias_map
         ]
-        # 5. 清理空房间: coloc/substring merge 后, 原房间名可能没人住了
-        # (例如 'B座入口' node 被合并到 'B座' node, 或 'EUMANN' 子串并入 'NEUMANN').
-        for floor, rooms in list(self.scene_graph.floors.items()):
-            empty = [rm for rm, lst in rooms.items() if not lst]
-            for rm in empty:
-                rooms.pop(rm, None)
+        # 5. 清理空房间, 并按节点最终 room 重建 floors 索引: Pass B/C 改名
+        # 后 (H座 → 11层电梯, 储物柜区 → 1号储物柜) 旧 room 还挂着空 ID list,
+        # 新 room 又没在 floors 里. 这里清空再按当前节点状态重建.
+        for floor in list(self.scene_graph.floors.keys()):
+            self.scene_graph.floors[floor] = {}
+        for nid, sn in list(self.scene_graph.scene_nodes.items()):
+            node = self.topo.nodes.get(nid)
+            current_room = (node.room or sn.room) if node else sn.room
+            if not current_room:
+                current_room = "unknown"
+            sn.room = current_room
+            self.scene_graph.floors.setdefault("F1", {}).setdefault(current_room, []).append(nid)
         logger.info(f"[NameDedup] alias applied: removed {len(alias_map)} nodes "
-                    f"({alias_map})")
+                    f"({alias_map}); scene_graph floors rebuilt")
 
     # ------------------------------------------------------------------
     def _patch_node_with_nexts(self, node_dir: Path, nps, name_self, all_names):

@@ -975,6 +975,12 @@ class OnlineMapperCore:
             e for e in self.pose_graph.edges
             if e.a not in alias_map and e.b not in alias_map
         ]
+        # 5. 清理空房间: coloc/substring merge 后, 原房间名可能没人住了
+        # (例如 'B座入口' node 被合并到 'B座' node, 或 'EUMANN' 子串并入 'NEUMANN').
+        for floor, rooms in list(self.scene_graph.floors.items()):
+            empty = [rm for rm, lst in rooms.items() if not lst]
+            for rm in empty:
+                rooms.pop(rm, None)
         logger.info(f"[NameDedup] alias applied: removed {len(alias_map)} nodes "
                     f"({alias_map})")
 

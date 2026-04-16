@@ -1339,7 +1339,9 @@ class OnlineMapperCore:
         # 变体). Pass A 内部 fallback 对单字母 tracker key 不稳, 这里用 voter
         # 直接作最终 re-center, 确保用户看到离招牌最近的帧.
         def _final_recenter(node, canonical_base: str):
-            # 收集相关 plate variants: 基础 + 入口 + 大堂 + 复合 (电梯/楼梯)
+            """帧选择策略: 优先 multi-camera 可见帧 (说明机器人正面对地标),
+            再退化到单 camera max area. 入口变体优先于裸 base.
+            """
             relevant = set()
             for k in self.plate_voter._votes.keys():
                 if not k: continue
@@ -1347,18 +1349,51 @@ class OnlineMapperCore:
                 elif k.startswith(canonical_base) and any(s in k for s in ("入口","大堂","电梯","楼梯")):
                     relevant.add(k)
             if not relevant: return
-            # 优先选 "入口" variant 的 best
-            def pick(keys):
+
+            from collections import defaultdict as _dd
+            def _pick_best(keys):
+                """在 keys 中找: 优先 ≥2 cam 帧, 再退化到单 cam max area."""
+                frame_cams = _dd(set)
+                frame_area = _dd(float)
+                for k in keys:
+                    for v in self.plate_voter.votes_for(k):
+                        frame_cams[v.frame_idx].add(v.camera)
+                        frame_area[v.frame_idx] = max(frame_area[v.frame_idx], v.area or 0)
+                if not frame_area: return None
+                multi = [fi for fi, cs in frame_cams.items() if len(cs) >= 2]
+                if multi:
+                    return max(multi, key=lambda fi: frame_area[fi])
+                return max(frame_area.items(), key=lambda x: x[1])[0]
+
+            entry_keys = [k for k in relevant if "入口" in k]
+            base_keys = [k for k in relevant if k == canonical_base]
+            all_keys = list(relevant)
+
+            # 优先级链: entry multi-cam → base multi-cam → all multi-cam
+            #         → entry single → base single
+            def _pick_multi(keys):
+                from collections import defaultdict as _dd2
+                fc = _dd2(set); fa = _dd2(float)
+                for k in keys:
+                    for v in self.plate_voter.votes_for(k):
+                        fc[v.frame_idx].add(v.camera)
+                        fa[v.frame_idx] = max(fa[v.frame_idx], v.area or 0)
+                multi = [fi for fi, cs in fc.items() if len(cs) >= 2]
+                if multi:
+                    return max(multi, key=lambda fi: fa[fi])
+                return None
+
+            def _pick_single(keys):
                 best_f, best_a = None, 0.0
                 for k in keys:
                     for v in self.plate_voter.votes_for(k):
                         if (v.area or 0) > best_a:
-                            best_a = v.area or 0
-                            best_f = v.frame_idx
+                            best_a = v.area or 0; best_f = v.frame_idx
                 return best_f
-            entry_keys = [k for k in relevant if "入口" in k]
-            base_keys = [k for k in relevant if k == canonical_base]
-            target_frame = pick(entry_keys) or pick(base_keys)
+
+            target_frame = (_pick_multi(entry_keys) or _pick_multi(base_keys)
+                            or _pick_multi(all_keys)
+                            or _pick_single(entry_keys) or _pick_single(base_keys))
             if target_frame is None or target_frame == node.frame_idx:
                 return
             # 从 _all_frames_cache 取 ts 与 cameras

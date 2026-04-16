@@ -30,12 +30,11 @@ class AutoSubImageExtractor:
     MID_SHRINK = 0.87
     SMALL_SHRINK = 0.75
 
-    POINT_PROMPT = "前方可通行通道最远处的地面中心点"
+    POINT_PROMPT = "通道正中间位置"
 
-    # 坐标限制 (让 crop 保持通道居中, 避免 Qwen 打点到障碍物/墙壁上)
-    MAX_Y_PCT = 0.52
-    TARGET_Y_PCT = 0.48
-    MAX_X_OFFSET_PCT = 0.15  # 打点 X 偏离图像水平中心 > 15% 时拉回
+    # Y 坐标限制 (人工标注规律: Y ≈ 47%~50%)
+    MAX_Y_PCT = 0.52    # Y 超过此比例则修正
+    TARGET_Y_PCT = 0.48  # 修正目标 Y
 
     # 走廊中间帧匹配参数
     MAX_CORRIDOR_FRAMES = 30   # 超过此数量的中间帧则 fallback (可能不是直接走廊)
@@ -70,13 +69,6 @@ class AutoSubImageExtractor:
     # Y 坐标修正
     # ------------------------------------------------------------------
     def _fix_point_y(self, cx, cy, img_h, img_w):
-        center_x = img_w // 2
-        x_off = abs(cx - center_x) / img_w
-        if x_off > self.MAX_X_OFFSET_PCT:
-            old_cx = cx
-            cx = center_x
-            logger.info(f"    X-fix: {old_cx}({old_cx/img_w*100:.1f}%) -> {cx}(50.0%) "
-                        f"offset={x_off*100:.1f}%>{self.MAX_X_OFFSET_PCT*100:.0f}%")
         y_pct = cy / img_h
         if y_pct > self.MAX_Y_PCT:
             old_cy = cy

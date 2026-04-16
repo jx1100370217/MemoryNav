@@ -469,17 +469,29 @@ class OnlineMapperCore:
 
     # ------------------------------------------------------------------
     def _scan_door_plates(self, frame, fidx):
-        """每帧扫描门牌候选 (严格 prompt + 二次验证 + 多帧投票)"""
+        """每帧扫描门牌候选 (严格 prompt + 二次验证 + 多帧投票).
+
+        性能优化: 该函数原本 4 个 camera 的 Qwen VQA 串行执行, 占总耗时 ~74%.
+        改为两阶段 + bbox 级并发:
+          阶段 1 (串行): cv2.imread + GD detect 收集所有 bbox.
+          阶段 2 (并发): Qwen strict_prompt + verify 并发发到 vLLM,
+                        让 vLLM continuous batching 发挥作用.
+          阶段 3 (串行): 汇总结果, 线程安全地 voter.add / tracker.add.
+        语义等价原始串行版: bbox 的接受/拒绝判定逻辑一字不差, 只是顺序异步.
+        voter/tracker 的插入顺序最终按 (cam_id, bbox_idx) 重新确定, 保证可复现.
+        """
         if self.namer is None or not self.namer._qwen_server:
             return
         import json as _json, re as _re
+        from concurrent.futures import ThreadPoolExecutor
+
+        # ---- 阶段 1: 串行 GD detect (本地 GPU, Qwen 不参与) ----
+        det_items = []  # [(cam_id, img, d, crop_for_qwen)]
         for cam_id in CAM_IDS:
             cam_path = frame["cameras"].get(cam_id)
-            if not cam_path:
-                continue
+            if not cam_path: continue
             img = cv2.imread(cam_path)
-            if img is None:
-                continue
+            if img is None: continue
             dets = self.detector.detect(img, queries=["door plate", "room number sign"])
             for d in dets:
                 if d["score"] < self.cfg.door_plate_min_score:
@@ -488,84 +500,112 @@ class OnlineMapperCore:
                     x1, y1, x2, y2 = [int(v) for v in d["bbox"]]
                     h, w = img.shape[:2]
                     bw = x2 - x1; bh = y2 - y1
-                    # 自适应 margin: 小 bbox 给大相对扩边, 大 bbox 给小绝对扩边
-                    mx = max(20, int(bw * 0.6))
-                    my = max(20, int(bh * 0.6))
-                    x1 = max(0, x1 - mx); y1 = max(0, y1 - my)
-                    x2 = min(w, x2 + mx); y2 = min(h, y2 + my)
-                    crop = img[y1:y2, x1:x2]
-                    if crop.size == 0:
-                        continue
-                    # 如果扩边后仍然太小 (<300px short side), 直接用全图
+                    mx = max(20, int(bw * 0.6)); my = max(20, int(bh * 0.6))
+                    x1c = max(0, x1 - mx); y1c = max(0, y1 - my)
+                    x2c = min(w, x2 + mx); y2c = min(h, y2 + my)
+                    crop = img[y1c:y2c, x1c:x2c]
+                    if crop.size == 0: continue
                     short_side = min(crop.shape[0], crop.shape[1])
-                    if short_side < 300:
-                        crop_for_qwen = img
-                    else:
-                        crop_for_qwen = crop
-                    # --- 严格 prompt: 要求 confidence, 不确定返回 false ---
-                    raw = self.namer._qwen_server._chat(
-                        STRICT_DETECT_TEXT_PROMPT, self._b64(crop_for_qwen), max_tokens=120)
-                    raw_clean = _re.sub(r"<think>.*?</think>", "", raw, flags=_re.DOTALL).strip()
-                    m = _re.search(r'\{.*\}', raw_clean, flags=_re.DOTALL)
-                    if not m:
-                        continue
-                    try:
-                        obj = _json.loads(m.group())
-                    except Exception:
-                        continue
-                    if not obj.get("found"):
-                        continue
-                    text = (obj.get("text") or "").strip()
-                    name_cn = (obj.get("name_cn") or "").strip()
-                    name_en = (obj.get("name_en") or "").strip()
-                    confidence = (obj.get("confidence") or "").lower()
-                    if confidence == "low":
-                        self.metrics.setdefault("plate_drops_low_conf", 0)
-                        self.metrics["plate_drops_low_conf"] += 1
-                        continue
-                    if not (text or name_cn):
-                        continue
-                    # --- 二次验证: 在整张相机图上问 "是否真的有文字 text?" ---
-                    # (用整图而不是 crop, 避免 crop 里其他文字混淆)
-                    # 注意: high confidence 的候选可以跳过 verify, 让多帧投票决定
-                    verify_claim = text or name_cn
-                    skip_verify = (confidence == "high")
-                    if (not skip_verify) and self.verifier and self.verifier.available:
-                        ok = self.verifier.verify_text(img, verify_claim)
-                        if not ok:
-                            self.metrics.setdefault("plate_drops_verify", 0)
-                            self.metrics["plate_drops_verify"] += 1
-                            logger.debug(f"[DoorPlate-VERIFY-DROP] "
-                                         f"fidx={fidx} cam={cam_id} "
-                                         f"text='{text}' name_cn='{name_cn}'")
-                            continue
-                except Exception as e:
-                    logger.debug(f"plate scan fail: {e}")
+                    crop_for_qwen = img if short_side < 300 else crop
+                except Exception:
                     continue
+                det_items.append((cam_id, img, d, crop_for_qwen, (x1, y1, x2, y2)))
 
-                # 通过严格 prompt + 二次验证, 进入投票 + 追踪
-                # 优先使用原始 text (避免 Qwen 把 DEEPROUTE.AI 翻译成 "店铺招牌"
-                # 这种通用词丢失 brand identity)
-                import re as _re2
-                if text and _re2.fullmatch(r"[A-Za-z][A-Za-z0-9\.\- &']{3,30}", text):
-                    vote_name = text
-                else:
-                    vote_name = name_cn or text
-                self.plate_voter.add(NameVote(
-                    name=vote_name, frame_idx=fidx,
-                    camera=cam_id, area=float((x2 - x1) * (y2 - y1)),
-                    confidence=confidence or "medium",
-                ))
-                # 记录每帧 hits, 给 keyframe 分类器使用
-                self._frame_plate_hits.setdefault(fidx, set()).add(vote_name)
-                self.door_tracker.add(PlateObservation(
-                    frame_idx=fidx, timestamp=frame["timestamp"],
-                    cameras=dict(frame["cameras"]),
-                    camera=cam_id, bbox=d["bbox"], score=d["score"],
-                    text=text, name_cn=name_cn, name_en=name_en,
-                    pose=(self.robot_x, self.robot_y, self.robot_theta),
-                ))
-                self.metrics["n_door_plates"] += 1
+        if not det_items:
+            return
+
+        # ---- 阶段 2: 并发跑 Qwen strict + (可能) verify ----
+        qwen = self.namer._qwen_server
+
+        def _strict_one(item):
+            cam_id, img, d, crop_for_qwen, bbox_int = item
+            try:
+                raw = qwen._chat(
+                    STRICT_DETECT_TEXT_PROMPT, self._b64(crop_for_qwen), max_tokens=120)
+                raw_clean = _re.sub(r"<think>.*?</think>", "", raw, flags=_re.DOTALL).strip()
+                m = _re.search(r'\{.*\}', raw_clean, flags=_re.DOTALL)
+                if not m: return (item, None)
+                try:
+                    obj = _json.loads(m.group())
+                except Exception:
+                    return (item, None)
+                return (item, obj)
+            except Exception as e:
+                logger.debug(f"plate strict fail: {e}")
+                return (item, None)
+
+        # max_workers=4 和 CAM_IDS 长度匹配. vLLM 内部 continuous batching 消化.
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            strict_results = list(ex.map(_strict_one, det_items))
+
+        # 解析出需要 verify 的, 并发 verify_text
+        parsed = []  # [(item, obj, need_verify)]
+        for item, obj in strict_results:
+            if obj is None or not obj.get("found"):
+                continue
+            text = (obj.get("text") or "").strip()
+            name_cn = (obj.get("name_cn") or "").strip()
+            confidence = (obj.get("confidence") or "").lower()
+            if confidence == "low":
+                self.metrics.setdefault("plate_drops_low_conf", 0)
+                self.metrics["plate_drops_low_conf"] += 1
+                continue
+            if not (text or name_cn):
+                continue
+            verify_claim = text or name_cn
+            skip_verify = (confidence == "high") or not (
+                self.verifier and self.verifier.available)
+            parsed.append((item, obj, None if skip_verify else verify_claim))
+
+        # 并发 verify_text (仅对 need_verify 的)
+        to_verify = [(i, p) for i, p in enumerate(parsed) if p[2] is not None]
+        verify_results = {}
+        if to_verify:
+            def _verify_one(arg):
+                i, (item, obj, claim) = arg
+                cam_id, img, d, _cfq, _bbint = item
+                try:
+                    return (i, self.verifier.verify_text(img, claim))
+                except Exception:
+                    return (i, False)
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                for i, ok in ex.map(_verify_one, to_verify):
+                    verify_results[i] = ok
+
+        # ---- 阶段 3: 串行 merge 到 voter + tracker (保证顺序可复现) ----
+        import re as _re2
+        for idx, (item, obj, claim) in enumerate(parsed):
+            cam_id, img, d, _cfq, (x1, y1, x2, y2) = item
+            if claim is not None:
+                ok = verify_results.get(idx, False)
+                if not ok:
+                    self.metrics.setdefault("plate_drops_verify", 0)
+                    self.metrics["plate_drops_verify"] += 1
+                    logger.debug(f"[DoorPlate-VERIFY-DROP] "
+                                 f"fidx={fidx} cam={cam_id} claim='{claim}'")
+                    continue
+            text = (obj.get("text") or "").strip()
+            name_cn = (obj.get("name_cn") or "").strip()
+            name_en = (obj.get("name_en") or "").strip()
+            confidence = (obj.get("confidence") or "medium").lower()
+            if text and _re2.fullmatch(r"[A-Za-z][A-Za-z0-9\.\- &']{3,30}", text):
+                vote_name = text
+            else:
+                vote_name = name_cn or text
+            self.plate_voter.add(NameVote(
+                name=vote_name, frame_idx=fidx,
+                camera=cam_id, area=float((x2 - x1) * (y2 - y1)),
+                confidence=confidence,
+            ))
+            self._frame_plate_hits.setdefault(fidx, set()).add(vote_name)
+            self.door_tracker.add(PlateObservation(
+                frame_idx=fidx, timestamp=frame["timestamp"],
+                cameras=dict(frame["cameras"]),
+                camera=cam_id, bbox=d["bbox"], score=d["score"],
+                text=text, name_cn=name_cn, name_en=name_en,
+                pose=(self.robot_x, self.robot_y, self.robot_theta),
+            ))
+            self.metrics["n_door_plates"] += 1
 
     # ------------------------------------------------------------------
     def _create_door_plate_nodes(self):

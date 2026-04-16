@@ -18,11 +18,59 @@ class ThresholdedSubImageExtractor(AutoSubImageExtractor):
 
     SIM_THRESHOLD = 0.40
 
+    # ---- 几何 crop 兜底 (Round 7) ----
+    # 约定: 世界/机器人坐标 x=前, y=左, theta=CCW (atan2 风格).
+    # 柱面图 FOV=180°, pixel_norm_to_angle: (0.5-x_norm)*π, 画面左 theta_h>0.
+    # 相机方位角来自 memory_nav/coord_transform.py _DEFAULT_AZIMUTHS
+    # (从 params.yaml T_ic 计算, 逆时针正).
+    HFOV_DEG = 180.0
+    USE_GEOMETRIC_FALLBACK = True
+    # |cx/w - 0.5| <= FALLBACK_CENTER_TOL 判为 Qwen 居中 fallback, 触发几何替换.
+    # Qwen 真实点通常偏离中心 5% 以上, 居中 fallback 精确落在 0.500.
+    FALLBACK_CENTER_TOL = 0.03
+    _CAM_AZIMUTH_DEG = {
+        "camera_1":   39.42,
+        "camera_2":  -35.84,
+        "camera_3": -142.04,
+        "camera_4":  143.52,
+    }
+
     def __init__(self, sim_threshold: float = None, **kwargs):
         super().__init__(**kwargs)
         if sim_threshold is not None:
             self.SIM_THRESHOLD = sim_threshold
-        logger.info(f"[ThresholdedSubImageExtractor] sim_threshold={self.SIM_THRESHOLD}")
+        logger.info(f"[ThresholdedSubImageExtractor] sim_threshold={self.SIM_THRESHOLD} "
+                    f"geo_fallback={self.USE_GEOMETRIC_FALLBACK} hfov={self.HFOV_DEG} "
+                    f"center_tol={self.FALLBACK_CENTER_TOL}")
+
+    def _project_target_to_camera(self, self_pose, target_pose, cam_id,
+                                    img_w, img_h):
+        """位姿投影: target 在给定 camera 柱面图上的像素 (cx, cy).
+
+        返回 None 如果目标落在相机 FOV 之外或 cam_id 未知.
+        """
+        import math
+        if cam_id not in self._CAM_AZIMUTH_DEG:
+            return None
+        mx, my, mth = self_pose[0], self_pose[1], self_pose[2]
+        nx, ny = target_pose[0], target_pose[1]
+        dx, dy = nx - mx, ny - my
+        if dx * dx + dy * dy < 1e-8:
+            return None
+        world_ang = math.atan2(dy, dx)
+        robot_ang = math.atan2(math.sin(world_ang - mth),
+                                math.cos(world_ang - mth))
+        cam_az = math.radians(self._CAM_AZIMUTH_DEG[cam_id])
+        theta_h = math.atan2(math.sin(robot_ang - cam_az),
+                              math.cos(robot_ang - cam_az))
+        half = math.radians(self.HFOV_DEG) / 2.0
+        if abs(theta_h) >= half:
+            return None
+        x_norm = 0.5 - theta_h / math.radians(self.HFOV_DEG)
+        x_norm = max(0.02, min(0.98, x_norm))
+        cx = int(x_norm * img_w)
+        cy = int(self.TARGET_Y_PCT * img_h)
+        return (cx, cy, theta_h)
 
     def generate_next_positions(self, node_info, neighbor_nodes,
                                  all_frames=None, qwen_namer=None):
@@ -105,17 +153,16 @@ class ThresholdedSubImageExtractor(AutoSubImageExtractor):
                     sim_matrix[i][j] = max(
                         self._cos_sim(cam_crop_features[cam_id], f) for f in feats)
 
-        # ---- Step 4.5: 几何方向先验 (cam_1=front, cam_2=right, cam_3=rear, cam_4=left) ----
+        # ---- Step 4.5: 几何方向先验 ----
+        # 使用权威 camera azimuth (memory_nav/coord_transform._DEFAULT_AZIMUTHS,
+        # 由 params.yaml T_ic 推出): cam1=+39.42°, cam2=-35.84°,
+        # cam3=-142.04°, cam4=+143.52° (逆时针正, y 轴向左).
         # 修复纯视觉匹配在线性走廊+相似 landmark 场景下的方向错配.
         my_pose = node_info.get("pose")
         if my_pose is not None:
             import math as _math
-            cam_angles = {
-                "camera_1": 0.0,
-                "camera_2": -_math.pi / 2,
-                "camera_3":  _math.pi,
-                "camera_4":  _math.pi / 2,
-            }
+            cam_angles = {k: _math.radians(v)
+                           for k, v in self._CAM_AZIMUTH_DEG.items()}
             def _wrap(a):
                 return _math.atan2(_math.sin(a), _math.cos(a))
             mx, my, mth = my_pose
@@ -166,10 +213,44 @@ class ThresholdedSubImageExtractor(AutoSubImageExtractor):
             matches.append((cam_id, nb_id, sim))
             logger.info(f"  KEEP {cam_id}->{nb_id} sim={sim:.3f}")
 
+        # ---- Step 4.5: Qwen 居中 fallback 时用几何投影兜底 (Round 7) ----
+        # Qwen "通道正中间位置" 在室内走廊锚得住, 用户确认 test2 结果很好.
+        # 室外广场/大空间 prompt 失锚, Qwen 退化为图像正中心 cx≈0.500.
+        # 策略: 仅当 |cx/w - 0.5| <= FALLBACK_CENTER_TOL 时判定为居中 fallback,
+        # 用 self→target pose 投影替换; 其他情况保留 Qwen 点.
+        geo_overrides = {}
+        if self.USE_GEOMETRIC_FALLBACK and my_pose is not None:
+            for cam_id, nb_id, sim in matches:
+                if cam_id not in cam_crop_cache:
+                    continue
+                cam_img, old_cx, old_cy = cam_crop_cache[cam_id]
+                h, w = cam_img.shape[:2]
+                cx_norm = old_cx / float(w) if w else 0.5
+                if abs(cx_norm - 0.5) > self.FALLBACK_CENTER_TOL:
+                    logger.info(f"  GEO[{cam_id}->{nb_id}] qwen cx={cx_norm:.3f} "
+                                f"not centered, keep qwen")
+                    continue
+                nb_obj = next((n for n in neighbor_nodes
+                                if n["position_id"] == nb_id), None)
+                nbp = nb_obj.get("pose") if nb_obj else None
+                if nbp is None:
+                    continue
+                proj = self._project_target_to_camera(my_pose, nbp, cam_id, w, h)
+                if proj is None:
+                    logger.info(f"  GEO[{cam_id}->{nb_id}] out of FOV, keep qwen "
+                                f"center ({old_cx},{old_cy})")
+                    continue
+                new_cx, new_cy, theta_h = proj
+                geo_overrides[cam_id] = (new_cx, new_cy)
+                logger.info(f"  GEO[{cam_id}->{nb_id}] qwen-centered (cx={cx_norm:.3f}) "
+                            f"-> geo theta_h={theta_h:+.3f}rad ({theta_h*57.30:+.1f}°) "
+                            f"new=({new_cx},{new_cy})")
+
         # ---- Step 5: save crops + return next_positions ----
         next_positions = []
         for cam_id, nb_id, sim in matches:
-            cam_img, cx, cy = cam_crop_cache[cam_id]
+            cam_img, old_cx, old_cy = cam_crop_cache[cam_id]
+            cx, cy = geo_overrides.get(cam_id, (old_cx, old_cy))
             crop_paths, norm_boxes, big_crop_img = self._save_crops(
                 cam_img, (cx, cy), node_dir, timestamp, cam_id, nb_id)
             if not crop_paths:

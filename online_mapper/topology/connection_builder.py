@@ -108,8 +108,18 @@ class ThresholdedSubImageExtractor(AutoSubImageExtractor):
                     cx, cy = self._fix_point_y(cx, cy, h, w)
                     camera_points[cam_id] = (cx, cy, conf)
 
+        # Qwen 全相机失败 (空旷广场无通道锚点, 如 D 栋保安亭): 退回图像中心,
+        # 让后续 Hungarian + geo override 照常工作, 避免节点 0 连接成孤岛.
         if not camera_points:
-            logger.warning(f"  node {position_id}: no point on any camera")
+            logger.warning(f"  node {position_id}: qwen failed all cams, "
+                            f"fallback to image center")
+            for cam_id, cam_path in cam_tasks:
+                cam_img = cv2.imread(cam_path)
+                if cam_img is None:
+                    continue
+                h, w = cam_img.shape[:2]
+                camera_points[cam_id] = (w // 2, int(h * self.TARGET_Y_PCT), 0.0)
+        if not camera_points:
             return []
 
         # ---- Step 2: crop CLS feat ----

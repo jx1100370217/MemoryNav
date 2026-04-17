@@ -179,31 +179,32 @@ MemoryNav/
                          └───────────────┬──────────────────┘
                                          │ pickle 缓存
                                          ▼
-┌──────────┐  WebSocket   ┌─────────────────────────────────────────┐
-│ 机器人端  │ ──请求──→   │  ws_proxy_with_memory.py (port 9528)     │
-│ (4鱼眼+   │             │  ┌───────────────────────────────────┐  │
-│  front_1) │  ←响应──    │  │ IntentClassifier (Qwen3.5-0.8B)    │  │
-└──────────┘             │  │ navigate / ask_location /          │  │
-                         │  │ ask_direction 三分类               │  │
-                         │  └─────┬───────┬───────────────┬─────┘  │
-                         │  ┌─────▼───┐ ┌─▼────────────┐ ┌▼──────┐ │
-                         │  │MemoryNav│ │handle_ask_   │ │handle_│ │
-                         │  │igator   │ │location      │ │ask_   │ │
-                         │  │(VPR+子图│ │(VPR → 节点名 │ │direct-│ │
-                         │  │+遮挡+   │ │/ top-2 中间) │ │ion    │ │
-                         │  │Qwen-9B) │ │              │ │(起点+ │ │
-                         │  │         │ │              │ │规划+  │ │
-                         │  │         │ │              │ │LLM叙述│ │
-                         │  └─────────┘ └──────────────┘ └───────┘ │
-                         └─────────────────────────────────────────┘
+┌──────────┐  WebSocket   ┌──────────────────────────────────────────────┐
+│ 机器人端  │ ──请求──→   │  ws_proxy_with_memory.py (port 9528)          │
+│ (4鱼眼+   │             │  ┌────────────────────────────────────────┐  │
+│  front_1) │  ←响应──    │  │ IntentClassifier (Qwen3.5-0.8B)         │  │
+└──────────┘             │  │ navigate / ask_location /               │  │
+                         │  │ ask_direction / mapping  四分类          │  │
+                         │  └──┬──────┬──────────┬─────────────┬──────┘  │
+                         │  ┌──▼───┐ ┌▼────────┐ ┌▼──────────┐ ┌▼──────┐ │
+                         │  │Memory│ │handle_  │ │handle_ask │ │Mapping│ │
+                         │  │Navig │ │ask_loc  │ │_direction │ │Session│ │
+                         │  │ator  │ │(VPR →   │ │(VPR 起点+ │ │(创建/ │ │
+                         │  │(VPR+ │ │节点名 / │ │find_dest+ │ │喂帧/  │ │
+                         │  │子图+ │ │top-2    │ │plan_nav+  │ │final- │ │
+                         │  │遮挡+ │ │中间兜底)│ │LLM叙述+   │ │ize)   │ │
+                         │  │9B兜底│ │         │ │幻觉校验)  │ │       │ │
+                         │  └──────┘ └─────────┘ └───────────┘ └───────┘ │
+                         └──────────────────────────────────────────────┘
 ```
 
 每帧请求的处理流程：
 
 ```
 1. 解码图像 (base64 → numpy)
-2. 意图分类 (Qwen3.5-0.8B): navigate / ask_location / ask_direction
-3. 特殊控制指令 (STOP, turn left/right, go straight): 直接返回
+2. 意图分类 (Qwen3.5-0.8B): navigate / ask_location / ask_direction / mapping
+3. 特殊控制指令 (STOP, turn left/right, go straight): 绕过分类直接走 navigate
+   硬编码 task="mapping"/"stop_mapping": 绕过 LLM 直接判为 mapping 意图
 
 ── navigate 分支 ──
 4. 鱼眼去畸变 (4 相机并行 cv2.remap)
@@ -227,12 +228,21 @@ MemoryNav/
 4. VPR 定位 → 起点 (命中 or top-1 兜底)
 5. find_destination(task) → 终点
 6. plan_navigation → 路径节点列表
-7. Qwen3.5-0.8B LLM 叙述 (失败时字符串模板兜底)
-   → response_text="您好，从{起点}出发……最后到达{终点}"
+7. Qwen3.5-0.8B LLM 叙述 (prompt 禁用动作词 + 残留字符幻觉校验,
+   校验失败或 LLM 异常时退化为严格字符串模板兜底)
+   → response_text="您好，您要去{终点}，请从{起点}出发，依次经过{...}，到达{终点}。"
 8. action=[0,0,0], 不修改 nav_state
+
+── mapping 分支 ──
+4. 关键词区分 start vs stop (含 '停止/结束/完成/终止/关闭/stop' → stop)
+5a. start: 首次创建 MappingSession (懒加载 Depth/GD/Qwen), 之后每帧喂入
+    OnlineMapperCore.process_frame, 响应 mode="mapping" + log
+5b. stop: MappingSession.finalize (产物 + 可视化), 切回 nav 模式,
+    响应 mode="nav" + summary
+6. action=[[0,0,0]], 不修改 nav_state (建图和导航状态独立)
 ```
 
-**导航任务连续性保证**: ask_location / ask_direction 分支不读写 `nav_state.plan` / `current_step_idx` / `last_task` / `session_state['last_task']`。当下一帧机器人继续发 `task=None` (或原导航 task) 时, 服务端"延用上一次 last_task"并按原计划继续推进。
+**导航任务连续性保证**: ask_location / ask_direction / mapping 三个分支都不读写 `nav_state.plan` / `current_step_idx` / `last_task` / `session_state['last_task']`。当下一帧机器人继续发 `task=None` (或原导航 task) 时, 服务端"延用上一次 last_task"并按原计划继续推进。mapping 结束时 `handle_client` 会主动 `mapping_session.finalize` 切回 nav, 但 `nav_state.plan` 只有在新导航 task 被真正发送时才会重建。
 
 ### 3.2 数据模型
 

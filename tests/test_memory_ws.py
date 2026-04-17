@@ -15,8 +15,8 @@ test_memory_ws.py - 记忆导航/在线建图 双模式 WebSocket 集成测试
 
 建图模式 (--mode mapping):
   请求形状与 nav 完全一致 {id, task, pts, images}, 由 task 字段驱动:
-    task="mapping"      首帧自动创建 session, 后续每帧喂入 OnlineMapperCore
-    task="stop_mapping" 触发 finalize, 返回 metrics / artifacts / visualizations
+    task="开始建图" / "mapping"         首帧触发自然语言 mapping 意图, 后续帧喂入 OnlineMapperCore
+    task="停止建图" / "stop_mapping"    末帧自然语言结束, finalize 返回 metrics / artifacts / visualizations
   输出节点/拓扑/场景图/占据栅格/可视化 PNG
 
 用法:
@@ -747,9 +747,13 @@ async def run_test_mapping():
     """完整轨迹建图测试 (建图模式, task 驱动).
 
     流程: 所有请求统一 {id, task, pts, images} 形状
-      1. 每帧 task="mapping" (首帧服务端自动创建 MappingSession, 后续喂入)
-      2. 最后一帧 task="stop_mapping" 触发 finalize, 返回 metrics + artifacts + visualizations
+      1. 首帧 task="开始建图" (自然语言 → mapping intent → MappingSession 创建)
+      2. 中间帧 task="mapping" (硬编码, 每帧喂入 OnlineMapperCore, 零 LLM 开销)
+      3. 末帧 task="停止建图" (自然语言 → mapping intent → finalize)
     """
+    # 首帧 / 末帧自然语言 mapping task (验证 4 类意图分类路由)
+    NL_START_MAPPING = "开始建图"
+    NL_STOP_MAPPING = "停止建图"
     print_header("🗺️  在线建图 — 完整轨迹回放测试")
     print(f"  {C_BOLD}服务器:{C_RESET}  {WS_URL}")
     print(f"  {C_BOLD}数据:{C_RESET}    {DATA_DIR}")
@@ -816,12 +820,29 @@ async def run_test_mapping():
             continue
 
         t0 = time.time()
-        # 首帧服务端会懒加载 Depth/GD/Qwen (~30-60s), 给足 timeout
-        frame_timeout = 180 if seq == 0 else 60
-        resp = await send_frame(ws, "mapping", imgs, pts=int(ts),
+        # 首帧用自然语言"开始建图"触发 mapping 意图路由(验证第 4 类 task);
+        # 其他帧用硬编码 "mapping" 节省 LLM 分类耗时
+        # 首帧服务端还会懒加载 Depth/GD/Qwen (~30-60s), 给足 timeout
+        if seq == 0:
+            _task = NL_START_MAPPING
+            frame_timeout = 180
+            print(f"{C_CYAN}▶ 首帧用自然语言 '{_task}' 触发 mapping 意图{C_RESET}")
+        else:
+            _task = "mapping"
+            frame_timeout = 60
+        resp = await send_frame(ws, _task, imgs, pts=int(ts),
                                  timeout=frame_timeout)
         dt_ms = int((time.time() - t0) * 1000)
         stat_latencies.append(dt_ms)
+
+        # 首帧响应必须确认 mode=mapping (mapping 意图路由成功)
+        if seq == 0:
+            _mode = resp.get('mode')
+            _task_status = resp.get('task_status')
+            if _mode != 'mapping':
+                print(f"{C_RED}❌ 首帧自然语言未触发 mapping 意图: mode={_mode}, task_status={_task_status}{C_RESET}")
+                sys.exit(1)
+            print(f"{C_GREEN}✅ mapping 意图路由成功: mode={_mode}, task_status={_task_status}{C_RESET}")
 
         log = resp.get('log', {}) or {}
         mapping_status = resp.get('mapping', {}) or {}
@@ -864,13 +885,19 @@ async def run_test_mapping():
 
     feed_elapsed = time.time() - start_time
 
-    # --- 2. 发 task="stop_mapping" 触发 finalize (请求形状保持统一) ---
-    print_header("🏁 触发 stop_mapping → finalize")
+    # --- 2. 发自然语言 "停止建图" 触发 finalize (验证 mapping 意图 stop 子类) ---
+    print_header(f"🏁 触发自然语言 '{NL_STOP_MAPPING}' → finalize")
     # 最后一帧图像复用即可 (服务端 stop_mapping 路径不消费 images)
     last_imgs = load_frame(timestamps[-1]) if timestamps else {}
-    stop_resp = await send_frame(ws, "stop_mapping", last_imgs,
+    stop_resp = await send_frame(ws, NL_STOP_MAPPING, last_imgs,
                                   pts=int(timestamps[-1]) if timestamps else None,
                                   timeout=180)
+    _stop_mode = stop_resp.get('mode')
+    _stop_msg = (stop_resp.get('message') or '')
+    if _stop_mode != 'nav':
+        print(f"{C_RED}❌ 自然语言 '{NL_STOP_MAPPING}' 未切回 nav: mode={_stop_mode}, message={_stop_msg!r}{C_RESET}")
+        sys.exit(1)
+    print(f"{C_GREEN}✅ 自然语言 finalize 成功: mode={_stop_mode}, message={_stop_msg!r}{C_RESET}")
     summary = stop_resp.get('summary') or {}
     metrics = summary.get('metrics') or {}
     artifacts = summary.get('artifacts') or {}

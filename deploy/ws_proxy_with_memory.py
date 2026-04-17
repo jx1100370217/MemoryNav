@@ -1085,28 +1085,44 @@ class IntentClassifier:
         logger.info(f"🎯 [Intent] '{task_stripped}' → {label} (rule)")
         return label
 
+    # 允许的连接词 / 框架词 (LLM 输出中除节点名外只能用这些, 其余视为幻觉)
+    # 只白名单中性动词 (出发/经过/到达/前往/即可/依次/接着/然后/之后/最后 等),
+    # 明确禁用的动作词由 prompt 限制 (穿过/进入/走到/沿着/直行/左转/右转)
+    _NARRATE_ALLOWED_TOKENS = [
+        "您好", "您要去", "请从", "请前往", "出发", "依次", "接着", "然后", "之后", "最后",
+        "经过", "到达", "前往", "即可", "目的地",
+        "从", "去", "在", "到", "里", "前", "后", "上", "下", "为", "即", "再",
+        "，", "。", "、", "（", "）", "(", ")", " ", "\n", "\t",
+    ]
+
     def narrate_path(self, node_names: list) -> Optional[str]:
-        """用 LLM 把节点路径列表润色为自然指路文本。失败返回 None。"""
+        """用 LLM 把节点路径列表润色为自然指路文本。幻觉检查失败返回 None, 由调用方走模板兜底。"""
         if not node_names or len(node_names) < 2:
             return None
         if self._backend not in ("vllm_08b", "vllm_9b"):
             return None
         start, goal = node_names[0], node_names[-1]
-        path_str = " → ".join(node_names)
+        mid_nodes = node_names[1:-1]
+        path_str = "、".join(node_names)
+
         prompt = (
-            f"你是一个园区/建筑指路助手(场景覆盖室内外)。把下面的最短路径转成一句自然、简洁、礼貌的中文指路回答，"
-            f"直接说给用户听，不要 markdown，不要引号，不要额外说明。\n\n"
+            "你是园区/建筑指路助手。把给定的最短路径节点列表转成一句自然的中文指路, 遵守严格要求:\n"
+            "1. 只能使用列表中的节点名, 不得新增任何其他地点、地标、楼层或房间。\n"
+            "2. 只能用 '出发'/'经过'/'到达'/'依次经过'/'即可' 等连接词; 不得使用 '穿过'/'进入'/'走到'/'沿着'/'直行'/'左转'/'右转' 等动作词。\n"
+            "3. 不解释、不添加寒暄以外的说明, 最多 80 字。\n"
+            "4. 不使用 markdown、引号、括号注释。\n\n"
             f"起点: {start}\n"
             f"终点: {goal}\n"
-            f"经过(按顺序): {path_str}\n\n"
-            f"请直接输出一句指路回答:"
+            f"中间节点(按顺序, 若为空则直接从起点到终点): {'、'.join(mid_nodes) if mid_nodes else '(无)'}\n"
+            f"完整路径: {path_str}\n\n"
+            "请输出一句指路回答:"
         )
         try:
             payload = {
                 "model": self._model,
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": 200,
-                "temperature": 0.3,
+                "temperature": 0.0,  # 温度=0 降低随机发挥
                 "chat_template_kwargs": {"enable_thinking": False},
             }
             r = self._get_session().post(f"{self._url}/chat/completions", json=payload, timeout=10)
@@ -1114,7 +1130,31 @@ class IntentClassifier:
             text = r.json()["choices"][0]["message"]["content"].strip()
             text = _re.sub(r'<think>.*?</think>', '', text, flags=_re.DOTALL).strip()
             text = text.strip('"').strip("'").strip('「').strip('」').strip('“').strip('”').strip()
-            return text or None
+            if not text:
+                return None
+
+            # ── 校验: LLM 输出不能包含路径外的节点名风格 token ──
+            # 归一化: 去掉 LLM 输出的所有空白 (它常在 "c8 打印机" 里插空格),
+            # 这样 replace(node_name) 能命中
+            _norm_text = _re.sub(r'\s', '', text)
+            _residual = _norm_text
+            # 节点名去空格后再 replace, 兼容 "c8 打印机" vs "c8打印机"
+            for n in node_names:
+                n_nospace = _re.sub(r'\s', '', n)
+                _residual = _residual.replace(n_nospace, "")
+            for tok in self._NARRATE_ALLOWED_TOKENS:
+                tok_nospace = _re.sub(r'\s', '', tok)
+                if tok_nospace:
+                    _residual = _residual.replace(tok_nospace, "")
+            # 拿掉所有 ASCII (c8/a8/数字等)
+            _residual = _re.sub(r'[A-Za-z0-9]', '', _residual)
+            # 留下的中文字符若过多 (>= 4), 视为幻觉
+            if len(_residual) >= 4:
+                logger.warning(f"[Narrate] LLM 输出含疑似幻觉 token ({len(_residual)} chars): "
+                                f"残留={_residual!r}, 原文={text!r}, 走模板兜底")
+                return None
+
+            return text
         except Exception as e:
             logger.warning(f"[IntentClassifier] 路径叙述失败: {e}")
             return None
@@ -1657,11 +1697,17 @@ async def handle_ask_location(message_data, session_state, navigator,
 
 
 def _build_direction_template(start_name, goal_name, names):
-    """LLM 润色失败时的模板兜底。"""
+    """LLM 润色失败时的严格模板兜底。
+
+    只使用路径节点名 + 固定连接词, 零幻觉风险。
+    """
     if len(names) <= 2:
-        return f"从{start_name}直接前往{goal_name}即可到达。"
-    mid = "、".join(names[1:-1])
-    return f"前往{goal_name}，请从{start_name}出发，依次经过{mid}，最终到达{goal_name}。"
+        return f"您好，从{start_name}直接前往{goal_name}即可到达。"
+    mid_nodes = names[1:-1]
+    if len(mid_nodes) == 1:
+        return f"您好，从{start_name}出发，经过{mid_nodes[0]}即可到达{goal_name}。"
+    mid_str = "、".join(mid_nodes)
+    return f"您好，您要去{goal_name}，请从{start_name}出发，依次经过{mid_str}，到达{goal_name}。"
 
 
 async def handle_ask_direction(message_data, session_state, navigator,

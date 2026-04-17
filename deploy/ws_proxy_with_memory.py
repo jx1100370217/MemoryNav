@@ -2788,11 +2788,23 @@ async def handle_client(websocket):
                     elif task_value == 'mapping':
                         intent_label = INTENT_MAPPING
                         _origin = 'hardcoded_start'
-                    # Step 2: 跳过意图分类的情况 (特殊硬编码控制, 空 task, 仅传 command)
-                    elif not task_value or task_value in {"STOP", "stop", "turn left", "turn right", "go straight", "None", "none"}:
+                    # Step 2: 特殊导航控制 (STOP/turn/go straight), 强制走 navigate
+                    elif task_value in {"STOP", "stop", "turn left", "turn right", "go straight"}:
                         intent_label = INTENT_NAVIGATE
-                        _origin = 'fallback'
-                    # Step 3: 其他自然语言 task → 意图分类 (navigate / ask_location / ask_direction / mapping)
+                        _origin = 'fallback_control'
+                    # Step 3: 空 task → 延用当前模式
+                    #   - mapping 模式 + session 活跃 → 继续喂建图帧 (等价 task="mapping")
+                    #   - 否则 → navigate 分支在 process_inference_with_memory 里延用 last_task
+                    elif not task_value or task_value in {"None", "none"}:
+                        if (session_state.get('mode') == 'mapping'
+                                and mapping_session is not None
+                                and not mapping_session.finalized):
+                            intent_label = INTENT_MAPPING
+                            _origin = 'fallback_mapping_resume'
+                        else:
+                            intent_label = INTENT_NAVIGATE
+                            _origin = 'fallback'
+                    # Step 4: 其他自然语言 task → 意图分类 (navigate / ask_location / ask_direction / mapping)
                     else:
                         intent_label = (intent_classifier.classify(task_value)
                                          if intent_classifier else IntentClassifier._classify_by_rule(task_value))
@@ -2859,10 +2871,14 @@ async def handle_client(websocket):
 
                     # ---- 非 mapping 意图: 导航 / 询问位置 / 要求指路 ----
                     else:
-                        if (mapping_session and not mapping_session.finalized
+                        # 仅 navigate 意图触发 mapping 自动 finalize (视为主动切模式);
+                        # ask_location / ask_direction 仅为打断式询问, 不切走建图 session,
+                        # 下一帧 task=None 可继续建图 (resume)
+                        if (intent_label == INTENT_NAVIGATE
+                                and mapping_session and not mapping_session.finalized
                                 and session_state['mode'] == 'mapping'):
                             try:
-                                logger.info(f"🗺️ task 切到非 mapping, 自动 finalize [{client_id}]")
+                                logger.info(f"🗺️ task 切到 navigate, 自动 finalize [{client_id}]")
                                 await asyncio.to_thread(mapping_session.finalize)
                             except Exception as e:
                                 logger.error(f"自动 finalize 失败: {e}", exc_info=True)

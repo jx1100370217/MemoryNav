@@ -746,14 +746,22 @@ async def run_test_nav():
 async def run_test_mapping():
     """完整轨迹建图测试 (建图模式, task 驱动).
 
-    流程: 所有请求统一 {id, task, pts, images} 形状
+    流程: 所有请求统一 {id, task, pts, images} 形状, 对齐导航模式的 task=None 延用方式
       1. 首帧 task="开始建图" (自然语言 → mapping intent → MappingSession 创建)
-      2. 中间帧 task="mapping" (硬编码, 每帧喂入 OnlineMapperCore, 零 LLM 开销)
-      3. 末帧 task="停止建图" (自然语言 → mapping intent → finalize)
+      2. 中间帧 task=None (服务端 mode=mapping 时延用当前建图 session, 每帧喂入 OnlineMapperCore)
+      3. 均匀穿插 ask_location / ask_direction 打断, 验证 mapping 不被 finalize,
+         下一帧 task=None 继续喂建图
+      4. 末帧 task="停止建图" (自然语言 → mapping intent → finalize)
     """
     # 首帧 / 末帧自然语言 mapping task (验证 4 类意图分类路由)
     NL_START_MAPPING = "开始建图"
     NL_STOP_MAPPING = "停止建图"
+    # 建图中间穿插的打断请求
+    MAPPING_INTERRUPT_TASKS = [
+        "现在在什么位置？",
+        "请问前往a8前台怎么走？",
+        "我在哪里",
+    ]
     print_header("🗺️  在线建图 — 完整轨迹回放测试")
     print(f"  {C_BOLD}服务器:{C_RESET}  {WS_URL}")
     print(f"  {C_BOLD}数据:{C_RESET}    {DATA_DIR}")
@@ -795,8 +803,21 @@ async def run_test_mapping():
                 sys.exit(1)
     print(f"{C_GREEN}✅ 已连接{C_RESET}")
 
-    # --- 1. 帧流输入 (task='mapping' 驱动, 首帧自动创建 session) ---
-    print_header(f"▶️  建图: 喂入 {total_frames} 帧 (task='mapping')")
+    # --- 1. 帧流输入: 首帧 NL 启动, 后续 task=None 延用, 穿插 ask_* 打断 ---
+    print_header(f"▶️  建图: 喂入 {total_frames} 帧 (首帧 NL, 后续 task=None)")
+
+    # 计算打断点: 避开首帧和末帧 (首帧必须用 NL 启动, 末帧用 NL 停止)
+    n_samples = total_frames
+    interrupt_count = min(len(MAPPING_INTERRUPT_TASKS), max(2, n_samples // 15))
+    interrupt_slots = {}  # seq -> ask_task
+    if n_samples >= 8 and interrupt_count > 0:
+        for i in range(interrupt_count):
+            seq_pos = int(n_samples * (i + 1) / (interrupt_count + 1))
+            if 0 < seq_pos < n_samples - 1:
+                interrupt_slots[seq_pos] = MAPPING_INTERRUPT_TASKS[i % len(MAPPING_INTERRUPT_TASKS)]
+    print(f"  {C_BOLD}穿插打断:{C_RESET}  {len(interrupt_slots)} 处 → "
+          f"{', '.join(f'seq{s}={t[:14]}…' for s, t in sorted(interrupt_slots.items()))}")
+
     print(f"\n{C_BOLD}{'seq':>4s} │ {'frame':>5s} │ {'ts':>10s} │ {'KF':^3s} │ "
           f"{'reason':^12s} │ {'VPR sim':>8s} │ {'info_gain':>10s} │ "
           f"{'category':^18s} │ {'name':<14s} │ {'nodes':>5s} │ "
@@ -809,6 +830,7 @@ async def run_test_mapping():
     stat_reject = 0
     stat_reasons = defaultdict(int)
     stat_latencies = []
+    stat_ask_interrupts = []  # (seq, task, response_text, post_mode)
 
     last_status = {}
     output_dir = None
@@ -819,16 +841,35 @@ async def run_test_mapping():
             print(f"{seq:4d} │ skip ts={ts} (missing cameras: {list(imgs)})")
             continue
 
+        # ─── 打断帧: 发 ask_* 请求, 验证 mapping 不被 finalize ───
+        if seq in interrupt_slots:
+            ask_task = interrupt_slots[seq]
+            t_ask = time.time()
+            ask_resp = await send_frame(ws, ask_task, imgs, pts=int(ts), timeout=30)
+            ask_latency_ms = int((time.time() - t_ask) * 1000)
+            ask_text = ask_resp.get('response_text') or '(no response_text)'
+            ask_mode = ask_resp.get('mode')  # 建图 session 仍活跃时服务端不在响应里包 mode
+            ask_msg = (ask_resp.get('message') or '')
+            _intent = 'ask_direction' if '指路' in ask_msg else ('ask_location' if '询问' in ask_msg else 'other')
+            _intent_tag = {'ask_location': f"{C_MAGENTA}📍询问位置{C_RESET}",
+                            'ask_direction': f"{C_MAGENTA}🧭要求指路{C_RESET}",
+                            'other': f"{C_YELLOW}?打断{C_RESET}"}[_intent]
+            print(f"{C_BG_BLUE}{C_WHITE} INTERRUPT {C_RESET} "
+                  f"seq={seq:>4d} task={ask_task!r}  ({_intent_tag}, {ask_latency_ms}ms)")
+            print(f"      {C_CYAN}│ 💬 response_text: {ask_text[:100]}{C_RESET}")
+            stat_ask_interrupts.append((seq, ask_task, ask_text, ask_mode))
+            # 不 continue, 继续喂建图帧 (task=None) 验证 resume
+            # 下方的 mapping 帧会在这一帧 seq 继续跑, 使 MappingSession 拿到这一帧图像
+
         t0 = time.time()
-        # 首帧用自然语言"开始建图"触发 mapping 意图路由(验证第 4 类 task);
-        # 其他帧用硬编码 "mapping" 节省 LLM 分类耗时
-        # 首帧服务端还会懒加载 Depth/GD/Qwen (~30-60s), 给足 timeout
+        # 首帧用自然语言"开始建图"触发 mapping 意图路由; 其他帧 task=None
+        # (服务端 mode=mapping 时延用 mapping). 首帧服务端懒加载 (~30-60s)
         if seq == 0:
             _task = NL_START_MAPPING
             frame_timeout = 180
             print(f"{C_CYAN}▶ 首帧用自然语言 '{_task}' 触发 mapping 意图{C_RESET}")
         else:
-            _task = "mapping"
+            _task = None
             frame_timeout = 60
         resp = await send_frame(ws, _task, imgs, pts=int(ts),
                                  timeout=frame_timeout)
@@ -843,6 +884,12 @@ async def run_test_mapping():
                 print(f"{C_RED}❌ 首帧自然语言未触发 mapping 意图: mode={_mode}, task_status={_task_status}{C_RESET}")
                 sys.exit(1)
             print(f"{C_GREEN}✅ mapping 意图路由成功: mode={_mode}, task_status={_task_status}{C_RESET}")
+        else:
+            # 非首帧: 验证 task=None 时服务端仍然按 mapping 处理
+            _mode = resp.get('mode')
+            if _mode != 'mapping':
+                print(f"{C_RED}❌ seq={seq} task=None 未延用 mapping: mode={_mode}{C_RESET}")
+                sys.exit(1)
 
         log = resp.get('log', {}) or {}
         mapping_status = resp.get('mapping', {}) or {}
@@ -911,6 +958,15 @@ async def run_test_mapping():
     print(f"  {'发送帧数':>14s}: {len(stat_latencies)}")
     print(f"  {'喂帧总耗时':>14s}: {feed_elapsed:.1f}s  ({feed_elapsed/max(len(stat_latencies),1)*1000:.0f}ms/帧)")
     print(f"  {'finalize 耗时':>14s}: {finalize_s:.1f}s")
+
+    # 打断请求统计
+    if stat_ask_interrupts:
+        print(f"\n  {C_BOLD}【打断请求 (ask_*)】{C_RESET}")
+        print(f"  {'打断次数':>14s}: {len(stat_ask_interrupts)}  (打断后 mapping session 继续推进)")
+        for seq_, task_, text_, _ in stat_ask_interrupts:
+            _text_short = text_ if len(text_) <= 90 else text_[:87] + '...'
+            print(f"    {C_DIM}seq{seq_:>3d}{C_RESET} task={task_!r}")
+            print(f"           {C_CYAN}→ {_text_short}{C_RESET}")
     if stat_latencies:
         lats = sorted(stat_latencies)
         p50 = lats[len(lats)//2]

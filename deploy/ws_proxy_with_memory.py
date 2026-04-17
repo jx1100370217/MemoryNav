@@ -918,6 +918,182 @@ SUB_MATCH_CONFIDENCE_THRESHOLD = 0.60
 FRAME_SIMILARITY_THRESHOLD = 0.70  # 帧间 DINOv2 特征相似度阈值，高于此值认为场景几乎没变
 
 
+# ============================================================================
+# 意图分类器 (Qwen3.5-0.8B / 9B fallback / rule fallback)
+# ============================================================================
+
+import re as _re  # 避免和局部导入 re 冲突
+
+INTENT_NAVIGATE = "navigate"
+INTENT_ASK_LOCATION = "ask_location"
+INTENT_ASK_DIRECTION = "ask_direction"
+
+_INTENT_SYSTEM_PROMPT = """你是机器人指令意图分类器。将用户的单条指令准确归类为下面三类之一：
+
+1. navigate — 直接命令机器人前往某地(指令式、不含"怎么/如何/怎样")。
+   例: "前往C8前台" / "带我去D栋大厅" / "走到电梯口" / "回到起点"
+
+2. ask_location — 询问当前所在的位置。
+   例: "我在哪" / "现在是什么位置" / "当前位置" / "告诉我现在的位置"
+
+3. ask_direction — 询问去某地的路线/走法/方向（通常含"怎么/如何/怎样/指路/路线"等询问词)。
+   例: "请问前往D栋怎么走" / "去大堂怎么走" / "如何前往C8" / "怎么去A8前台" / "指路到前台"
+
+关键区别: 是否含"怎么/如何/怎样/指路/路线/方向/问一下/请问"这类询问语气。
+含 → ask_direction；不含且是命令 → navigate；含"哪/位置" → ask_location。
+
+只输出 navigate / ask_location / ask_direction 其中一个，不要解释、不要标点。"""
+
+_INTENT_RULES = [
+    # ask_direction 更具体, 优先匹配
+    (_re.compile(r'(怎么走|如何(前往|到达|去)|怎(样|么)(前往|到达|去)|指路|路线|方向|怎么到)'), INTENT_ASK_DIRECTION),
+    # ask_location
+    (_re.compile(r'(在哪|什么位置|哪个位置|当前位置|现在的位置|所在位置|现在在哪)'), INTENT_ASK_LOCATION),
+    # navigate
+    (_re.compile(r'(前往|去|到|走到|导航|带我|回(到|去))'), INTENT_NAVIGATE),
+]
+
+
+class IntentClassifier:
+    """任务意图分类: 优先 Qwen3.5-0.8B (8198) → fallback 9B (8199) → 规则兜底。"""
+
+    VLLM_08B_URL = "http://localhost:8198/v1"
+    VLLM_08B_MODEL = "qwen3.5-0.8b"
+    VLLM_9B_URL = "http://localhost:8199/v1"
+    VLLM_9B_MODEL = "qwen3.5-9b"
+
+    def __init__(self):
+        self._backend = None  # "vllm_08b" / "vllm_9b" / "rule"
+        self._url = None
+        self._model = None
+        self._session = None
+
+    @property
+    def backend(self):
+        return self._backend
+
+    def start(self):
+        if self._try_vllm(self.VLLM_08B_URL, self.VLLM_08B_MODEL):
+            self._backend = "vllm_08b"
+            self._url, self._model = self.VLLM_08B_URL, self.VLLM_08B_MODEL
+            logger.info(f"[IntentClassifier] 使用 Qwen3.5-0.8B: {self._url}")
+            return
+        if self._try_vllm(self.VLLM_9B_URL, self.VLLM_9B_MODEL):
+            self._backend = "vllm_9b"
+            self._url, self._model = self.VLLM_9B_URL, self.VLLM_9B_MODEL
+            logger.info(f"[IntentClassifier] Qwen3.5-0.8B 不可用, 回退到 Qwen3.5-9B: {self._url}")
+            return
+        self._backend = "rule"
+        logger.warning("[IntentClassifier] 所有 vLLM 服务均不可用, 使用规则匹配兜底")
+
+    def _try_vllm(self, url, model):
+        try:
+            import requests
+            s = requests.Session(); s.trust_env = False
+            r = s.get(f"{url}/models", timeout=3)
+            if r.status_code != 200:
+                return False
+            return model in [m.get("id", "") for m in r.json().get("data", [])]
+        except Exception as e:
+            logger.debug(f"[IntentClassifier] {url} 不可用: {e}")
+            return False
+
+    def _get_session(self):
+        if self._session is None:
+            import requests
+            self._session = requests.Session()
+            self._session.trust_env = False
+        return self._session
+
+    @staticmethod
+    def _classify_by_rule(task: str) -> str:
+        for pat, label in _INTENT_RULES:
+            if pat.search(task):
+                return label
+        return INTENT_NAVIGATE
+
+    def _classify_by_vllm(self, task: str):
+        payload = {
+            "model": self._model,
+            "messages": [
+                {"role": "system", "content": _INTENT_SYSTEM_PROMPT},
+                {"role": "user", "content": task},
+            ],
+            "max_tokens": 16,
+            "temperature": 0.0,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+        r = self._get_session().post(f"{self._url}/chat/completions", json=payload, timeout=5)
+        r.raise_for_status()
+        raw = r.json()["choices"][0]["message"]["content"].strip()
+        clean = _re.sub(r'<think>.*?</think>', '', raw, flags=_re.DOTALL).strip().lower()
+        for cand in (INTENT_ASK_DIRECTION, INTENT_ASK_LOCATION, INTENT_NAVIGATE):
+            if cand in clean:
+                return cand, raw
+        return None, raw
+
+    def classify(self, task: str) -> str:
+        if not task or not isinstance(task, str):
+            return INTENT_NAVIGATE
+        task_stripped = task.strip()
+        if not task_stripped:
+            return INTENT_NAVIGATE
+
+        if self._backend in ("vllm_08b", "vllm_9b"):
+            try:
+                t0 = time.time()
+                label, raw = self._classify_by_vllm(task_stripped)
+                dt_ms = (time.time() - t0) * 1000
+                if label:
+                    logger.info(f"🎯 [Intent] '{task_stripped}' → {label} ({self._backend}, {dt_ms:.0f}ms)")
+                    return label
+                logger.warning(f"🎯 [Intent] LLM 输出无法解析({raw!r}), 走规则兜底")
+            except Exception as e:
+                logger.warning(f"🎯 [Intent] LLM 调用异常: {e}, 走规则兜底")
+
+        label = self._classify_by_rule(task_stripped)
+        logger.info(f"🎯 [Intent] '{task_stripped}' → {label} (rule)")
+        return label
+
+    def narrate_path(self, node_names: list) -> Optional[str]:
+        """用 LLM 把节点路径列表润色为自然指路文本。失败返回 None。"""
+        if not node_names or len(node_names) < 2:
+            return None
+        if self._backend not in ("vllm_08b", "vllm_9b"):
+            return None
+        start, goal = node_names[0], node_names[-1]
+        path_str = " → ".join(node_names)
+        prompt = (
+            f"你是一个园区/建筑指路助手(场景覆盖室内外)。把下面的最短路径转成一句自然、简洁、礼貌的中文指路回答，"
+            f"直接说给用户听，不要 markdown，不要引号，不要额外说明。\n\n"
+            f"起点: {start}\n"
+            f"终点: {goal}\n"
+            f"经过(按顺序): {path_str}\n\n"
+            f"请直接输出一句指路回答:"
+        )
+        try:
+            payload = {
+                "model": self._model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 200,
+                "temperature": 0.3,
+                "chat_template_kwargs": {"enable_thinking": False},
+            }
+            r = self._get_session().post(f"{self._url}/chat/completions", json=payload, timeout=10)
+            r.raise_for_status()
+            text = r.json()["choices"][0]["message"]["content"].strip()
+            text = _re.sub(r'<think>.*?</think>', '', text, flags=_re.DOTALL).strip()
+            text = text.strip('"').strip("'").strip('「').strip('」').strip('“').strip('”').strip()
+            return text or None
+        except Exception as e:
+            logger.warning(f"[IntentClassifier] 路径叙述失败: {e}")
+            return None
+
+
+# 全局单例, 在 main() 中初始化
+intent_classifier: Optional[IntentClassifier] = None
+
+
 def _frame_similarity_dino(feat1, feat2, camera_name=None):
     """基于 DINOv2 VPR 特征计算帧间相似度（cosine similarity）。
 
@@ -1286,17 +1462,322 @@ async def process_mapping_frame(message_data: dict, session_state: dict,
 
 
 # ============================================================================
+# 询问当前位置 / 要求指路 处理
+# ============================================================================
+
+def _vpr_decode_and_undistort(message_data) -> Optional[Dict[str, np.ndarray]]:
+    """ask_* 分支专用: 解码并鱼眼去畸变, 未凑齐4相机返回 None。"""
+    cam_imgs = decode_camera_images(message_data)
+    if not cam_imgs or len(cam_imgs) != 4:
+        return None
+    if fisheye_undistorter is not None:
+        cam_imgs = fisheye_undistorter.undistort_batch(cam_imgs)
+    return cam_imgs
+
+
+async def _run_vpr(navigator, camera_images):
+    """ask_* 分支专用: 运行 VPR 定位, 返回 (VPRResult or None, query_features or None)。"""
+    try:
+        vpr_result, features = await asyncio.to_thread(
+            navigator.locate_by_images, camera_images, True)
+        return vpr_result, features
+    except Exception as e:
+        logger.error(f"[AskHandler] VPR 定位异常: {e}", exc_info=True)
+        return None, None
+
+
+def _top_k_similar_nodes(navigator, query_features, k: int = 2):
+    """算当前查询对图中所有节点的相似度, 返回 top-k 降序列表 [(node_id, node_name, sim), ...]."""
+    if not query_features or navigator is None or navigator.graph is None or navigator.vpr is None:
+        return []
+    sims = []
+    for node_id, node in navigator.graph.nodes.items():
+        try:
+            s = navigator.vpr.get_node_similarity(query_features, node_id)
+        except Exception:
+            continue
+        if s > 0:
+            sims.append((node_id, node.node_name, float(s)))
+    sims.sort(key=lambda x: -x[2])
+    return sims[:k]
+
+
+def _build_ask_response(robot_id, pts, response_text, message, *, nav_state=None,
+                        extra: Optional[dict] = None) -> dict:
+    """ask_location / ask_direction 共用响应结构。action=[0,0,0], 保留原导航状态快照。"""
+    resp = {
+        "status": "success",
+        "id": robot_id,
+        "pts": pts,
+        "task_status": "executing",
+        "action": [[0.0, 0.0, 0.0]],
+        "pixel_target": None,
+        "response_text": response_text,
+        "message": message,
+    }
+    if nav_state is not None and nav_state.plan is not None:
+        resp["memory_active"] = True
+        resp["nav_preserved"] = {
+            "has_plan": True,
+            "plan_path": nav_state.plan.path,
+            "current_step": nav_state.current_step_idx,
+            "total_steps": nav_state.plan.total_steps,
+            "last_task": nav_state.last_task,
+        }
+    if extra:
+        resp.update(extra)
+    return resp
+
+
+async def handle_ask_location(message_data, session_state, navigator,
+                               nav_state, classifier: Optional[IntentClassifier]) -> dict:
+    """处理"询问当前位置"类 task: 仅 VPR 定位, 返回 response_text。
+
+    不修改 nav_state (保留未完成的导航计划)。只 +1 request_count, 不改 last_task。
+    """
+    robot_id = message_data.get('id', None)
+    pts = int(message_data['pts']) if 'pts' in message_data else None
+    task = message_data.get('task', '')
+
+    session_state['request_count'] = session_state.get('request_count', 0) + 1
+    logger.info(f"❓ [AskLocation] 处理询问位置请求: task='{task}'")
+
+    if navigator is None:
+        resp = _build_ask_response(robot_id, pts, "记忆导航未就绪，无法识别当前位置",
+                                    f"询问位置失败: navigator 未就绪", nav_state=nav_state)
+        logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
+        return resp
+
+    camera_images = _vpr_decode_and_undistort(message_data)
+    if camera_images is None:
+        resp = _build_ask_response(robot_id, pts, "当前位置暂时无法识别（缺少环视相机图）",
+                                    "询问位置失败: 缺少 camera_1~4", nav_state=nav_state)
+        logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
+        return resp
+
+    vpr_result, query_features = await _run_vpr(navigator, camera_images)
+
+    # ── VPR 命中 (sim >= threshold): 返回具体节点 ──
+    if vpr_result is not None:
+        loc_name = vpr_result.matched_node_name or vpr_result.matched_node_id
+        response_text = f"当前的位置是{loc_name}"
+        vpr_info = {
+            "matched_node_id": vpr_result.matched_node_id,
+            "matched_node_name": vpr_result.matched_node_name,
+            "confidence": round(float(vpr_result.confidence or 0.0), 4),
+            "similarity": round(float(vpr_result.similarity or 0.0), 4),
+            "fallback": None,
+        }
+        resp = _build_ask_response(
+            robot_id, pts, response_text,
+            f"询问当前位置 → {loc_name}",
+            nav_state=nav_state,
+            extra={"vpr": vpr_info},
+        )
+        logger.info(f"🗣️ [AskLocation] response_text='{response_text}'")
+        logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
+        return resp
+
+    # ── VPR 未达阈值: 取 top-2 最相似节点回复 "位于 A 和 B 中间" ──
+    top2 = _top_k_similar_nodes(navigator, query_features, k=2)
+    if len(top2) >= 2:
+        n1, n2 = top2[0], top2[1]
+        response_text = f"目前的位置是{n1[1]}和{n2[1]}中间"
+        vpr_info = {
+            "matched_node_id": None,
+            "matched_node_name": None,
+            "confidence": 0.0,
+            "similarity": round(n1[2], 4),
+            "fallback": "between_two_nodes",
+            "top1": {"id": n1[0], "name": n1[1], "sim": round(n1[2], 4)},
+            "top2": {"id": n2[0], "name": n2[1], "sim": round(n2[2], 4)},
+        }
+        resp = _build_ask_response(
+            robot_id, pts, response_text,
+            f"询问当前位置 → 介于 {n1[1]} 和 {n2[1]} 之间 (sim1={n1[2]:.3f}, sim2={n2[2]:.3f})",
+            nav_state=nav_state,
+            extra={"vpr": vpr_info},
+        )
+        logger.info(f"🗣️ [AskLocation] VPR 低于阈值, top-2 兜底: '{response_text}' "
+                    f"(sim1={n1[2]:.3f}, sim2={n2[2]:.3f})")
+        logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
+        return resp
+
+    if len(top2) == 1:
+        n1 = top2[0]
+        response_text = f"目前的位置可能在{n1[1]}附近"
+        vpr_info = {"matched_node_id": None, "fallback": "single_candidate",
+                    "top1": {"id": n1[0], "name": n1[1], "sim": round(n1[2], 4)}}
+        resp = _build_ask_response(
+            robot_id, pts, response_text,
+            f"询问当前位置 → 可能在 {n1[1]} 附近 (sim={n1[2]:.3f})",
+            nav_state=nav_state,
+            extra={"vpr": vpr_info},
+        )
+        logger.info(f"🗣️ [AskLocation] 单候选兜底: '{response_text}' (sim={n1[2]:.3f})")
+        logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
+        return resp
+
+    # 连 top-2 都算不出 (features 为 None / graph 空) → 最后兜底
+    resp = _build_ask_response(robot_id, pts, "当前位置暂时无法识别",
+                                "询问位置失败: VPR 无匹配且无候选节点", nav_state=nav_state,
+                                extra={"vpr": None})
+    logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
+    return resp
+
+
+def _build_direction_template(start_name, goal_name, names):
+    """LLM 润色失败时的模板兜底。"""
+    if len(names) <= 2:
+        return f"从{start_name}直接前往{goal_name}即可到达。"
+    mid = "、".join(names[1:-1])
+    return f"前往{goal_name}，请从{start_name}出发，依次经过{mid}，最终到达{goal_name}。"
+
+
+async def handle_ask_direction(message_data, session_state, navigator,
+                                nav_state, classifier: Optional[IntentClassifier]) -> dict:
+    """处理"要求指路"类 task: VPR 起点 + task 终点 + 最短路径 + LLM 叙述。
+
+    不修改 nav_state。只 +1 request_count, 不改 last_task。
+    """
+    robot_id = message_data.get('id', None)
+    pts = int(message_data['pts']) if 'pts' in message_data else None
+    task = message_data.get('task', '')
+
+    session_state['request_count'] = session_state.get('request_count', 0) + 1
+    logger.info(f"❓ [AskDirection] 处理指路请求: task='{task}'")
+
+    if navigator is None or navigator.graph is None:
+        resp = _build_ask_response(robot_id, pts, "记忆导航未就绪，无法为您指路",
+                                    "指路失败: navigator 未就绪", nav_state=nav_state)
+        logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
+        return resp
+
+    camera_images = _vpr_decode_and_undistort(message_data)
+    if camera_images is None:
+        resp = _build_ask_response(robot_id, pts, "当前位置暂时无法识别，无法为您指路（缺少环视相机图）",
+                                    "指路失败: 缺少 camera_1~4", nav_state=nav_state)
+        logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
+        return resp
+
+    vpr_result, query_features = await _run_vpr(navigator, camera_images)
+    # VPR 未达阈值时, 用 top-1 相似节点兜底当起点, 让指路功能不被阈值卡死
+    if vpr_result is None:
+        top1 = _top_k_similar_nodes(navigator, query_features, k=1)
+        if not top1:
+            resp = _build_ask_response(robot_id, pts, "当前位置暂时无法识别，无法为您指路",
+                                        "指路失败: VPR 无匹配且无候选节点",
+                                        nav_state=nav_state, extra={"vpr": None})
+            logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
+            return resp
+        start_id, start_name, start_sim = top1[0]
+        logger.info(f"[AskDirection] VPR 低于阈值, 用 top-1 '{start_name}' 作为起点 "
+                    f"(sim={start_sim:.3f})")
+    else:
+        start_id = vpr_result.matched_node_id
+        start_name = vpr_result.matched_node_name or start_id
+
+    dest_node = await asyncio.to_thread(navigator.find_destination, task)
+    if dest_node is None:
+        resp = _build_ask_response(
+            robot_id, pts,
+            f"您当前在{start_name}，但我没有识别出您要去的目的地，请说明具体位置",
+            "指路失败: find_destination 未命中", nav_state=nav_state,
+            extra={"vpr": {"matched_node_id": start_id, "matched_node_name": start_name}},
+        )
+        logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
+        return resp
+
+    if dest_node.node_id == start_id:
+        response_text = f"您当前就在{start_name}，已到达目的地"
+        resp = _build_ask_response(
+            robot_id, pts, response_text,
+            f"指路: 起点=终点={start_name}",
+            nav_state=nav_state,
+            extra={
+                "vpr": {"matched_node_id": start_id, "matched_node_name": start_name},
+                "route": {"start_id": start_id, "start_name": start_name,
+                          "goal_id": dest_node.node_id, "goal_name": dest_node.node_name,
+                          "path_ids": [start_id], "path_names": [start_name]},
+            },
+        )
+        logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
+        return resp
+
+    plan = await asyncio.to_thread(navigator.plan_navigation, dest_node, start_id)
+    if not plan.success or not plan.path:
+        resp = _build_ask_response(
+            robot_id, pts,
+            f"从{start_name}到{dest_node.node_name}暂时没有可用路线",
+            f"指路失败: 规划不可达 ({plan.message})",
+            nav_state=nav_state,
+            extra={
+                "vpr": {"matched_node_id": start_id, "matched_node_name": start_name},
+                "route": {"start_id": start_id, "start_name": start_name,
+                          "goal_id": dest_node.node_id, "goal_name": dest_node.node_name,
+                          "path_ids": [], "path_names": []},
+            },
+        )
+        logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
+        return resp
+
+    names = []
+    for nid in plan.path:
+        nd = navigator.graph.get_node(nid)
+        names.append(nd.node_name if nd else nid)
+    goal_name = names[-1]
+
+    response_text = None
+    if classifier is not None:
+        try:
+            response_text = await asyncio.to_thread(classifier.narrate_path, names)
+        except Exception as e:
+            logger.warning(f"[AskDirection] narrate_path 异常: {e}")
+    if not response_text:
+        response_text = _build_direction_template(start_name, goal_name, names)
+        logger.info(f"[AskDirection] 使用模板兜底: {response_text}")
+    else:
+        logger.info(f"[AskDirection] LLM 叙述: {response_text}")
+
+    resp = _build_ask_response(
+        robot_id, pts, response_text,
+        f"指路: {start_name} → {goal_name} ({plan.total_steps}步)",
+        nav_state=nav_state,
+        extra={
+            "vpr": {"matched_node_id": start_id, "matched_node_name": start_name,
+                    "confidence": round(float(vpr_result.confidence or 0.0), 4)},
+            "route": {
+                "start_id": start_id, "start_name": start_name,
+                "goal_id": dest_node.node_id, "goal_name": goal_name,
+                "total_steps": plan.total_steps,
+                "path_ids": plan.path,
+                "path_names": names,
+            },
+        },
+    )
+    logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
+    return resp
+
+
+# ============================================================================
 # 核心推理函数 (带记忆导航)
 # ============================================================================
 
 async def process_inference_with_memory(message_data, session_state,
                                          navigator: Optional[MemoryNavigator],
                                          nav_state: MemoryNavState,
-                                         memory_enabled: bool):
+                                         memory_enabled: bool,
+                                         classifier: Optional[IntentClassifier] = None):
     """
-    处理推理请求（带记忆导航能力）
+    处理推理请求（带记忆导航能力 + 询问位置 / 指路 分流）
 
-    三层导航策略:
+    新增: 先用 IntentClassifier 判定 task 意图, 三选一路由:
+      - navigate:     走下方原有的三层记忆导航策略
+      - ask_location: 仅 VPR 定位 + 组装 response_text, 不触碰 nav_state
+      - ask_direction:VPR 起点 + 终点规划 + LLM 叙述, 不触碰 nav_state
+    ask_* 两类不改写 session_state['last_task'], 保证未走完的导航任务在下一帧继续。
+
+    导航分支的三层策略保持不变:
     1. 记忆引导: 每步首次请求返回记忆的 angle + pixel_goal
     2. VPR持续验证: 每次请求用 camera_1~4 做 VPR 判断是否到达下一节点
     3. 模型兜底: VPR丢失时用 Qwen3.5 打点继续推理
@@ -1307,6 +1788,7 @@ async def process_inference_with_memory(message_data, session_state,
         navigator: MemoryNavigator实例
         nav_state: MemoryNavState 状态机
         memory_enabled: 是否启用记忆导航
+        classifier: IntentClassifier 实例 (None 时走规则兜底分类)
 
     Returns:
         dict: 推理结果
@@ -1415,6 +1897,24 @@ async def process_inference_with_memory(message_data, session_state,
                 }
 
         # ================================================================
+        # 意图分类: navigate / ask_location / ask_direction
+        # ask_* 分支在此直接短路返回, 不进入下面的 task 变化检测, 不修改 nav_state
+        # ================================================================
+        _SPECIAL_TASKS = {"STOP", "stop", "turn left", "turn right", "go straight"}
+        if instruction in _SPECIAL_TASKS:
+            intent = INTENT_NAVIGATE  # 特殊控制指令一律走导航分支的原有处理
+        elif classifier is not None:
+            intent = classifier.classify(instruction)
+        else:
+            intent = IntentClassifier._classify_by_rule(instruction)
+            logger.info(f"🎯 [Intent] '{instruction}' → {intent} (rule, no classifier)")
+
+        if intent == INTENT_ASK_LOCATION:
+            return await handle_ask_location(message_data, session_state, navigator, nav_state, classifier)
+        if intent == INTENT_ASK_DIRECTION:
+            return await handle_ask_direction(message_data, session_state, navigator, nav_state, classifier)
+
+        # ================================================================
         # 检测 task 变化 → 清空历史 + 重置记忆状态
         # ================================================================
         current_task = instruction
@@ -1447,7 +1947,6 @@ async def process_inference_with_memory(message_data, session_state,
         # 处理直接控制指令
         # ================================================================
         if instruction in ["turn left", "turn right", "go straight"]:
-            import math
             direct_commands = {
                 "turn left": [0.0, 0.0, math.pi / 12],
                 "turn right": [0.0, 0.0, -math.pi / 12],
@@ -1600,7 +2099,7 @@ async def process_inference_with_memory(message_data, session_state,
                         _check_lookahead_ok = (_la_m.get('found', False)
                                                and _la_m.get('confidence', 0) >= SUB_MATCH_CONFIDENCE_THRESHOLD)
                     if (vpr_result.matched_node_id == _check_target_id
-                            and _check_sim >= 0.70
+                            and _check_sim >= 0.68
                             and (_check_is_last or _check_lookahead_ok)):
                         _skip_qwen_fallback = True
                         logger.info(f"⏩ [Memory] VPR 已到目标节点 + {'最后一步' if _check_is_last else 'lookahead成功'}, 跳过 Qwen3.5 兜底")
@@ -1703,7 +2202,7 @@ async def process_inference_with_memory(message_data, session_state,
                 matched_id = vpr_result.matched_node_id
 
                 # ---- Case A: VPR 匹配到目标节点 → 相似度阈值 + lookahead 双重确认后 advance ----
-                VPR_ARRIVE_THRESHOLD = 0.70  # 到达 to_node 的 VPR 相似度阈值
+                VPR_ARRIVE_THRESHOLD = 0.68  # 到达 to_node 的 VPR 相似度阈值
                 _sim_to_node = navigator.vpr.get_node_similarity(nav_state.last_query_features, target_node_id) if nav_state.last_query_features else 0.0
                 if matched_id == target_node_id and _sim_to_node >= VPR_ARRIVE_THRESHOLD:
                     is_last_step = (nav_state.current_step_idx + 1 >= len(nav_state.plan.steps))
@@ -2265,7 +2764,8 @@ async def handle_client(websocket):
                             session_state['mode'] = 'nav'
                         response = await process_inference_with_memory(
                             data, session_state,
-                            memory_navigator, nav_state, memory_enabled
+                            memory_navigator, nav_state, memory_enabled,
+                            classifier=intent_classifier,
                         )
 
                 await websocket.send(json.dumps(response, ensure_ascii=False))
@@ -2305,7 +2805,7 @@ async def handle_client(websocket):
 
 async def main():
     """启动WebSocket服务器（带记忆导航）"""
-    global memory_navigator, occlusion_detector
+    global memory_navigator, occlusion_detector, intent_classifier
 
     # 切换工作目录到项目根目录
     os.chdir(project_root)
@@ -2350,7 +2850,17 @@ async def main():
             qwen35_status = f"✅ 已加载 (GPU={qwen35_gpu})"
         except Exception as e:
             qwen35_status = f"⚠️ 加载失败，首次使用时重试 ({e})"
-    logger.info(f"  └─ Qwen3.5:      {qwen35_status}")
+    logger.info(f"  ├─ Qwen3.5:      {qwen35_status}")
+
+    # ── 意图分类器 (Qwen3.5-0.8B / 9B / rule) ──
+    intent_classifier = IntentClassifier()
+    try:
+        intent_classifier.start()
+        intent_status = f"✅ backend={intent_classifier.backend}"
+    except Exception as e:
+        intent_status = f"⚠️ 初始化失败: {e}"
+        logger.warning(f"[IntentClassifier] 初始化异常: {e}", exc_info=True)
+    logger.info(f"  └─ 意图分类:    {intent_status}")
 
     # ── 4. 启动 WebSocket 服务 ──
     WS_PORT = 9528
@@ -2374,6 +2884,7 @@ async def main():
     logger.info(f"║  🌐 监听端口:     ws://0.0.0.0:{WS_PORT}")
     logger.info(f"║  🧠 记忆导航:     {memory_ok}")
     logger.info(f"║  🤖 兜底打点:     Qwen3.5-9B  |  {qwen35_status}")
+    logger.info(f"║  🎯 意图分类:     Qwen3.5-0.8B|  {intent_status}")
     logger.info(f"║  🔍 子图匹配:     DINOv3 密集特征匹配")
     logger.info(f"║  📷 鱼眼去畸变:   {undist_ok}")
     logger.info(f"║  🎯 坐标转换:     pixel→robot_xy (coord_transform)")
@@ -2383,13 +2894,13 @@ async def main():
     logger.info("║  ┌─ 输入字段 ────────────────────────────────────────┐   ║")
     logger.info("║  │  id        机器人ID                                │   ║")
     logger.info("║  │  pts       时间戳 (ms)                             │   ║")
-    logger.info("║  │  task      导航指令 (如 '去前台')                   │   ║")
-    logger.info("║  │  images    front_1(必需) + camera_1~4(记忆导航)     │   ║")
+    logger.info("║  │  task      三类: 导航(去X)/询问位置/要求指路        │   ║")
+    logger.info("║  │  images    front_1(必需) + camera_1~4(VPR必需)      │   ║")
     logger.info("║  └────────────────────────────────────────────────────┘   ║")
     logger.info("║  ┌─ 输出字段 ────────────────────────────────────────┐   ║")
-    logger.info("║  │  status / task_status / action / memory_active     │   ║")
-    logger.info("║  │  camera_name / landmark_name / sub_image_match     │   ║")
-    logger.info("║  │  memory_info                                       │   ║")
+    logger.info("║  │  导航:   action / memory_info / sub_image_match    │   ║")
+    logger.info("║  │  询问位置/指路: action=[0,0,0] + response_text     │   ║")
+    logger.info("║  │                 (ask_* 保留未完成的导航状态)        │   ║")
     logger.info("║  └────────────────────────────────────────────────────┘   ║")
     logger.info("║  ┌─ 控制命令 ────────────────────────────────────────┐   ║")
     logger.info("║  │  reset           重置 Agent + 记忆状态             │   ║")

@@ -50,10 +50,22 @@ if not all(h in _no_proxy for h in ('127.0.0.1', 'localhost')):
 
 WS_URL = "ws://127.0.0.1:9528"
 PROJECT_ROOT = "/home/ubuntu/Disk/codes/jianxiong/MemoryNav"
-DATA_DIR = os.path.join(PROJECT_ROOT, "memory_test_data")
+DATA_DIR = os.path.join(PROJECT_ROOT, "memory_test_data2")
 TASK = "前往C8前台"
 # TASK = "前往母婴室门口"
 SAMPLE_STEP = 1  # 每 N 帧采样一次
+
+# 在导航序列中穿插的"询问位置 / 要求指路"任务; 每条会在对应 seq 处单独发一次请求,
+# 机器人当帧返回 action=[0,0,0] + response_text, 并保留未完成的导航状态。
+# 下一个导航帧 task=None 延用原 last_task 继续走
+INTERRUPT_TASKS = [
+    "现在在什么位置？",
+    "请问前往a8前台怎么走？",
+    "我在哪里",
+    "去c8茶水间怎么走",
+    "告诉我当前位置",
+    "如何前往10号会议室门口",
+]
 
 # 从服务端导入阈值常量，确保测试与服务使用同一套阈值
 try:
@@ -261,6 +273,20 @@ async def run_test_nav():
     completed = False
     start_time = time.time()
 
+    # 计算打断点: 在序列均匀分布, 避开首帧 (首帧必须用完整 TASK 启动导航)
+    n_samples = len(sample_indices)
+    interrupt_count = min(len(INTERRUPT_TASKS), max(3, n_samples // 40))
+    interrupt_slots = {}  # seq -> ask_task
+    if n_samples >= 10 and interrupt_count > 0:
+        for i in range(interrupt_count):
+            seq_pos = int(n_samples * (i + 1) / (interrupt_count + 1))
+            if seq_pos <= 0 or seq_pos >= n_samples:
+                continue
+            interrupt_slots[seq_pos] = INTERRUPT_TASKS[i % len(INTERRUPT_TASKS)]
+    print(f"  {C_BOLD}穿插打断:{C_RESET}  {len(interrupt_slots)} 处 → "
+          f"{', '.join(f'seq{s}={t[:16]}…' for s, t in sorted(interrupt_slots.items()))}")
+    print(f"  {C_DIM}  导航首帧用 '{TASK}' 启动; 后续导航帧 task=None 延用; ask_* 请求用各自 task{C_RESET}")
+
     # 统计
     stat_decisions = defaultdict(int)
     stat_vpr_matches = defaultdict(int)  # node_id -> count
@@ -277,14 +303,14 @@ async def run_test_nav():
     stat_cache_cleared = 0        # 场景变化清除缓存次数
     stat_cache_no_cache = 0       # 无缓存可用次数
     stat_frame_sims = []          # 帧间相似度历史 (frame_idx, sim, reused)
-    stat_cache_reused = 0         # 帧间相似度复用缓存次数
-    stat_cache_cleared = 0        # 场景变化清除缓存次数
-    stat_cache_no_cache = 0       # 无缓存可用次数
-    stat_frame_sims = []          # 帧间相似度历史 (frame_idx, sim, reused)
     stat_lookahead_hits = 0       # lookahead 下一步子图匹配成功次数
     stat_lookahead_misses = 0     # lookahead 下一步子图匹配失败次数
     stat_lookahead_triggered_advance = 0  # lookahead 触发 advance 的次数
     stat_vpr_held_by_lookahead = 0        # VPR 到了但 lookahead 未确认，暂缓 advance 的次数
+    stat_ask_location = 0          # ask_location 请求次数
+    stat_ask_direction = 0         # ask_direction 请求次数
+    stat_ask_nav_preserved = 0     # 打断请求中 nav_preserved.has_plan=True 的次数
+    stat_ask_records = []          # (seq, task, response_text, nav_preserved) 日志
 
     last_step = -1
     last_phase = None
@@ -294,8 +320,45 @@ async def run_test_nav():
     for seq, frame_idx in enumerate(sample_indices):
         ts = timestamps[frame_idx]
         imgs = load_frame(ts)
+
+        # ─── 打断帧: 发送询问位置/指路请求 (同一帧图像, 不同 task) ───
+        if seq in interrupt_slots:
+            ask_task = interrupt_slots[seq]
+            t_ask = time.time()
+            ask_resp = await send_frame(ws, ask_task, imgs, pts=int(ts))
+            ask_latency_ms = (time.time() - t_ask) * 1000
+            ask_msg = ask_resp.get('message', '') or ''
+            ask_text = ask_resp.get('response_text') or '(no response_text)'
+            nav_preserved = ask_resp.get('nav_preserved') or {}
+            _preserved = bool(nav_preserved.get('has_plan'))
+            _intent = ('ask_direction' if '指路' in ask_msg
+                       else ('ask_location' if '询问' in ask_msg else 'unknown'))
+            if _intent == 'ask_location':
+                stat_ask_location += 1
+            elif _intent == 'ask_direction':
+                stat_ask_direction += 1
+            if _preserved:
+                stat_ask_nav_preserved += 1
+            stat_ask_records.append((seq, ask_task, ask_text, nav_preserved))
+
+            _intent_tag = ({'ask_location': f"{C_MAGENTA}📍询问位置{C_RESET}",
+                             'ask_direction': f"{C_MAGENTA}🧭要求指路{C_RESET}",
+                             'unknown': f"{C_YELLOW}?打断请求{C_RESET}"})[_intent]
+            _preserve_tag = (f"{C_GREEN}✓nav保留 step={nav_preserved.get('current_step')}"
+                             f"/{nav_preserved.get('total_steps')} last_task='{nav_preserved.get('last_task')}'"
+                             f"{C_RESET}" if _preserved else f"{C_DIM}nav 无{C_RESET}")
+            print(f"{C_BG_BLUE}{C_WHITE} INTERRUPT {C_RESET} "
+                  f"seq={seq:>4d} task={ask_task!r}  "
+                  f"({_intent_tag}, {ask_latency_ms:.0f}ms)")
+            print(f"      {C_CYAN}│ 💬 response_text: {ask_text}{C_RESET}")
+            print(f"      {C_DIM}│ {_preserve_tag}{C_RESET}")
+
+            # 打断后继续走下方的 nav 帧 (task=None 延用 last_task)
+
+        # ─── 导航帧: 首帧发完整 TASK, 后续发 None (延用 last_task) ───
+        nav_task = TASK if seq == 0 else None
         t0 = time.time()
-        resp = await send_frame(ws, TASK, imgs, pts=int(ts))
+        resp = await send_frame(ws, nav_task, imgs, pts=int(ts))
         latency_ms = (time.time() - t0) * 1000
 
         stat_total_frames += 1
@@ -526,6 +589,23 @@ async def run_test_nav():
     print(f"  {'采样间隔':>16s}: 每 {SAMPLE_STEP} 帧")
     print(f"  {'总耗时':>16s}: {elapsed:.1f}s")
     print(f"  {'平均延迟':>16s}: {elapsed/max(frames_sent,1)*1000:.0f}ms/帧")
+
+    # 打断请求统计
+    total_ask = stat_ask_location + stat_ask_direction
+    if total_ask > 0:
+        preserve_rate = stat_ask_nav_preserved / total_ask * 100
+        print(f"\n  {C_BOLD}【打断请求 (ask_*)】{C_RESET}")
+        print(f"  {'询问位置':>16s}: {stat_ask_location} 次 (ask_location)")
+        print(f"  {'要求指路':>16s}: {stat_ask_direction} 次 (ask_direction)")
+        print(f"  {'导航状态保留':>16s}: {stat_ask_nav_preserved}/{total_ask} ({preserve_rate:.0f}%)")
+        # 列出每次打断的详情
+        for seq_, task_, text_, nav_p in stat_ask_records:
+            _preserved = '✅' if nav_p.get('has_plan') else '❌'
+            _step = f"step={nav_p.get('current_step')}/{nav_p.get('total_steps')}" if nav_p.get('has_plan') else '─'
+            _text_short = text_ if len(text_) <= 90 else text_[:87] + '...'
+            print(f"    {C_DIM}seq{seq_:>3d}{C_RESET} [{_preserved} {_step}] "
+                  f"task={task_!r}")
+            print(f"           {C_CYAN}→ {_text_short}{C_RESET}")
 
     # 导航结果
     print(f"\n  {C_BOLD}【导航结果】{C_RESET}")

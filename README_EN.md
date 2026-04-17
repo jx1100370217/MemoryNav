@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-2.2.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.2.0)
+[![Version](https://img.shields.io/badge/Version-2.5.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.5.0)
 
 A robot memory navigation system based on Visual Place Recognition (VPR) and topological maps
 
@@ -19,10 +19,14 @@ A robot memory navigation system based on Visual Place Recognition (VPR) and top
 
 ## 📖 Introduction
 
-MemoryNav is a visual memory navigation system for mobile robots. It collects images via 4 omnidirectional fisheye cameras, uses VPR to localize within a pre-built topological memory graph, detects visual occlusion with YOLOv8n, and falls back to Qwen3.5-9B visual-language model for grounding — enabling "remember where you've been, walk it again" navigation.
+MemoryNav is a visual memory navigation system for mobile robots. It collects images via 4 omnidirectional fisheye cameras, uses VPR to localize within a pre-built topological memory graph, detects visual occlusion with YOLOv8n, falls back to Qwen3.5-9B VLM for grounding, and uses Qwen3.5-0.8B to classify the user's intent — enabling "remember where you've been, walk it again" navigation, while also answering "where am I" / "how do I get to X" mid-trip and seamlessly resuming the unfinished navigation afterwards.
 
 ### Key Capabilities
 
+- **🎯 Intent Classification Routing** (**new in v2.5.0**): Qwen3.5-0.8B vLLM auto-classifies every `task` into `navigate` / `ask_location` / `ask_direction`, each with its own handler; backend priority Qwen3.5-0.8B → Qwen3.5-9B fallback → keyword-rule fallback
+- **📍 Ask Current Location**: On "where am I" / "current location" queries, runs VPR only and returns `response_text="You are at X"`; if VPR is below the threshold, replies with the top-2 most similar nodes as "between A and B"
+- **🧭 Ask Direction**: On "how do I get to X" queries, derives the start via VPR + goal via `find_destination` + shortest path planning, then asks Qwen3.5-0.8B to narrate the route as a natural Chinese reply
+- **🔁 Resumable Interrupts**: Ask-location and ask-direction branches **do not** mutate `nav_state.plan` / `last_task`; the client can send `task=None` the next frame and the server will continue the original navigation from the preserved state
 - **🛰️ Online active mapping** (`online_mapper/`): Three-layer architecture (Geometry + Topology + Semantics) for streaming online mapping, with category whitelist, multi-frame hallucination voting, co-location merging, real VO, loop closure verification, bilingual naming, and spatial-KNN neighbour rebuild. Produces `merged_labeled_data/` schema. See [`docs/online_mapper.md`](docs/online_mapper.md) for the full design.
 - **🔍 Multi-scheme VPR Localization**: Supports 4 SOTA VPR methods, switchable via a single config file
 - **🗺️ Topological Memory Graph**: Automatically builds a node-edge topology from annotated data; supports shortest-path planning (BFS/Dijkstra)
@@ -65,9 +69,11 @@ MemoryNav/
 │   ├── anyloc_extractor.py         # AnyLoc (DINOv2 + VLAD)
 │   └── selavpr_model/              # SelaVPR++ model code
 ├── deploy/                         # Deployment entry points
-│   ├── ws_proxy_with_memory.py     # WebSocket proxy service (main entry)
-│   ├── vpr_config.yaml             # Unified VPR config
+│   ├── ws_proxy_with_memory.py     # WebSocket proxy service (main, incl. intent routing)
+│   ├── vpr_config.yaml             # Unified VPR config (selavpr threshold 0.56)
 │   ├── build_memory.sh             # Memory build script
+│   ├── start_qwen_vllm.sh          # Qwen3.5-9B vLLM launcher (GPU 1, port 8199)
+│   ├── start_qwen08_vllm.sh        # Qwen3.5-0.8B vLLM launcher (GPU 0, port 8198)
 │   └── start_server.sh             # Server start script
 ├── cam/                            # Multi-eye fisheye camera
 │   ├── params.yaml                 # Camera intrinsics & extrinsics
@@ -277,7 +283,7 @@ order_invariant:
   anyloc: true
 
 similarity_threshold:
-  selavpr: 0.60
+  selavpr: 0.56
   megaloc: 0.60
   effovpr: 0.80
   anyloc: 0.70
@@ -309,19 +315,105 @@ Full `online_mapper` design doc: **[`docs/online_mapper.md`](docs/online_mapper.
 
 ### 🌐 WebSocket Dual-Mode Access
 
-`deploy/ws_proxy_with_memory.py` listens on port **9528** and supports **two modes** through a single connection. `session_state['mode']` defaults to **nav**; clients explicitly switch modes via control commands.
+`deploy/ws_proxy_with_memory.py` listens on port **9528** and supports **two modes** through a single connection. All requests keep the same shape `{id, task, pts, images}`; the `task` field drives the mode switch:
 
-| Command | Effect |
-|---------|--------|
-| `{"command": "start_mapping"}` | Switch session to mapping mode, initialize `OnlineMapperCore` |
-| `{"command": "stop_mapping"}` | Finalize mapping, flush artifacts, switch back to nav |
-| `{"command": "mapping_status"}` | Report current mode + mapping progress |
+| `task` value | Effect |
+|-------------|--------|
+| `"mapping"` | Enter / stay in mapping mode; the first frame auto-creates a `MappingSession`, subsequent frames feed `OnlineMapperCore` |
+| `"stop_mapping"` | Trigger `finalize` + visualization, return the summary, and switch back to nav |
+| any other (navigation / `null` / ask-location / ask-direction) | Run memory navigation; if the session was in mapping, auto-finalize first then switch back to nav |
 
-In mapping mode, each `{id, pts, images: {camera_1..4}}` frame is routed through `process_mapping_frame` → `OnlineMapperCore.process_frame` and flushed on `finalize`. The SelaVPR extractor is **shared** between nav and mapping modes via `MemoryNavigator.extractor` to avoid loading twice.
+Control commands (`{"command": "..."}`) are kept for status queries only: `mapping_status` / `memory_status` / `session_status` / `reset` / `reset_memory` / `toggle_memory`.
+
+In mapping mode, each `{id, task:"mapping", pts, images: {camera_1..4}}` frame is routed through `process_mapping_frame` → `OnlineMapperCore.process_frame` and flushed on `finalize`. The SelaVPR extractor is **shared** between nav and mapping modes via `MemoryNavigator.extractor` to avoid loading twice.
 
 - Artifact path: `deploy/logs/mapping_output/session_{ts}_{client_id}/` (distinct from `online_mapper/output/`, which is reserved for the `run_online_map.py` baseline)
 - Temp frame dir: `deploy/logs/mapping_frames/session_*/`, auto-cleaned on finalize
 - Client disconnect auto-finalizes the active session to preserve data
+
+---
+
+## 🎯 Intent Classification + Ask Location / Ask Direction
+
+Before entering memory navigation, the server classifies every request via Qwen3.5-0.8B vLLM and routes `task` along one of three paths:
+
+| Intent | Example triggers | Handler | Response shape |
+|--------|------------------|---------|----------------|
+| `navigate` | "go to C8 reception", "take me to D building", "return to start" | memory navigation main flow | `action=[x,y,yaw]` + `memory_info` |
+| `ask_location` | "where am I", "current location", "what position now" | `handle_ask_location` | `action=[0,0,0]` + `response_text` |
+| `ask_direction` | "how do I get to D building", "how to reach the lobby" | `handle_ask_direction` | `action=[0,0,0]` + `response_text` |
+
+Backend priority: **Qwen3.5-0.8B (port 8198)** → Qwen3.5-9B (port 8199) fallback → keyword-rule fallback. ~50 ms per classification.
+
+### Ask-location response example
+
+```json
+{
+  "status": "success",
+  "task_status": "executing",
+  "action": [[0.0, 0.0, 0.0]],
+  "response_text": "当前的位置是微波炉区域",
+  "vpr": {
+    "matched_node_id": "3",
+    "matched_node_name": "微波炉区域",
+    "confidence": 0.5629,
+    "fallback": null
+  },
+  "nav_preserved": {
+    "has_plan": true,
+    "plan_path": ["2", "3", "6", "11"],
+    "current_step": 0,
+    "total_steps": 3,
+    "last_task": "前往C8前台"
+  }
+}
+```
+
+When VPR is below the threshold, the handler replies with the top-2 most similar nodes as "between A and B":
+
+```json
+{
+  "response_text": "目前的位置是c8电梯间和c8前台中间",
+  "vpr": {
+    "matched_node_id": null,
+    "fallback": "between_two_nodes",
+    "top1": {"id": "10", "name": "c8电梯间", "sim": 0.3425},
+    "top2": {"id": "11", "name": "c8前台",   "sim": 0.2904}
+  }
+}
+```
+
+### Ask-direction response example
+
+```json
+{
+  "response_text": "您好，您要去 a8 前台，请经过微波炉区域，然后依次经过 c8 打印机、c8 男厕所门口、c8 玻璃门，最后到达实验室门口，再前往 24 号会议室门口即可。",
+  "route": {
+    "start_name": "微波炉区域",
+    "goal_name": "a8前台",
+    "total_steps": 5,
+    "path_names": ["微波炉区域", "c8打印机", "c8男厕所门口", "c8玻璃门", "实验室门口", "24号会议室门口", "a8前台"]
+  },
+  "nav_preserved": {"has_plan": true, "current_step": 1, "total_steps": 3, "last_task": "前往C8前台"}
+}
+```
+
+Route narration is polished by Qwen3.5-0.8B; on LLM failure the handler falls back to a string template.
+
+### Navigation continuity under interrupts
+
+Ask-location and ask-direction handlers **do not** touch `nav_state.plan` / `current_step_idx` / `last_task`, so:
+
+| Frame | task | Behaviour |
+|-------|------|-----------|
+| 0 | `"前往C8前台"` | Start navigation, build the plan |
+| 1..N-1 | `null` | Reuse `last_task`, keep advancing |
+| K | `"现在在什么位置"` | Reply with current location, `nav_state` untouched |
+| K+1 | `null` | Continue from the preserved step, phase=verifying |
+| M | `"去 X 怎么走"` | Reply with the route, `nav_state` untouched |
+| M+1 | `null` | Continue the original plan |
+
+The `nav_preserved` block in the response lets the UI confirm the original navigation task is still active.
 
 ---
 
@@ -354,7 +446,15 @@ bash deploy/build_memory.sh --method megaloc --gpu 0
 ### Start Navigation Service
 
 ```bash
+# 1. Launch Qwen3.5-9B vLLM (fallback grounding + mapping naming)
+bash deploy/start_qwen_vllm.sh 1 8199
+
+# 2. Launch Qwen3.5-0.8B vLLM (intent classification + route narration)
+bash deploy/start_qwen08_vllm.sh 0 8198
+
+# 3. Launch the main service (reads deploy/vpr_config.yaml automatically)
 python deploy/ws_proxy_with_memory.py
+# or: bash deploy/start_server.sh
 ```
 
 ### Python API
@@ -464,11 +564,13 @@ Cyclic-shift matching supports 4 heading offsets: `0°`, `-75°`, `180°`, `+105
 ```bash
 python -m pytest tests/unit_test/test_basic.py -v
 
-# Navigation replay (default)
+# Navigation replay (default): first frame sends the full TASK, subsequent frames
+# send task=None (server reuses last_task). Three ask_* interrupts are injected
+# evenly along the sequence to verify the original nav state is preserved.
 python tests/test_memory_ws.py
 python tests/test_memory_ws.py --mode nav
 
-# Mapping replay — auto runs start_mapping → feeds all 49 frames → stop_mapping,
+# Mapping replay — auto task="mapping" → feeds all frames → task="stop_mapping",
 # prints topology / keyframes / door-plates / runtime breakdown + artifact paths
 python tests/test_memory_ws.py --mode mapping
 ```
@@ -476,6 +578,18 @@ python tests/test_memory_ws.py --mode mapping
 ---
 
 ## 📋 Changelog
+
+### v2.5.0
+
+- **🎯 Intent Classification Routing**: New `IntentClassifier` powered by Qwen3.5-0.8B vLLM; auto-classifies each `task` into navigate / ask_location / ask_direction, ~50 ms per call
+  - Backend priority: Qwen3.5-0.8B (8198) → Qwen3.5-9B (8199) fallback → keyword-rule fallback
+  - New launcher `deploy/start_qwen08_vllm.sh` (GPU 0, ~4.6 GB memory budget)
+- **📍 Ask Current Location (`handle_ask_location`)**: On "where am I" / "current location" queries, runs VPR only and returns `response_text="当前的位置是 X"`; on low VPR similarity, replies with the top-2 nearest nodes as "between A and B"
+- **🧭 Ask Direction (`handle_ask_direction`)**: VPR start + `find_destination` goal + `plan_navigation` route, then Qwen3.5-0.8B narrates the path as a natural Chinese sentence (template fallback)
+- **🔁 Navigation Continuity**: ask_location / ask_direction never mutate `nav_state` / `session_state['last_task']`; the client can send `task=None` the next frame to seamlessly resume the original plan
+- **🎛️ Threshold tuning**: VPR `similarity_threshold.selavpr` 0.60 → **0.56**; `VPR_ARRIVE_THRESHOLD` 0.70 → **0.68**; 48/49-frame VPR hit + first full navigation completion on the test set
+- **🧪 test_memory_ws.py enhanced**: first frame sends the full TASK, subsequent frames send `task=None` (reuse `last_task`); three ask_* interrupts injected evenly to verify `nav_preserved` is 100 %
+- **🐛 Bug fix**: removed a stray local `import math` inside `process_inference_with_memory` that was shadowing the module-level import
 
 ### v2.3.0
 

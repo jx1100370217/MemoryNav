@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-2.2.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.2.0)
+[![Version](https://img.shields.io/badge/Version-2.5.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.5.0)
 
 基于视觉位置识别（VPR）和拓扑地图的机器人记忆导航系统
 
@@ -19,10 +19,14 @@
 
 ## 📖 简介
 
-MemoryNav 是一个面向移动机器人的视觉记忆导航系统。系统通过 4 个环视鱼眼相机采集图像，利用 VPR 技术在预建的拓扑记忆图中定位，结合 YOLOv8n 视觉遮挡检测和 Qwen3.5-9B 视觉语言模型进行兜底打点导航，实现"记住去过的地方，再走一次"的记忆导航能力。
+MemoryNav 是一个面向移动机器人的视觉记忆导航系统。系统通过 4 个环视鱼眼相机采集图像，利用 VPR 技术在预建的拓扑记忆图中定位，结合 YOLOv8n 视觉遮挡检测和 Qwen3.5-9B 视觉语言模型进行兜底打点导航，并通过 Qwen3.5-0.8B 对用户指令做意图分类，实现"记住去过的地方，再走一次"的记忆导航能力，同时能在走路途中回答"我在哪""怎么去 X"这类问题并在回答完后无缝恢复原导航任务。
 
 ### 核心能力
 
+- **🎯 意图分类路由** (**v2.5.0 新增**)：Qwen3.5-0.8B vLLM 将每条 task 自动分为 `navigate`（导航）/ `ask_location`（询问位置）/ `ask_direction`（要求指路）三类，各走独立处理路径；优先级 Qwen3.5-0.8B → Qwen3.5-9B fallback → 关键词规则兜底
+- **📍 询问当前位置**：收到"我在哪""当前位置"类指令时，仅跑 VPR 定位，返回 `response_text="当前的位置是 X"`；VPR 低于阈值时取 top-2 最相似节点回复"位于 A 和 B 中间"
+- **🧭 要求指路**：收到"请问前往 X 怎么走"类指令时，VPR 起点 + `find_destination` 终点 + 最短路径规划，再用 Qwen3.5-0.8B 将路径润色成自然中文指路回答
+- **🔁 打断后恢复导航**：询问位置 / 要求指路分支**不修改** `nav_state.plan` / `last_task`，客户端下帧 `task=None` 延用上次导航任务继续推进
 - **🛰️ 在线主动建图** (`online_mapper/`, **v2.3.0**)：三层架构（Geometry+Topology+Semantics）流式在线建图。**VGGT-1B 几何前端**（depth + VO + 占据栅格 dense 点云 单次推理同时供给）、**结构化节点命名** `NodeName(category, organization, nearby_plates, ...)`（`前台·DEEPROUTE.AI` 取代 `DEEPROUTE.AI前台` 字符串拼接）、门牌**两阶段归属**（防 EUMANN 串扰）、ConnectionBuilder **几何方向先验**（cos 相似度 + 反向硬惩罚修复 cam→neighbor 错配）、多帧投票幻觉过滤、闭环几何验证、双语命名、空间 KNN 邻接重建；输出 `merged_labeled_data/` schema 并新增 `category/organization/nearby_plates/nearby_landmarks` 字段。完整设计见 [`docs/online_mapper.md`](docs/online_mapper.md)
 - **🔍 多方案 VPR 定位**：支持 4 种 SOTA 视觉位置识别方案，统一配置文件一键切换
 - **🗺️ 拓扑记忆图**：自动从标注数据构建节点-边拓扑图，支持最短路径规划
@@ -65,9 +69,11 @@ MemoryNav/
 │   ├── anyloc_extractor.py         # AnyLoc (DINOv2 + VLAD)
 │   └── selavpr_model/              # SelaVPR++ 模型代码
 ├── deploy/                         # 部署入口
-│   ├── ws_proxy_with_memory.py     # WebSocket 代理服务 (主入口)
-│   ├── vpr_config.yaml             # VPR 统一配置文件
+│   ├── ws_proxy_with_memory.py     # WebSocket 代理服务 (主入口, 含意图路由)
+│   ├── vpr_config.yaml             # VPR 统一配置文件 (selavpr 阈值 0.56)
 │   ├── build_memory.sh             # 记忆构建脚本
+│   ├── start_qwen_vllm.sh          # Qwen3.5-9B vLLM 启动 (GPU 1, 端口 8199)
+│   ├── start_qwen08_vllm.sh        # Qwen3.5-0.8B vLLM 启动 (GPU 0, 端口 8198)
 │   └── start_server.sh             # 服务启动脚本
 ├── cam/                            # 多目鱼眼相机
 │   ├── params.yaml                 # 相机内参 & 外参配置
@@ -333,7 +339,7 @@ order_invariant:
 
 # VPR 相似度阈值 (各方案独立设置)
 similarity_threshold:
-  selavpr: 0.60
+  selavpr: 0.56
   megaloc: 0.60
   effovpr: 0.80
   anyloc: 0.70
@@ -364,6 +370,91 @@ anyloc:
 
 ---
 
+## 🎯 意图分类 + 询问位置 / 要求指路
+
+服务端在每帧请求进入记忆导航前先做意图分类（Qwen3.5-0.8B vLLM），把 `task` 路由到三条处理路径：
+
+| 意图 | 触发词示例 | 处理分支 | 响应形态 |
+|------|------------|----------|----------|
+| `navigate` | "前往 C8 前台" / "带我去 D 栋" / "回到起点" | 记忆导航主流程 | `action=[x,y,yaw]` + `memory_info` |
+| `ask_location` | "我在哪" / "当前位置" / "现在在什么位置" | `handle_ask_location` | `action=[0,0,0]` + `response_text` |
+| `ask_direction` | "请问前往 D 栋怎么走" / "去大堂怎么走" | `handle_ask_direction` | `action=[0,0,0]` + `response_text` |
+
+分类器后端优先级：**Qwen3.5-0.8B (8198)** → Qwen3.5-9B (8199) fallback → 关键词规则兜底。单次分类 ~50ms。
+
+### 询问位置响应样例
+
+```json
+{
+  "status": "success",
+  "task_status": "executing",
+  "action": [[0.0, 0.0, 0.0]],
+  "response_text": "当前的位置是微波炉区域",
+  "vpr": {
+    "matched_node_id": "3",
+    "matched_node_name": "微波炉区域",
+    "confidence": 0.5629,
+    "fallback": null
+  },
+  "nav_preserved": {
+    "has_plan": true,
+    "plan_path": ["2", "3", "6", "11"],
+    "current_step": 0,
+    "total_steps": 3,
+    "last_task": "前往C8前台"
+  },
+  "message": "询问当前位置 → 微波炉区域"
+}
+```
+
+VPR 未达阈值时，取 top-2 最相似节点回复"位于 A 和 B 中间"：
+
+```json
+{
+  "response_text": "目前的位置是c8电梯间和c8前台中间",
+  "vpr": {
+    "matched_node_id": null,
+    "fallback": "between_two_nodes",
+    "top1": {"id": "10", "name": "c8电梯间", "sim": 0.3425},
+    "top2": {"id": "11", "name": "c8前台",   "sim": 0.2904}
+  }
+}
+```
+
+### 要求指路响应样例
+
+```json
+{
+  "response_text": "您好，您要去 a8 前台，请经过微波炉区域，然后依次经过 c8 打印机、c8 男厕所门口、c8 玻璃门，最后到达实验室门口，再前往 24 号会议室门口即可。",
+  "route": {
+    "start_name": "微波炉区域",
+    "goal_name": "a8前台",
+    "total_steps": 5,
+    "path_names": ["微波炉区域", "c8打印机", "c8男厕所门口", "c8玻璃门", "实验室门口", "24号会议室门口", "a8前台"]
+  },
+  "nav_preserved": {"has_plan": true, "current_step": 1, "total_steps": 3, "last_task": "前往C8前台"}
+}
+```
+
+路径叙述由 Qwen3.5-0.8B 润色；若 LLM 失败自动退化为字符串模板 `"前往{goal}，请从{start}出发，依次经过{mid1}、{mid2}，最终到达{goal}。"`。
+
+### 导航任务连续性
+
+ask_location / ask_direction 两条分支**不修改** `nav_state.plan` / `current_step_idx` / `last_task`，因此：
+
+| 帧 | task | 处理 |
+|----|------|------|
+| 0 | `"前往C8前台"` | 启动导航，建立 plan |
+| 1..N-1 | `null` | 延用 `last_task`，继续推进 |
+| K | `"现在在什么位置"` | VPR 回复当前位置，不动 nav_state |
+| K+1 | `null` | 从原 step 继续，phase=verifying |
+| M | `"去 X 怎么走"` | 路径规划回复，不动 nav_state |
+| M+1 | `null` | 继续原计划 |
+
+响应携带 `nav_preserved: {has_plan, plan_path, current_step, total_steps, last_task}` 便于客户端 UI 确认导航任务仍然激活。
+
+---
+
 ## 🛰️ 在线建图 (online_mapper)
 
 `online_mapper/` 是 MemoryNav 的建图模块, 采用三层架构 (Geometry + Topology + Semantics) 流式在线建图, 产出 `merged_labeled_data/` schema.
@@ -388,15 +479,17 @@ python online_mapper/run_online_map.py \
 
 ### WebSocket 双模式接入
 
-`deploy/ws_proxy_with_memory.py` 监听 **9528** 端口, 单个连接同时支持**导航**与**建图**两种模式, 由 `session_state['mode']` 管理 (默认 `nav`).
+`deploy/ws_proxy_with_memory.py` 监听 **9528** 端口, 单个连接同时支持**导航**与**建图**两种模式。所有请求保持统一形状 `{id, task, pts, images}`, 由 `task` 字段驱动模式切换:
 
-| 命令 | 说明 |
-|------|------|
-| `{"command": "start_mapping"}` | 切换到 mapping 模式, 初始化 `OnlineMapperCore` |
-| `{"command": "stop_mapping"}` | 停止建图, 触发 `finalize()` 并切回 nav |
-| `{"command": "mapping_status"}` | 查询当前建图状态 (模式 / 已处理帧数 / 产物路径) |
+| `task` 值 | 作用 |
+|----------|------|
+| `"mapping"` | 进入 / 保持建图模式; 首帧自动创建 `MappingSession`, 之后每帧喂入 `OnlineMapperCore` |
+| `"stop_mapping"` | 触发 `finalize` + 可视化, 返回 summary, 切回 nav |
+| 其他 (导航指令 / `null` / 询问位置 / 要求指路) | 走记忆导航; 若之前在 mapping, 自动 `finalize` 后再切回 nav |
 
-- **建图帧**: 每帧 `{id, pts, images: {camera_1..4}}` 走 `process_mapping_frame`, 调用 `OnlineMapperCore.process_frame` + 最终 `finalize`
+控制命令 (`{"command": "..."}`) 只剩状态查询: `mapping_status` / `memory_status` / `session_status` / `reset` / `reset_memory` / `toggle_memory`。
+
+- **建图帧**: 每帧 `{id, task:"mapping", pts, images: {camera_1..4}}` 走 `process_mapping_frame`, 调用 `OnlineMapperCore.process_frame` + 最终 `finalize`
 - **模型共享**: 双模式共享 `MemoryNavigator.extractor` (SelaVPR), 避免重复加载
 - **产物目录**: `deploy/logs/mapping_output/session_{ts}_{client_id}/` (仅 `run_online_map.py` baseline 仍沿用 `online_mapper/output/`)
 - **临时帧目录**: `deploy/logs/mapping_frames/session_*/`, `finalize` 后自动清理
@@ -442,8 +535,15 @@ bash deploy/build_memory.sh --method megaloc --gpu 0
 ### 启动导航服务
 
 ```bash
-# 自动从 vpr_config.yaml 读取配置
+# 1. 启动 Qwen3.5-9B vLLM (兜底打点 + 建图命名)
+bash deploy/start_qwen_vllm.sh 1 8199
+
+# 2. 启动 Qwen3.5-0.8B vLLM (意图分类 + 指路文本叙述)
+bash deploy/start_qwen08_vllm.sh 0 8198
+
+# 3. 启动主服务 (自动从 vpr_config.yaml 读取配置)
 python deploy/ws_proxy_with_memory.py
+# 或: bash deploy/start_server.sh
 ```
 
 ### Python API
@@ -596,18 +696,30 @@ python -m pytest tests/unit_test/test_basic.py -v
 python tests/test_memory_ws.py
 python tests/test_memory_ws.py --mode nav
 
-# WebSocket 建图回放 (start_mapping → 全量 49 帧 → stop_mapping)
+# WebSocket 建图回放 (首帧 task="mapping" → 全量帧 → task="stop_mapping")
 python tests/test_memory_ws.py --mode mapping
 ```
 
-`test_memory_ws.py` 是双模式合并脚本 (替代原 `deploy/test_mapping_client.py`):
+`test_memory_ws.py` 是双模式合并脚本:
 
-- **nav 模式**: 原有导航回放, 输出 VPR 匹配、子图匹配置信度、lookahead 置信度、camera、action、决策类型 + 节点/决策分布统计
-- **mapping 模式**: 自动跑 start_mapping → 逐帧喂入 → stop_mapping, 打印拓扑/关键帧/门牌/runtime 分解 + 产物路径
+- **nav 模式**: 首帧发送完整 TASK (例如 `"前往C8前台"`) 启动导航；后续帧全部 `task=None` 延用 `last_task` 继续推进；在序列中均匀穿插 3 处 `ask_location`/`ask_direction` 打断请求，验证打断后原导航状态 100% 保留并能恢复。输出 VPR 匹配、子图匹配置信度、lookahead 置信度、camera、action、决策类型 + 节点/决策分布统计 + 打断请求明细
+- **mapping 模式**: 首帧 `task="mapping"` → 逐帧喂入 → 末帧 `task="stop_mapping"`, 打印拓扑/关键帧/门牌/runtime 分解 + 产物路径
 
 ---
 
 ## 📋 更新日志
+
+### v2.5.0
+
+- **🎯 意图分类路由**: 新增 `IntentClassifier`，基于 Qwen3.5-0.8B vLLM 将每条 `task` 自动分为 navigate / ask_location / ask_direction 三类，单次分类 ~50ms
+  - 后端优先级 Qwen3.5-0.8B (8198) → Qwen3.5-9B (8199) fallback → 关键词规则兜底
+  - 新增启动脚本 `deploy/start_qwen08_vllm.sh` (GPU 0, 显存 ~4.6GB)
+- **📍 询问当前位置 (`handle_ask_location`)**: 收到"我在哪""当前位置"类指令时仅跑 VPR，返回 `response_text="当前的位置是 X"`；VPR 未达阈值时取 top-2 最相似节点回复"位于 A 和 B 中间"
+- **🧭 要求指路 (`handle_ask_direction`)**: VPR 起点 + `find_destination` 终点 + `plan_navigation` 规划，再用 Qwen3.5-0.8B 把路径润色成自然中文指路回答 (模板兜底)
+- **🔁 导航连续性**: ask_location / ask_direction 分支不修改 `nav_state` / `session_state['last_task']`，客户端下帧 `task=None` 可无缝恢复未完成的导航
+- **🎛️ 阈值调整**: VPR `similarity_threshold.selavpr` 0.60 → **0.56**，`VPR_ARRIVE_THRESHOLD` 0.70 → **0.68**，48/49 帧 VPR 命中 + 导航首次 completed
+- **🧪 test_memory_ws.py 增强**: 首帧发完整 TASK、后续 task=None 延用；在中间穿插 3 处 ask_* 打断请求并校验 nav_preserved 100% 保留
+- **🐛 Bug fix**: 移除 `process_inference_with_memory` 里局部 `import math` 导致的 UnboundLocalError
 
 ### v2.3.0
 

@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-2.2.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.2.0)
+[![Version](https://img.shields.io/badge/Version-2.5.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.5.0)
 
 VPR（視覚的場所認識）とトポロジカルマップに基づくロボット記憶ナビゲーションシステム
 
@@ -23,6 +23,10 @@ MemoryNavは移動ロボット向けの視覚記憶ナビゲーションシス�
 
 ### 主な機能
 
+- **🎯 意図分類ルーティング**（**v2.5.0 新機能**）：Qwen3.5-0.8B vLLM がすべての `task` を `navigate` / `ask_location` / `ask_direction` に自動分類し、それぞれ専用ハンドラーにルーティング。バックエンド優先順位は Qwen3.5-0.8B → Qwen3.5-9B フォールバック → キーワードルールフォールバック
+- **📍 現在位置の問い合わせ**：「今どこ？」「現在位置は？」のような質問に対し、VPR のみ実行して `response_text="当前的位置是 X"` を返す。VPR が閾値未満の場合は top-2 類似ノードを用いて「A と B の中間」を返答
+- **🧭 道案内**：「X へはどう行く？」のような質問に対し、VPR で現在位置を取得 + `find_destination` で目的地を特定 + 最短経路を計画し、Qwen3.5-0.8B で自然な中国語の道案内文として整形
+- **🔁 中断からの再開**：ask_location / ask_direction の分岐では `nav_state.plan` / `last_task` を**変更しない**。クライアントが次フレームで `task=None` を送信すれば、保存された状態から元のナビゲーションを継続可能
 - **🗺️ 自動建図**：3段階Pipeline（VPRノード作成→語義増補→接続生成）で画像シーケンスからトポロジカルナビゲーショングラフを全自動生成、手動アノテーション不要
 - **🔍 マルチスキームVPR測位**：4種類のSOTA VPR手法をサポート、設定ファイル一つで切り替え可能
 - **🗺️ トポロジカル記憶グラフ**：アノテーションデータからノード-エッジトポロジーを自動構築、最短経路計画（BFS/Dijkstra）をサポート
@@ -61,9 +65,11 @@ MemoryNav/
 │   ├── vpr_config_loader.py        # 設定ローダー
 │   └── selavpr_model/              # SelaVPR++モデルコード
 ├── deploy/                         # デプロイエントリー
-│   ├── ws_proxy_with_memory.py     # WebSocketプロキシサービス (メインエントリー)
-│   ├── vpr_config.yaml             # VPR統一設定ファイル
+│   ├── ws_proxy_with_memory.py     # WebSocketプロキシサービス (メイン、意図分類ルーティング含む)
+│   ├── vpr_config.yaml             # VPR統一設定ファイル (selavpr 閾値 0.56)
 │   ├── build_memory.sh             # 記憶構築スクリプト
+│   ├── start_qwen_vllm.sh          # Qwen3.5-9B vLLM 起動 (GPU 1, port 8199)
+│   ├── start_qwen08_vllm.sh        # Qwen3.5-0.8B vLLM 起動 (GPU 0, port 8198)
 │   └── start_server.sh             # サーバー起動スクリプト
 ├── cam/                            # 多眼魚眼カメラ
 │   ├── params.yaml                 # カメラパラメータ
@@ -210,6 +216,90 @@ camera_3またはcamera_4（後方向き）がマッチングに成功した場�
 
 ---
 
+## 🎯 意図分類 + 位置問い合わせ / 道案内
+
+記憶ナビゲーションに入る前に、サーバーは Qwen3.5-0.8B vLLM を用いてすべてのリクエストを分類し、`task` を 3 つの経路のいずれかにルーティングします:
+
+| 意図 | トリガー例 | ハンドラー | レスポンス形状 |
+|------|-----------|-----------|----------------|
+| `navigate` | 「C8 前台に行って」「D 棟に案内して」「スタート地点に戻って」 | 記憶ナビゲーションメインフロー | `action=[x,y,yaw]` + `memory_info` |
+| `ask_location` | 「今どこ？」「現在位置は？」「現在どこにいる？」 | `handle_ask_location` | `action=[0,0,0]` + `response_text` |
+| `ask_direction` | 「D 棟へはどう行く？」「ロビーへの行き方は？」 | `handle_ask_direction` | `action=[0,0,0]` + `response_text` |
+
+バックエンド優先順位: **Qwen3.5-0.8B (port 8198)** → Qwen3.5-9B (port 8199) フォールバック → キーワードルールフォールバック。1 回の分類につき約 50 ms。
+
+### ask_location レスポンス例
+
+```json
+{
+  "status": "success",
+  "task_status": "executing",
+  "action": [[0.0, 0.0, 0.0]],
+  "response_text": "当前的位置是微波炉区域",
+  "vpr": {
+    "matched_node_id": "3",
+    "matched_node_name": "微波炉区域",
+    "confidence": 0.5629,
+    "fallback": null
+  },
+  "nav_preserved": {
+    "has_plan": true,
+    "plan_path": ["2", "3", "6", "11"],
+    "current_step": 0,
+    "total_steps": 3,
+    "last_task": "前往C8前台"
+  }
+}
+```
+
+VPR が閾値未満の場合、ハンドラーは top-2 類似ノードを用いて「A と B の中間」として応答します:
+
+```json
+{
+  "response_text": "目前的位置是c8电梯间和c8前台中间",
+  "vpr": {
+    "matched_node_id": null,
+    "fallback": "between_two_nodes",
+    "top1": {"id": "10", "name": "c8电梯间", "sim": 0.3425},
+    "top2": {"id": "11", "name": "c8前台",   "sim": 0.2904}
+  }
+}
+```
+
+### ask_direction レスポンス例
+
+```json
+{
+  "response_text": "您好，您要去 a8 前台，请经过微波炉区域，然后依次经过 c8 打印机、c8 男厕所门口、c8 玻璃门，最后到达实验室门口，再前往 24 号会议室门口即可。",
+  "route": {
+    "start_name": "微波炉区域",
+    "goal_name": "a8前台",
+    "total_steps": 5,
+    "path_names": ["微波炉区域", "c8打印机", "c8男厕所门口", "c8玻璃门", "实验室门口", "24号会议室门口", "a8前台"]
+  },
+  "nav_preserved": {"has_plan": true, "current_step": 1, "total_steps": 3, "last_task": "前往C8前台"}
+}
+```
+
+経路説明文は Qwen3.5-0.8B で整形されます。LLM 失敗時はハンドラーが文字列テンプレートにフォールバックします。
+
+### 中断下でのナビゲーション継続性
+
+ask_location / ask_direction ハンドラーは `nav_state.plan` / `current_step_idx` / `last_task` を**変更しない**ため:
+
+| フレーム | task | 動作 |
+|----------|------|------|
+| 0 | `"前往C8前台"` | ナビゲーション開始、プラン構築 |
+| 1..N-1 | `null` | `last_task` を再利用、継続 |
+| K | `"现在在什么位置"` | 現在位置を応答、`nav_state` は変更なし |
+| K+1 | `null` | 保存されたステップから継続、phase=verifying |
+| M | `"去 X 怎么走"` | 経路を応答、`nav_state` は変更なし |
+| M+1 | `null` | 元のプランを継続 |
+
+レスポンス内の `nav_preserved` ブロックにより、UI 側で元のナビゲーションタスクがまだアクティブであることを確認できます。
+
+---
+
 ## 🛰️ オンライン能動建図 (online_mapper)
 
 オンライン能動建図モジュール (`online_mapper/`) は、ロボット走行中のストリーミングフレームに対して、フレームごとに geometry → VPR → ループ → プレートスキャン → KF トリガー → 分類 → ノード生成を実行し、`merged_labeled_data/` スキーマを生成します。
@@ -233,18 +323,23 @@ camera_3またはcamera_4（後方向き）がマッチングに成功した場�
 完全な online_mapper 設計ドキュメント: **[`docs/online_mapper.md`](docs/online_mapper.md)** (v2.3.0, 12 章)
 online_mapper イテレーション履歴 (v2.1.0 → v2.3.0): [`docs/online_mapper.md` §10](docs/online_mapper.md). 初期 r1→r6 メトリクス: **[`online_mapper/RESULTS.md`](online_mapper/RESULTS.md)**
 
-### 🔌 WebSocket デュアルモード
+### 🌐 WebSocket デュアルモードアクセス
 
-`deploy/ws_proxy_with_memory.py` はナビゲーションとオンライン建図の**両モード**をサポートします:
+`deploy/ws_proxy_with_memory.py` はポート **9528** で待機し、単一接続で**2 つのモード**をサポートします。すべてのリクエストは同じ形式 `{id, task, pts, images}` を保持し、`task` フィールドがモード切替を駆動します:
 
-| 項目 | 説明 |
-|---|---|
-| **ポート** | 9528 で待機 |
-| **デフォルトモード** | `session_state['mode']` は `nav` |
-| **マッピング切替コマンド** | `start_mapping` / `stop_mapping` / `mapping_status` (クライアントが明示的に切替) |
-| **成果物保存先** | `deploy/logs/mapping_output/session_{ts}_{cid}/` |
-| **自動 finalize** | 切断時に自動で `finalize` を呼び出し、frame-tmp を自動クリーンアップ |
-| **モデル共有** | SelaVPR モデルを両モード間で共有 |
+| `task` の値 | 動作 |
+|-------------|------|
+| `"mapping"` | マッピングモードに入る / 継続。初回フレームで `MappingSession` を自動作成し、以降のフレームを `OnlineMapperCore` にフィード |
+| `"stop_mapping"` | `finalize` + 可視化をトリガーし、サマリーを返してナビに戻る |
+| その他 (ナビゲーション / `null` / ask-location / ask-direction) | 記憶ナビゲーションを実行。マッピング中だった場合は自動で finalize してからナビに戻る |
+
+制御コマンド (`{"command": "..."}`) は**状態照会用のみ**残されています: `mapping_status` / `memory_status` / `session_status` / `reset` / `reset_memory` / `toggle_memory`。
+
+マッピングモードでは各 `{id, task:"mapping", pts, images: {camera_1..4}}` フレームが `process_mapping_frame` → `OnlineMapperCore.process_frame` を経由し、`finalize` 時にフラッシュされます。SelaVPR 抽出器は `MemoryNavigator.extractor` 経由でナビ・マッピング両モードで**共有**され、二重ロードを回避します。
+
+- 成果物保存先: `deploy/logs/mapping_output/session_{ts}_{client_id}/`（`online_mapper/output/` とは別、後者は `run_online_map.py` ベースライン用）
+- 一時フレームディレクトリ: `deploy/logs/mapping_frames/session_*/`、finalize 時に自動クリーンアップ
+- クライアント切断時はアクティブなセッションを自動 finalize してデータを保持
 
 ---
 
@@ -258,9 +353,20 @@ pip install -e .
 
 # 記憶構築
 bash deploy/build_memory.sh
+```
 
-# サービス起動
+### ナビゲーションサービス起動
+
+```bash
+# 1. Qwen3.5-9B vLLM 起動 (フォールバックグラウンディング + マッピング命名)
+bash deploy/start_qwen_vllm.sh 1 8199
+
+# 2. Qwen3.5-0.8B vLLM 起動 (意図分類 + 経路ナレーション)
+bash deploy/start_qwen08_vllm.sh 0 8198
+
+# 3. メインサービス起動 (deploy/vpr_config.yaml を自動読み込み)
 python deploy/ws_proxy_with_memory.py
+# または: bash deploy/start_server.sh
 ```
 
 ---
@@ -321,25 +427,41 @@ python deploy/ws_proxy_with_memory.py
 | `memory_status` | 記憶ナビ詳細（利用可能な目的地一覧含む） |
 | `reset_memory` | 記憶状態のみリセット（Agent履歴保持） |
 | `session_status` | セッション状態表示 |
-| `start_mapping` / `stop_mapping` / `mapping_status` | オンライン建図モードの開始 / 停止 / 状態確認 |
 
 ---
 
 ## 🧪 テスト
 
-統合テストスクリプト `tests/test_memory_ws.py` は `--mode` フラグでナビゲーション / マッピング両モードを検証できます:
-
 ```bash
-# デフォルト nav モード
-python tests/test_memory_ws.py
+python -m pytest tests/unit_test/test_basic.py -v
 
-# マッピング全量再生
+# ナビゲーション再生 (デフォルト): 初回フレームは完全な TASK を送信、
+# 以降のフレームは task=None を送信 (サーバーは last_task を再利用)。
+# シーケンスに沿って 3 回の ask_* 中断を均等に注入し、元のナビ状態が
+# 保持されることを検証する。
+python tests/test_memory_ws.py
+python tests/test_memory_ws.py --mode nav
+
+# マッピング再生 — 自動で task="mapping" → 全フレームをフィード → task="stop_mapping"、
+# トポロジー / キーフレーム / ドアプレート / 実行時間の内訳 + 成果物パスを出力
 python tests/test_memory_ws.py --mode mapping
 ```
 
 ---
 
 ## 📋 更新履歴
+
+### v2.5.0
+
+- **🎯 意図分類ルーティング**: Qwen3.5-0.8B vLLM による新 `IntentClassifier`。すべての `task` を navigate / ask_location / ask_direction に自動分類、1 回あたり約 50 ms
+  - バックエンド優先順位: Qwen3.5-0.8B (8198) → Qwen3.5-9B (8199) フォールバック → キーワードルールフォールバック
+  - 新ランチャー `deploy/start_qwen08_vllm.sh` (GPU 0, メモリ使用量約 4.6 GB)
+- **📍 現在位置の問い合わせ (`handle_ask_location`)**: 「今どこ？」「現在位置は？」のような質問に対し VPR のみ実行し、`response_text="当前的位置是 X"` を返却。VPR 類似度が低い場合は top-2 最近接ノードを用いて「A と B の中間」を返答
+- **🧭 道案内 (`handle_ask_direction`)**: VPR で現在位置取得 + `find_destination` で目的地特定 + `plan_navigation` で経路計画後、Qwen3.5-0.8B が経路を自然な中国語文として整形 (テンプレートフォールバックあり)
+- **🔁 ナビゲーション継続性**: ask_location / ask_direction は `nav_state` / `session_state['last_task']` を一切変更しない。クライアントは次フレームで `task=None` を送信するだけで元のプランをシームレスに再開可能
+- **🎛️ 閾値チューニング**: VPR `similarity_threshold.selavpr` 0.60 → **0.56**、`VPR_ARRIVE_THRESHOLD` 0.70 → **0.68**。テストセットで 48/49 フレーム VPR ヒット + 初めて完全なナビゲーション完了を達成
+- **🧪 test_memory_ws.py 強化**: 初回フレームで完全な TASK を送信、以降のフレームは `task=None` (サーバーが `last_task` を再利用)。3 回の ask_* 中断をシーケンスに沿って均等に注入し、`nav_preserved` が 100% 維持されることを検証
+- **🐛 バグ修正**: `process_inference_with_memory` 内のローカル `import math` がモジュールレベルのインポートをシャドーイングしていた問題を修正
 
 ### v2.3.0
 

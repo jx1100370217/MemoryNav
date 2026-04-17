@@ -611,9 +611,11 @@ huggingface-cli download depth-anything/Depth-Anything-V2-Small-hf \
 huggingface-cli download IDEA-Research/grounding-dino-base \
   --local-dir pretrained/grounding-dino-base
 
-# 4. 启 Qwen vLLM (在 GPU1 后台)
-CUDA_VISIBLE_DEVICES=1 python -m vllm.entrypoints.openai.api_server \
-  --model Qwen/Qwen3.5-9B --port 8199 --max-model-len 4096 &
+# 4. 启 Qwen3.5-9B vLLM (GPU 1, 端口 8199, 命名 / 兜底打点)
+./deploy/start_qwen_vllm.sh 1 8199
+
+# 5. 启 Qwen3.5-0.8B vLLM (GPU 0, 端口 8198, 意图分类 + 路径叙述, 仅 ws_proxy nav 分支使用)
+./deploy/start_qwen08_vllm.sh 0 8198
 ```
 
 ### 9.2 端到端建图 (CLI)
@@ -631,13 +633,13 @@ CUDA_VISIBLE_DEVICES=0 python online_mapper/run_online_map.py \
 
 ### 9.2.x WebSocket 建图模式 (双模式 ws_proxy)
 
-`deploy/ws_proxy_with_memory.py` 同时承载**导航 (nav)** 和**建图 (mapping)** 两种模式, 通过 `session_state['mode']` 路由:
+`deploy/ws_proxy_with_memory.py` 同时承载**导航 (nav)** 和**建图 (mapping)** 两种模式, 通过 `session_state['mode']` 路由。所有请求保持统一形状 `{id, task, pts, images}`, 由 `task` 字段驱动模式切换:
 
-- 默认 `mode='nav'`, 走原有记忆导航三层策略.
-- 客户端发送 `{"command": "start_mapping"}` 切到 `mode='mapping'`, 创建独立 `MappingSession`.
-- 之后每帧 `{id, pts, images: {camera_1..4}}` 走 `process_mapping_frame` → `OnlineMapperCore.process_frame`.
-- 发送 `{"command": "stop_mapping"}` 触发 `finalize` + 可视化, 切回 nav.
-- 还支持 `{"command": "mapping_status"}` 查询当前进度.
+- 默认 `mode='nav'`, 走记忆导航三层策略 + 意图分类路由 (导航 / 询问位置 / 要求指路).
+- 发送 `task="mapping"` 进入建图模式: 首帧服务端自动创建独立 `MappingSession`, 之后每帧喂入 `OnlineMapperCore.process_frame`.
+- 发送 `task="stop_mapping"` 触发 `finalize` + 可视化, 返回 summary, 切回 nav (请求仍带 images, 服务端不消费).
+- 当 client 在 mapping 模式下发送其他 task 值 (包括导航指令), 服务端自动 `finalize` 当前 session 然后切回 nav.
+- `{"command": "mapping_status"}` 查询当前 session 进度 (不驱动模式切换, 仅查询).
 
 关键实现要点 (踩过的坑):
 

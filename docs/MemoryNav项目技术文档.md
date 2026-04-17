@@ -1,6 +1,6 @@
 # MemoryNav 项目技术文档
 
-> **版本**: v2.4.0 — offline_mapper 并入 online_mapper, ws_proxy 双模式接入, 截止 2026-04-14
+> **版本**: v2.5.0 — 意图分类路由 + 询问位置 / 要求指路能力, 截止 2026-04-17
 >
 > **代码根**: `/home/ubuntu/Disk/codes/jianxiong/MemoryNav/`
 
@@ -24,6 +24,7 @@
   - [3.11 坐标转换](#311-坐标转换)
   - [3.12 鱼眼去畸变](#312-鱼眼去畸变)
   - [3.13 WebSocket 服务](#313-websocket-服务)
+  - [3.14 意图分类与询问位置 / 要求指路](#314-意图分类与询问位置--要求指路)
 - [4. 在线建图系统](#4-在线建图系统)
   - [4.1 系统总览](#41-系统总览)
   - [4.2 几何层](#42-几何层)
@@ -49,6 +50,8 @@ MemoryNav 是一套**纯视觉记忆导航系统**，让机器人能够：
 1. **记住去过的地方**（离线/在线建图 → 语义拓扑图）
 2. **认出当前位置**（VPR 视觉位置识别）
 3. **规划并执行导航**（最短路径 + 子图匹配 + 兜底打点）
+4. **理解并区分三类指令**（导航 / 询问当前位置 / 要求指路），通过 Qwen3.5-0.8B 意图分类自动路由
+5. **在导航过程中被打断后平滑恢复**（询问 / 指路仅用 VPR + LLM 回答，不触碰未完成的导航状态）
 
 整个系统不依赖 GPS、激光雷达或任何外部定位硬件，**只用 4 个鱼眼相机 + 1 个前置相机**的图像完成全部感知和导航。
 
@@ -66,6 +69,7 @@ MemoryNav 是一套**纯视觉记忆导航系统**，让机器人能够：
 | GPU 0 | SelaVPR++ (DINOv2-large) | VPR 特征提取 |
 | GPU 0 | DINOv3 (ViT-B/16) | 子图匹配 |
 | GPU 0 | YOLOv8n | 遮挡检测 |
+| GPU 0 | Qwen3.5-0.8B (vLLM) | 意图分类 + 指路文本叙述 |
 | GPU 1 | Qwen3.5-9B (vLLM) | 兜底打点 + 在线建图命名 |
 
 ---
@@ -96,11 +100,12 @@ MemoryNav/
 │   └── megaloc_model.py              # MegaLoc 网络定义
 │
 ├── deploy/                           # 部署服务
-│   ├── ws_proxy_with_memory.py       # WebSocket 主服务 (端口 9528, 2085 行)
-│   ├── ws_client.py                  # WebSocket 客户端 (765 行)
-│   ├── vpr_config.yaml               # VPR 统一配置
+│   ├── ws_proxy_with_memory.py       # WebSocket 主服务 (端口 9528, 含意图路由)
+│   ├── ws_client.py                  # WebSocket 客户端
+│   ├── vpr_config.yaml               # VPR 统一配置 (selavpr 阈值 0.56)
 │   ├── build_memory.sh               # 记忆构建脚本
-│   ├── start_qwen_vllm.sh            # Qwen3.5 vLLM 启动脚本
+│   ├── start_qwen_vllm.sh            # Qwen3.5-9B vLLM 启动脚本 (GPU 1, 端口 8199)
+│   ├── start_qwen08_vllm.sh          # Qwen3.5-0.8B vLLM 启动脚本 (GPU 0, 端口 8198)
 │   ├── start_server.sh               # 服务启动脚本
 │   └── logs/                         # 日志 + 可视化图像
 │
@@ -163,7 +168,7 @@ MemoryNav/
 ```
                          ┌──────────────────────────────────┐
                          │    merged_labeled_data/           │
-                         │    (44个节点, 每节点4张相机图      │
+                         │    (N 个节点, 每节点4张相机图      │
                          │     + crops子图 + JSON元数据)      │
                          └───────────────┬──────────────────┘
                                          │ MemoryBuilder
@@ -174,35 +179,60 @@ MemoryNav/
                          └───────────────┬──────────────────┘
                                          │ pickle 缓存
                                          ▼
-┌──────────┐  WebSocket   ┌──────────────────────────────────┐
-│ 机器人端  │ ──请求──→   │  ws_proxy_with_memory.py          │
-│ (4鱼眼+   │             │  ┌────────────────────────────┐  │
-│  front_1) │  ←响应──    │  │ MemoryNavigator            │  │
-└──────────┘             │  │  ├─ VPR 定位 (SelaVPR++)    │  │
-                         │  │  ├─ 路径规划 (NetworkX)     │  │
-                         │  │  ├─ 子图匹配 (DINOv3)      │  │
-                         │  │  ├─ 遮挡检测 (YOLOv8n)     │  │
-                         │  │  ├─ Qwen3.5 兜底打点        │  │
-                         │  │  └─ 坐标转换 → action       │  │
-                         │  └────────────────────────────┘  │
-                         └──────────────────────────────────┘
+┌──────────┐  WebSocket   ┌─────────────────────────────────────────┐
+│ 机器人端  │ ──请求──→   │  ws_proxy_with_memory.py (port 9528)     │
+│ (4鱼眼+   │             │  ┌───────────────────────────────────┐  │
+│  front_1) │  ←响应──    │  │ IntentClassifier (Qwen3.5-0.8B)    │  │
+└──────────┘             │  │ navigate / ask_location /          │  │
+                         │  │ ask_direction 三分类               │  │
+                         │  └─────┬───────┬───────────────┬─────┘  │
+                         │  ┌─────▼───┐ ┌─▼────────────┐ ┌▼──────┐ │
+                         │  │MemoryNav│ │handle_ask_   │ │handle_│ │
+                         │  │igator   │ │location      │ │ask_   │ │
+                         │  │(VPR+子图│ │(VPR → 节点名 │ │direct-│ │
+                         │  │+遮挡+   │ │/ top-2 中间) │ │ion    │ │
+                         │  │Qwen-9B) │ │              │ │(起点+ │ │
+                         │  │         │ │              │ │规划+  │ │
+                         │  │         │ │              │ │LLM叙述│ │
+                         │  └─────────┘ └──────────────┘ └───────┘ │
+                         └─────────────────────────────────────────┘
 ```
 
 每帧请求的处理流程：
 
 ```
 1. 解码图像 (base64 → numpy)
-2. 鱼眼去畸变 (4相机并行 cv2.remap)
-3. VPR 定位 (SelaVPR++ batch 特征提取 → FAISS 循环移位匹配)
-4. 若有活跃导航计划:
-   4a. 子图匹配 (当前步 + lookahead下一步)
-   4b. 帧间相似度缓存判断
-   4c. 遮挡检测 (子图匹配失败时)
-   4d. Qwen3.5 兜底打点 (未遮挡时)
-   4e. 导航决策 (advance/hold/wait/fallback)
-5. 若无活跃计划: 尝试从 task 创建新导航计划
-6. 坐标转换 → 输出 action
+2. 意图分类 (Qwen3.5-0.8B): navigate / ask_location / ask_direction
+3. 特殊控制指令 (STOP, turn left/right, go straight): 直接返回
+
+── navigate 分支 ──
+4. 鱼眼去畸变 (4 相机并行 cv2.remap)
+5. VPR 定位 (SelaVPR++ batch 特征提取 → FAISS 循环移位匹配)
+6. 若有活跃导航计划:
+   6a. 子图匹配 (当前步 + lookahead 下一步)
+   6b. 帧间相似度缓存判断
+   6c. 遮挡检测 (子图匹配失败时)
+   6d. Qwen3.5-9B 兜底打点 (未遮挡时)
+   6e. 导航决策 (advance/hold/wait/fallback)
+7. 若无活跃计划: 尝试从 task 创建新导航计划
+8. 坐标转换 → 输出 action
+
+── ask_location 分支 ──
+4. VPR 定位 (同上)
+5. 命中 (sim ≥ 0.56) → response_text="当前的位置是{节点名}"
+   未命中 → 取 top-2 相似节点: response_text="目前的位置是{A}和{B}中间"
+6. action=[0,0,0], 不修改 nav_state
+
+── ask_direction 分支 ──
+4. VPR 定位 → 起点 (命中 or top-1 兜底)
+5. find_destination(task) → 终点
+6. plan_navigation → 路径节点列表
+7. Qwen3.5-0.8B LLM 叙述 (失败时字符串模板兜底)
+   → response_text="您好，从{起点}出发……最后到达{终点}"
+8. action=[0,0,0], 不修改 nav_state
 ```
+
+**导航任务连续性保证**: ask_location / ask_direction 分支不读写 `nav_state.plan` / `current_step_idx` / `last_task` / `session_state['last_task']`。当下一帧机器人继续发 `task=None` (或原导航 task) 时, 服务端"延用上一次 last_task"并按原计划继续推进。
 
 ### 3.2 数据模型
 
@@ -828,19 +858,20 @@ with ThreadPoolExecutor(max_workers=4) as pool:
 
 ### 3.13 WebSocket 服务
 
-`deploy/ws_proxy_with_memory.py` 是整个系统的运行时入口，2085 行。
+`deploy/ws_proxy_with_memory.py` 是整个系统的运行时入口。
 
 #### 启动流程
 
 ```
 main():
-  1. 读取 vpr_config.yaml
+  1. 读取 vpr_config.yaml (selavpr 阈值 0.56)
   2. 创建 MemoryNavigator (加载 SelaVPR++ / DINOv3 / 等)
   3. 从 merged_labeled_data + pickle 缓存加载记忆图
   4. 初始化 FisheyeUndistorter (从 cam/params.yaml)
   5. 初始化 OcclusionDetector (YOLOv8n)
-  6. 连接 Qwen3.5 vLLM
-  7. 启动 WebSocket 服务 (0.0.0.0:9528)
+  6. 连接 Qwen3.5-9B vLLM (port 8199, 兜底打点)
+  7. 初始化 IntentClassifier: 优先 Qwen3.5-0.8B (port 8198) → 回退 9B → 规则兜底
+  8. 启动 WebSocket 服务 (0.0.0.0:9528)
 ```
 
 #### 导航状态机 (MemoryNavState)
@@ -972,6 +1003,124 @@ process_inference_with_memory():
 | `toggle_memory` | 切换记忆导航开关 |
 | `memory_status` | 查看记忆导航详情 (含可用目的地列表) |
 | `reset_memory` | 仅重置记忆状态 |
+| `mapping_status` | 查看当前建图 session 进度 |
+
+---
+
+### 3.14 意图分类与询问位置 / 要求指路
+
+系统将用户发来的每条 `task` 分为三类, 用独立路径处理:
+
+| 意图 | 触发词示例 | 处理分支 | 响应形态 |
+|------|------------|----------|----------|
+| `navigate` | "前往 C8 前台", "带我到 D 栋大厅", "走到电梯口", "回到起点" | 记忆导航主流程 (3.13) | `action=[x,y,yaw]` + `memory_info` |
+| `ask_location` | "我在哪", "现在在什么位置", "当前位置", "告诉我现在的位置" | `handle_ask_location` | `action=[0,0,0]` + `response_text` |
+| `ask_direction` | "请问前往 D 栋怎么走", "去大堂怎么走", "如何前往 C8", "指路到前台" | `handle_ask_direction` | `action=[0,0,0]` + `response_text` |
+
+特殊控制指令 (`STOP` / `stop` / `turn left` / `turn right` / `go straight`) **不经过意图分类**, 直接进入记忆导航主流程的对应硬编码分支。
+
+#### 3.14.1 IntentClassifier
+
+意图分类器 `IntentClassifier` 三级后端:
+
+1. **Qwen3.5-0.8B** (默认, `http://localhost:8198/v1`) — 轻量纯文本 LLM, 单次推理 ~50ms
+2. **Qwen3.5-9B** (回退, `http://localhost:8199/v1`) — 0.8B 服务不可用时复用兜底打点服务
+3. **规则兜底** (两者均不可用) — 关键词正则匹配:
+   - 含 `怎么走 / 如何(前往|到达|去) / 指路 / 路线` → `ask_direction`
+   - 含 `在哪 / 什么位置 / 当前位置 / 现在在哪` → `ask_location`
+   - 含 `前往 / 去 / 到 / 走到 / 导航 / 带我 / 回(到|去)` → `navigate`
+   - 其余 → `navigate` (默认)
+
+Prompt (zero-shot 三分类, `max_tokens=16`, `temperature=0`):
+
+```
+你是机器人指令意图分类器。将用户的单条指令准确归类为下面三类之一：
+
+1. navigate — 直接命令机器人前往某地(指令式、不含"怎么/如何/怎样")。
+   例: "前往C8前台" / "带我去D栋大厅" / "走到电梯口" / "回到起点"
+
+2. ask_location — 询问当前所在的位置。
+   例: "我在哪" / "现在是什么位置" / "当前位置" / "告诉我现在的位置"
+
+3. ask_direction — 询问去某地的路线/走法/方向（通常含"怎么/如何/怎样/指路/路线"等询问词)。
+   例: "请问前往D栋怎么走" / "去大堂怎么走" / "如何前往C8" / "怎么去A8前台" / "指路到前台"
+
+关键区别: 是否含"怎么/如何/怎样/指路/路线/方向/问一下/请问"这类询问语气。
+
+只输出 navigate / ask_location / ask_direction 其中一个，不要解释、不要标点。
+```
+
+#### 3.14.2 handle_ask_location (询问当前位置)
+
+```
+1. 解码 camera_1~4 + 鱼眼去畸变
+2. navigator.locate_by_images() → (vpr_result, query_features)
+
+   Case A: vpr_result ≠ None (sim ≥ 0.56)
+       response_text = f"当前的位置是{vpr_result.matched_node_name}"
+
+   Case B: vpr_result = None, 但 top-2 最相似节点可算
+       top2 = _top_k_similar_nodes(navigator, query_features, k=2)
+       response_text = f"目前的位置是{top2[0].name}和{top2[1].name}中间"
+
+   Case C: 无 features / graph 空 (极端情况)
+       response_text = "当前位置暂时无法识别"
+
+3. 返回 { action=[0,0,0], response_text, vpr: {matched_node | top1/top2 | null},
+         nav_preserved: {has_plan, plan_path, current_step, total_steps, last_task} | 省略 }
+```
+
+`_top_k_similar_nodes` 遍历 `navigator.graph.nodes` 的每个节点, 调用 `MemoryVPR.get_node_similarity(query_features, node_id)` (无阈值限制), 降序取 top-k。
+
+#### 3.14.3 handle_ask_direction (要求指路)
+
+```
+1. 解码 camera_1~4 + 鱼眼去畸变
+2. VPR 定位起点:
+       Case A: vpr_result ≠ None → start = vpr_result.matched_node
+       Case B: vpr_result = None → start = top-1 最相似节点 (兜底)
+       Case C: 无候选 → "当前位置暂时无法识别，无法为您指路"
+3. navigator.find_destination(task) → goal node (语义匹配, 支持"前往 X 怎么走"的前缀剥离)
+       若 goal = None → "您当前在{start}，但我没有识别出您要去的目的地，请说明具体位置"
+       若 goal.id == start.id → "您当前就在{start}，已到达目的地"
+4. navigator.plan_navigation(goal, start) → NavigationPlan
+       若 !success → "从{start}到{goal}暂时没有可用路线"
+5. 取 plan.path 对应的节点名列表 [start, mid1, ..., goal]
+6. Qwen3.5-0.8B LLM 叙述 (narrate_path):
+       prompt = "你是一个园区/建筑指路助手(场景覆盖室内外)。把下面的最短路径转成一句..."
+       response_text = LLM 输出 (失败时退化为字符串模板 "从{start}出发，依次经过...到达{goal}")
+7. 返回 { action=[0,0,0], response_text,
+         vpr: {matched_node_id, matched_node_name, confidence},
+         route: {start_id/name, goal_id/name, total_steps, path_ids, path_names},
+         nav_preserved: {...} | 省略 }
+```
+
+#### 3.14.4 导航任务连续性
+
+ask_* 两个分支**不修改** `nav_state` 和 `session_state['last_task']`。典型时序:
+
+| 帧 | task | 分支 | 处理 |
+|----|------|------|------|
+| 0 | `"前往C8前台"` | navigate | 建立 plan, 开始导航, `last_task="前往C8前台"` |
+| 1 | `null` | navigate (延用) | 继续推进 step=1/3 |
+| … | … | … | … |
+| N | `"现在在什么位置"` | ask_location | 回复当前位置, **不动 nav_state** |
+| N+1 | `null` | navigate (延用) | 从 step=1/3 继续, phase=verifying |
+| … | … | … | … |
+| M | `"去 A8 前台怎么走"` | ask_direction | 回复路径, **不动 nav_state** |
+| M+1 | `null` | navigate (延用) | 继续原计划 |
+
+响应的 `nav_preserved` 字段 (仅在 `nav_state.plan` 非空时出现) 便于客户端可视化确认导航任务仍然激活:
+
+```json
+"nav_preserved": {
+  "has_plan": true,
+  "plan_path": ["2", "3", "6", "11"],
+  "current_step": 1,
+  "total_steps": 3,
+  "last_task": "前往C8前台"
+}
+```
 
 ---
 
@@ -1646,23 +1795,27 @@ CUDA_VISIBLE_DEVICES=0 python online_mapper/run_online_map.py \
 ### 启动顺序
 
 ```bash
-# 1. 启动 Qwen3.5 vLLM (GPU1, 后台)
+# 1. 启动 Qwen3.5-9B vLLM (GPU 1, 端口 8199, 兜底打点 + 在线建图命名)
 ./deploy/start_qwen_vllm.sh
 
-# 2. 构建/更新记忆缓存 (首次或数据变更后)
+# 2. 启动 Qwen3.5-0.8B vLLM (GPU 0, 端口 8198, 意图分类 + 路径叙述)
+./deploy/start_qwen08_vllm.sh
+
+# 3. 构建/更新记忆缓存 (首次或数据变更后)
 ./deploy/build_memory.sh
 
-# 3. 启动导航服务 (GPU0)
+# 4. 启动导航服务 (ws_proxy_with_memory 在 GPU 1)
 ./deploy/start_server.sh
 # 或直接: python deploy/ws_proxy_with_memory.py
 ```
 
 ### 服务端口
 
-| 端口 | 服务 | 说明 |
-|------|------|------|
-| 9528 | ws_proxy_with_memory.py | 导航 WebSocket 服务 |
-| 8199 | Qwen3.5 vLLM | 打点/命名 HTTP API |
+| 端口 | 服务 | GPU | 说明 |
+|------|------|-----|------|
+| 9528 | ws_proxy_with_memory.py | 1 | 导航 + 建图 + 意图路由 WebSocket 服务 |
+| 8199 | Qwen3.5-9B vLLM | 1 | 打点 / 命名 / 意图分类 fallback HTTP API |
+| 8198 | Qwen3.5-0.8B vLLM | 0 | 意图分类 + 路径叙述 HTTP API |
 
 ### 日志
 
@@ -1678,10 +1831,12 @@ CUDA_VISIBLE_DEVICES=0 python online_mapper/run_online_map.py \
 |------|-----|------|------|
 | SUB_MATCH_CONFIDENCE_THRESHOLD | 0.60 | ws_proxy | 子图匹配成功阈值 |
 | FRAME_SIMILARITY_THRESHOLD | 0.70 | ws_proxy | 帧间缓存复用 DINOv2 相似度阈值 |
-| VPR_ARRIVE_THRESHOLD | 0.70 | ws_proxy | VPR 步骤切换阈值 |
+| VPR_ARRIVE_THRESHOLD | 0.68 | ws_proxy | VPR 步骤切换阈值 (记忆导航 advance) |
 | MAX_MISSES | 8 | ws_proxy | 连续 VPR 丢失上限 |
-| similarity_threshold (selavpr) | 0.60 | vpr_config | SelaVPR++ 匹配阈值 |
+| similarity_threshold (selavpr) | 0.56 | vpr_config | SelaVPR++ 匹配阈值 (VPR locate) |
+| similarity_threshold (megaloc) | 0.60 | vpr_config | MegaLoc 匹配阈值 |
 | similarity_threshold (effovpr) | 0.80 | vpr_config | EffoVPR 匹配阈值 |
+| similarity_threshold (anyloc) | 0.70 | vpr_config | AnyLoc 匹配阈值 |
 | area_threshold | 0.25 | occlusion | 遮挡面积比阈值 (25%) |
 | confidence_threshold | 0.40 | occlusion | YOLOv8n 检测置信度 |
 | early_stop confidence | 0.50 | qwen35 | 子进程模式提前退出 |
@@ -1717,9 +1872,19 @@ CUDA_VISIBLE_DEVICES=0 python online_mapper/run_online_map.py \
 }
 ```
 
-特殊 task 值: `"STOP"` / `"stop"`, `"turn left"`, `"turn right"`, `"go straight"`
+`task` 取值:
 
-命令模式: `{"command": "reset"}` / `{"command": "memory_status"}` 等
+| 类型 | 举例 | 路由 |
+|------|------|------|
+| 导航指令 (中/英) | "前往C8前台" / "带我去D栋" / "go to front desk" | 意图分类 → `navigate` |
+| 询问位置 | "我在哪" / "当前位置" / "现在是什么位置" | 意图分类 → `ask_location` |
+| 要求指路 | "请问前往D栋怎么走" / "去大堂怎么走" | 意图分类 → `ask_direction` |
+| `null` 或 `"None"` | — | 延用 `last_task`, 继续执行 |
+| `"STOP"` / `"stop"` | — | 硬编码: 立即结束, 返回 `task_status="end"` |
+| `"turn left"` / `"turn right"` / `"go straight"` | — | 硬编码: 直接控制 |
+| `"mapping"` / `"stop_mapping"` | — | 建图模式入口 / finalize |
+
+命令模式 (不含图像): `{"command": "reset"}` / `{"command": "memory_status"}` / `{"command": "mapping_status"}` 等
 
 ### 响应格式
 
@@ -1799,4 +1964,86 @@ CUDA_VISIBLE_DEVICES=0 python online_mapper/run_online_map.py \
 特殊情况:
 - 原地等待 (遮挡): `[[0, 0, 0]]`
 - 纯旋转 (侧面相机匹配): `[[0, 0, yaw_rad]]`
+- 询问位置 / 要求指路: `[[0, 0, 0]]` + `response_text`
 - 导航完成: `task_status="end"`
+
+### ask_location 响应示例
+
+```json
+{
+  "status": "success",
+  "id": "robot_001",
+  "pts": 1770097774,
+  "task_status": "executing",
+  "action": [[0.0, 0.0, 0.0]],
+  "response_text": "当前的位置是微波炉区域",
+  "vpr": {
+    "matched_node_id": "3",
+    "matched_node_name": "微波炉区域",
+    "confidence": 0.5629,
+    "similarity": 0.5629,
+    "fallback": null
+  },
+  "memory_active": true,
+  "nav_preserved": {
+    "has_plan": true,
+    "plan_path": ["2", "3", "6", "11"],
+    "current_step": 0,
+    "total_steps": 3,
+    "last_task": "前往C8前台"
+  },
+  "message": "询问当前位置 → 微波炉区域"
+}
+```
+
+当 VPR 未命中阈值时走 top-2 "位于 A 和 B 中间"兜底:
+
+```json
+{
+  "response_text": "目前的位置是c8电梯间和c8前台中间",
+  "vpr": {
+    "matched_node_id": null,
+    "fallback": "between_two_nodes",
+    "top1": {"id": "10", "name": "c8电梯间", "sim": 0.3425},
+    "top2": {"id": "11", "name": "c8前台",   "sim": 0.2904}
+  }
+}
+```
+
+### ask_direction 响应示例
+
+```json
+{
+  "status": "success",
+  "id": "robot_001",
+  "pts": 1770097812,
+  "task_status": "executing",
+  "action": [[0.0, 0.0, 0.0]],
+  "response_text": "您好，您要去 a8 前台，请经过微波炉区域，然后依次经过 c8 打印机、c8 男厕所门口、c8 玻璃门，最后到达实验室门口，再前往 24 号会议室门口即可。",
+  "vpr": {
+    "matched_node_id": "3",
+    "matched_node_name": "微波炉区域",
+    "confidence": 0.7113
+  },
+  "route": {
+    "start_id": "3",
+    "start_name": "微波炉区域",
+    "goal_id": "19",
+    "goal_name": "a8前台",
+    "total_steps": 5,
+    "path_ids":   ["3", "8", "13", "17", "20", "19"],
+    "path_names": ["微波炉区域", "c8打印机", "c8男厕所门口", "c8玻璃门", "实验室门口", "24号会议室门口", "a8前台"]
+  },
+  "memory_active": true,
+  "nav_preserved": {
+    "has_plan": true,
+    "plan_path": ["2", "3", "6", "11"],
+    "current_step": 1,
+    "total_steps": 3,
+    "last_task": "前往C8前台"
+  },
+  "message": "指路: 微波炉区域 → a8前台 (5步)"
+}
+```
+
+`route.path_names` 由 Qwen3.5-0.8B 润色成自然中文句子, 若 LLM 调用失败则退化为模板: `"前往{goal}，请从{start}出发，依次经过{mid1}、{mid2}，最终到达{goal}。"`

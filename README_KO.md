@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-2.5.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.5.0)
+[![Version](https://img.shields.io/badge/Version-2.5.1-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.5.1)
 
 VPR(시각적 장소 인식)과 위상 지도 기반 로봇 기억 내비게이션 시스템
 
@@ -23,9 +23,10 @@ MemoryNav는 이동 로봇을 위한 시각적 기억 내비게이션 시스템�
 
 ### 주요 기능
 
-- **🎯 의도 분류 라우팅** (**v2.5.0 신규**)：Qwen3.5-0.8B vLLM 이 모든 `task` 를 navigate / ask_location / ask_direction 로 자동 분류하고 각 핸들러로 라우팅. 백엔드 우선순위 Qwen3.5-0.8B → Qwen3.5-9B 폴백 → 키워드 룰 폴백
+- **🎯 4 클래스 의도 라우팅** (**v2.5.1**)：Qwen3.5-0.8B vLLM 이 모든 `task` 를 navigate / ask_location / ask_direction / mapping 로 자동 분류하고 각 핸들러로 라우팅. 백엔드 우선순위 Qwen3.5-0.8B → Qwen3.5-9B 폴백 → 키워드 룰 폴백
 - **📍 현재 위치 질의**："현재 위치"·"내가 어디에 있나" 질의에 VPR 만 실행하여 `response_text="当前的位置是 X"` 반환. VPR 임계값 미달 시 유사도 top-2 노드를 "A 와 B 사이" 로 응답
 - **🧭 길 안내 질의**："X 로 어떻게 가나"·"로비로 가는 길" 질의에 VPR 로 출발지 + `find_destination` 으로 목적지 + 최단 경로 계획 후 Qwen3.5-0.8B 가 자연스러운 중국어 경로 안내를 생성
+- **🗺️ 자연어로 온라인 맵핑 트리거**："开始建图" / "启动扫图" / "停止建图" / "完成扫图" 같은 자연어 발화가 자동으로 `MappingSession` 을 시작 / 종료. 하드코딩된 `task="mapping"` / `"stop_mapping"` 은 하위 호환 (LLM 호출 없음)
 - **🔁 중단 후 재개**：ask_location / ask_direction 브랜치는 `nav_state.plan` / `last_task` 를 변경하지 않으므로, 다음 프레임에서 `task=None` 만 보내면 서버가 보존된 상태로 원래 내비게이션을 계속 수행
 - **🗺️ 자동 맵 생성**：3단계 Pipeline(VPR 노드 생성 → 의미 보강 → 연결 생성)으로 이미지 시퀀스에서 위상 내비게이션 그래프를 자동 생성, 수동 어노테이션 불필요
 - **🔍 멀티 스킴 VPR 측위**：4가지 SOTA VPR 방법 지원, 설정 파일 하나로 전환 가능
@@ -216,17 +217,18 @@ camera_3 또는 camera_4(후방 향)가 매칭에 성공한 경우, 전진 동�
 
 ---
 
-## 🎯 의도 분류 + 위치 문의 / 길 안내
+## 🎯 4 클래스 의도 라우팅
 
-기억 내비게이션에 진입하기 전, 서버는 Qwen3.5-0.8B vLLM 으로 모든 요청을 분류하고 `task` 를 세 경로 중 하나로 라우팅합니다.
+기억 내비게이션에 진입하기 전, 서버는 Qwen3.5-0.8B vLLM 으로 모든 요청을 분류하고 `task` 를 네 경로 중 하나로 라우팅합니다.
 
 | 의도 | 예시 트리거 | 핸들러 | 응답 형태 |
 |------|-------------|--------|-----------|
 | `navigate` | "C8 前台 去一下", "D 동으로 데려다줘", "출발 지점 복귀" | 기억 내비게이션 메인 플로우 | `action=[x,y,yaw]` + `memory_info` |
 | `ask_location` | "내가 어디에 있나", "현재 위치", "지금 위치는" | `handle_ask_location` | `action=[0,0,0]` + `response_text` |
 | `ask_direction` | "D 동으로 어떻게 가나", "로비 가는 길" | `handle_ask_direction` | `action=[0,0,0]` + `response_text` |
+| `mapping` | `"mapping"` / `"开始建图"` / `"启动扫图"` / `"停止建图"` / `"完成扫图"` | 매핑 세션 생명주기 (시작/종료는 키워드로 판정) | `mode="mapping"` + `log` / `mapping` 또는 `summary` |
 
-백엔드 우선순위: **Qwen3.5-0.8B (포트 8198)** → Qwen3.5-9B (포트 8199) 폴백 → 키워드 룰 폴백. 분류당 약 50 ms.
+백엔드 우선순위: **Qwen3.5-0.8B (포트 8198)** → Qwen3.5-9B (포트 8199) 폴백 → 키워드 룰 폴백. 분류당 약 50 ms. 17/17 분류 정확도 측정 (매핑 자연어 6 개 포함).
 
 ### ask_location 응답 예시
 
@@ -313,13 +315,13 @@ online_mapper 이터레이션 기록 (r1→r6): **[`online_mapper/RESULTS.md`](o
 
 ### WebSocket 듀얼 모드
 
-`deploy/ws_proxy_with_memory.py` 는 **9528 포트**에서 수신하며, 단일 연결로 **두 가지 모드**를 지원합니다. 모든 요청은 동일한 형태 `{id, task, pts, images}` 를 유지하고, `task` 필드가 모드 전환을 구동합니다.
+`deploy/ws_proxy_with_memory.py` 는 **9528 포트**에서 수신하며, 단일 연결로 **두 가지 모드**를 지원합니다. 모든 요청은 동일한 형태 `{id, task, pts, images}` 를 유지하고, 라우팅은 **4 클래스 의도 라우팅**으로 구동됩니다.
 
-| `task` 값 | 효과 |
-|-----------|------|
-| `"mapping"` | 맵핑 모드 진입 / 유지. 첫 프레임에서 `MappingSession` 자동 생성, 이후 프레임이 `OnlineMapperCore` 에 입력 |
-| `"stop_mapping"` | `finalize` + 시각화 트리거, 요약 반환 후 nav 모드로 복귀 |
-| 그 외 (내비게이션 / `null` / ask-location / ask-direction) | 기억 내비게이션 실행. 세션이 맵핑 중이었다면 먼저 자동 finalize 후 nav 모드로 전환 |
+| `task` 값 | 의도 | 효과 |
+|-----------|------|------|
+| `"mapping"` / `"开始建图"` / `"启动扫图"` … | `mapping` (시작) | 맵핑 모드 진입 / 유지. 첫 프레임에서 `MappingSession` 자동 생성, 이후 프레임이 `OnlineMapperCore` 에 입력 |
+| `"stop_mapping"` / `"停止建图"` / `"完成扫图"` … | `mapping` (종료) | `finalize` + 시각화 트리거, 요약 반환 후 nav 모드로 복귀 |
+| 내비게이션 / ask-location / ask-direction | `navigate` / `ask_location` / `ask_direction` | 기억 내비게이션 실행. 세션이 맵핑 중이었다면 먼저 자동 finalize 후 nav 모드로 전환 |
 
 제어 명령(`{"command": "..."}`)은 상태 조회 전용으로만 유지됩니다: `mapping_status` / `memory_status` / `session_status` / `reset` / `reset_memory` / `toggle_memory`.
 
@@ -435,6 +437,15 @@ python tests/test_memory_ws.py --mode mapping
 ---
 
 ## 📋 업데이트 로그
+
+### v2.5.1
+
+- **🗺️ 온라인 맵핑을 4 번째 의도 클래스로 승격**: 의도 분류를 3 → 4 클래스로 확장 (navigate / ask_location / ask_direction / **mapping**)
+  - "开始建图" / "启动扫图" / "请开始建图" 같은 자연어 발화가 자동으로 `MappingSession` 생성
+  - "停止建图" / "结束建图" / "完成扫图" 같은 자연어 발화가 자동으로 `finalize` 트리거
+  - 하드코딩된 `task="mapping"` / `task="stop_mapping"` 은 하위 호환 (LLM 호출 0)
+  - 4 클래스 의도 분류 테스트 셋에서 17/17 분류 정확도 측정
+- **🔧 `handle_client` 통합 디스패치**: 의도 분류를 `process_inference_with_memory` 에서 `handle_client` 최상단으로 올려 intent 값으로 직접 라우팅; `process_inference_with_memory` 에 `intent` 매개변수를 추가하여 중복 분류 방지
 
 ### v2.5.0
 

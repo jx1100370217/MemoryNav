@@ -1,6 +1,6 @@
 # MemoryNav 项目技术文档
 
-> **版本**: v2.5.0 — 意图分类路由 + 询问位置 / 要求指路能力, 截止 2026-04-17
+> **版本**: v2.5.1 — 意图分类扩展为 4 类 (navigate / ask_location / ask_direction / mapping), 截止 2026-04-17
 >
 > **代码根**: `/home/ubuntu/Disk/codes/jianxiong/MemoryNav/`
 
@@ -50,7 +50,7 @@ MemoryNav 是一套**纯视觉记忆导航系统**，让机器人能够：
 1. **记住去过的地方**（离线/在线建图 → 语义拓扑图）
 2. **认出当前位置**（VPR 视觉位置识别）
 3. **规划并执行导航**（最短路径 + 子图匹配 + 兜底打点）
-4. **理解并区分三类指令**（导航 / 询问当前位置 / 要求指路），通过 Qwen3.5-0.8B 意图分类自动路由
+4. **理解并区分四类指令**（导航 / 询问当前位置 / 要求指路 / 在线建图），通过 Qwen3.5-0.8B 意图分类自动路由
 5. **在导航过程中被打断后平滑恢复**（询问 / 指路仅用 VPR + LLM 回答，不触碰未完成的导航状态）
 
 整个系统不依赖 GPS、激光雷达或任何外部定位硬件，**只用 4 个鱼眼相机 + 1 个前置相机**的图像完成全部感知和导航。
@@ -1007,17 +1007,24 @@ process_inference_with_memory():
 
 ---
 
-### 3.14 意图分类与询问位置 / 要求指路
+### 3.14 意图分类与四类 task 路由
 
-系统将用户发来的每条 `task` 分为三类, 用独立路径处理:
+系统将用户发来的每条 `task` 分为四类, 每类走独立处理路径:
 
 | 意图 | 触发词示例 | 处理分支 | 响应形态 |
 |------|------------|----------|----------|
 | `navigate` | "前往 C8 前台", "带我到 D 栋大厅", "走到电梯口", "回到起点" | 记忆导航主流程 (3.13) | `action=[x,y,yaw]` + `memory_info` |
 | `ask_location` | "我在哪", "现在在什么位置", "当前位置", "告诉我现在的位置" | `handle_ask_location` | `action=[0,0,0]` + `response_text` |
 | `ask_direction` | "请问前往 D 栋怎么走", "去大堂怎么走", "如何前往 C8", "指路到前台" | `handle_ask_direction` | `action=[0,0,0]` + `response_text` |
+| `mapping` | "开始建图", "启动扫图", "请开始建图", "停止建图", "结束建图", "完成扫图", 或硬编码 `mapping` / `stop_mapping` | 建图会话生命周期 (4-5 章) | `mode="mapping"` + `log` + `mapping` 或 `summary` |
 
-特殊控制指令 (`STOP` / `stop` / `turn left` / `turn right` / `go straight`) **不经过意图分类**, 直接进入记忆导航主流程的对应硬编码分支。
+分类路由在 `handle_client` 层完成, 四类意图分别派发到 `handle_ask_location` / `handle_ask_direction` / `process_inference_with_memory`(navigate) / `process_mapping_frame`+`MappingSession.finalize`(mapping)。
+
+`mapping` 意图命中后, `handle_client` 再用关键词二次判断是 start 还是 stop:
+- 含 `停止 / 结束 / 完成 / 终止 / 关闭 / stop / finish / end` 或硬编码 `task=="stop_mapping"` → **stop_mapping** (调用 `mapping_session.finalize` 并切回 nav)
+- 其他 (含 `开始 / 启动 / 开启 / start / begin` 或裸 `"建图"`/`"mapping"`) → **start/continue mapping** (首次自动创建 `MappingSession`, 每帧喂入 `OnlineMapperCore.process_frame`)
+
+特殊控制指令 (`STOP` / `stop` / `turn left` / `turn right` / `go straight`) 和空 task (`null` / `"None"` / `"none"`) **不经过意图分类**, 直接按 navigate 分支处理 (空 task 时延用 `last_task`)。
 
 #### 3.14.1 IntentClassifier
 
@@ -1031,10 +1038,10 @@ process_inference_with_memory():
    - 含 `前往 / 去 / 到 / 走到 / 导航 / 带我 / 回(到|去)` → `navigate`
    - 其余 → `navigate` (默认)
 
-Prompt (zero-shot 三分类, `max_tokens=16`, `temperature=0`):
+Prompt (zero-shot 四分类, `max_tokens=16`, `temperature=0`):
 
 ```
-你是机器人指令意图分类器。将用户的单条指令准确归类为下面三类之一：
+你是机器人指令意图分类器。将用户的单条指令准确归类为下面四类之一：
 
 1. navigate — 直接命令机器人前往某地(指令式、不含"怎么/如何/怎样")。
    例: "前往C8前台" / "带我去D栋大厅" / "走到电梯口" / "回到起点"
@@ -1045,10 +1052,19 @@ Prompt (zero-shot 三分类, `max_tokens=16`, `temperature=0`):
 3. ask_direction — 询问去某地的路线/走法/方向（通常含"怎么/如何/怎样/指路/路线"等询问词)。
    例: "请问前往D栋怎么走" / "去大堂怎么走" / "如何前往C8" / "怎么去A8前台" / "指路到前台"
 
-关键区别: 是否含"怎么/如何/怎样/指路/路线/方向/问一下/请问"这类询问语气。
+4. mapping — 涉及"在线建图/扫图/录制地图/结束建图"等建图生命周期的指令。
+   例(开始): "开始建图" / "启动建图" / "开始扫图" / "开始录制地图" / "请开始建图" / "mapping"
+   例(结束): "结束建图" / "停止建图" / "完成建图" / "停止扫图" / "结束录制" / "stop mapping"
 
-只输出 navigate / ask_location / ask_direction 其中一个，不要解释、不要标点。
+关键区分:
+- 含"建图/扫图/录制地图/mapping"等建图词汇 → mapping
+- 其余含"怎么/如何/怎样/指路/路线/方向/问一下/请问"询问语气 → ask_direction
+- 不含以上且是命令 → navigate；含"哪/位置"询问 → ask_location
+
+只输出 navigate / ask_location / ask_direction / mapping 其中一个，不要解释、不要标点。
 ```
+
+实测 17/17 用例分类准确 (含 6 个 mapping 自然语言指令)。
 
 #### 3.14.2 handle_ask_location (询问当前位置)
 
@@ -1643,17 +1659,20 @@ CUDA_VISIBLE_DEVICES=0 python online_mapper/run_online_map.py \
 
 ## 5. WebSocket 建图模式 (ws_proxy 双模式接入)
 
-`deploy/ws_proxy_with_memory.py` 在 9528 端口同时承载**导航 (nav)** 与**建图 (mapping)** 两种模式, 每 client 独立 `session_state['mode']`, 默认 `nav`.
+`deploy/ws_proxy_with_memory.py` 在 9528 端口同时承载**导航 (nav)** 与**建图 (mapping)** 两种模式, 每 client 独立 `session_state['mode']`, 默认 `nav`. 模式切换由 3.14 的四类意图分类 (`mapping` 类) 驱动。
 
 ### 5.1 命令协议
 
 **所有请求保持统一形状** `{id, task, pts, images}`, 服务端按 `task` 字段分流:
 
-| `task` 值 | 作用 |
-|---|---|
-| `"mapping"` | 进入 / 保持建图模式. 第一帧服务端自动创建 `MappingSession`, 之后每帧喂入 `OnlineMapperCore` |
-| `"stop_mapping"` | 触发 `finalize` + 可视化, 返回 `summary`, 切回 `nav` (请求仍带 images, 服务端 ignore) |
-| 其他 (含 `None` / 导航指令) | 走记忆导航. 若之前处于 mapping, 自动 `finalize` 后再切回 nav |
+| `task` 值 | 意图分类结果 | 作用 |
+|---|---|---|
+| `"mapping"` | `mapping` (硬编码, 绕 LLM) | 进入 / 保持建图模式. 第一帧服务端自动创建 `MappingSession`, 之后每帧喂入 `OnlineMapperCore` |
+| `"stop_mapping"` | `mapping` (硬编码) | 触发 `finalize` + 可视化, 返回 `summary`, 切回 `nav` |
+| `"开始建图"` / `"启动扫图"` / `"请开始建图"` … | `mapping` → start (关键词) | 等价于 `"mapping"`, 由 Qwen3.5-0.8B 自然语言识别后路由 |
+| `"停止建图"` / `"结束建图"` / `"完成扫图"` … | `mapping` → stop (关键词) | 等价于 `"stop_mapping"` |
+| 导航 / 询问位置 / 指路 | `navigate` / `ask_location` / `ask_direction` | 走记忆导航主流程. 若之前处于 mapping, 自动 `finalize` 后再切回 nav |
+| `null` / `"None"` | 按 navigate 处理 | 延用 `last_task` 继续导航 |
 
 控制命令(`{"command": "..."}`)仅保留**状态查询类**,不再承担模式切换:
 

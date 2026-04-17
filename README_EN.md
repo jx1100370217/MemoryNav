@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-2.5.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.5.0)
+[![Version](https://img.shields.io/badge/Version-2.5.1-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.5.1)
 
 A robot memory navigation system based on Visual Place Recognition (VPR) and topological maps
 
@@ -23,9 +23,10 @@ MemoryNav is a visual memory navigation system for mobile robots. It collects im
 
 ### Key Capabilities
 
-- **🎯 Intent Classification Routing** (**new in v2.5.0**): Qwen3.5-0.8B vLLM auto-classifies every `task` into `navigate` / `ask_location` / `ask_direction`, each with its own handler; backend priority Qwen3.5-0.8B → Qwen3.5-9B fallback → keyword-rule fallback
+- **🎯 Four-Class Intent Routing** (**v2.5.1**): Qwen3.5-0.8B vLLM auto-classifies every `task` into `navigate` / `ask_location` / `ask_direction` / `mapping`, each with its own handler; backend priority Qwen3.5-0.8B → Qwen3.5-9B fallback → keyword-rule fallback
 - **📍 Ask Current Location**: On "where am I" / "current location" queries, runs VPR only and returns `response_text="You are at X"`; if VPR is below the threshold, replies with the top-2 most similar nodes as "between A and B"
 - **🧭 Ask Direction**: On "how do I get to X" queries, derives the start via VPR + goal via `find_destination` + shortest path planning, then asks Qwen3.5-0.8B to narrate the route as a natural Chinese reply
+- **🗺️ Natural-language Mapping Trigger**: Natural utterances like "开始建图" / "启动扫图" / "停止建图" / "完成扫图" start or finalize a `MappingSession` automatically; hardcoded `task="mapping"` / `"stop_mapping"` remain backward-compatible (no LLM call)
 - **🔁 Resumable Interrupts**: Ask-location and ask-direction branches **do not** mutate `nav_state.plan` / `last_task`; the client can send `task=None` the next frame and the server will continue the original navigation from the preserved state
 - **🛰️ Online active mapping** (`online_mapper/`): Three-layer architecture (Geometry + Topology + Semantics) for streaming online mapping, with category whitelist, multi-frame hallucination voting, co-location merging, real VO, loop closure verification, bilingual naming, and spatial-KNN neighbour rebuild. Produces `merged_labeled_data/` schema. See [`docs/online_mapper.md`](docs/online_mapper.md) for the full design.
 - **🔍 Multi-scheme VPR Localization**: Supports 4 SOTA VPR methods, switchable via a single config file
@@ -315,13 +316,13 @@ Full `online_mapper` design doc: **[`docs/online_mapper.md`](docs/online_mapper.
 
 ### 🌐 WebSocket Dual-Mode Access
 
-`deploy/ws_proxy_with_memory.py` listens on port **9528** and supports **two modes** through a single connection. All requests keep the same shape `{id, task, pts, images}`; the `task` field drives the mode switch:
+`deploy/ws_proxy_with_memory.py` listens on port **9528** and supports **two modes** through a single connection. All requests keep the same shape `{id, task, pts, images}`; routing is driven by **four-class intent classification**:
 
-| `task` value | Effect |
-|-------------|--------|
-| `"mapping"` | Enter / stay in mapping mode; the first frame auto-creates a `MappingSession`, subsequent frames feed `OnlineMapperCore` |
-| `"stop_mapping"` | Trigger `finalize` + visualization, return the summary, and switch back to nav |
-| any other (navigation / `null` / ask-location / ask-direction) | Run memory navigation; if the session was in mapping, auto-finalize first then switch back to nav |
+| `task` value | Intent | Effect |
+|-------------|--------|--------|
+| `"mapping"` / `"开始建图"` / `"启动扫图"` … | `mapping` (start) | Enter / stay in mapping mode; first frame auto-creates `MappingSession`, subsequent frames feed `OnlineMapperCore` |
+| `"stop_mapping"` / `"停止建图"` / `"完成扫图"` … | `mapping` (stop) | Trigger `finalize` + visualization, return the summary, and switch back to nav |
+| navigation / ask-location / ask-direction | `navigate` / `ask_location` / `ask_direction` | Run memory navigation main flow; if the session was in mapping, auto-finalize first then switch back to nav |
 
 Control commands (`{"command": "..."}`) are kept for status queries only: `mapping_status` / `memory_status` / `session_status` / `reset` / `reset_memory` / `toggle_memory`.
 
@@ -333,17 +334,18 @@ In mapping mode, each `{id, task:"mapping", pts, images: {camera_1..4}}` frame i
 
 ---
 
-## 🎯 Intent Classification + Ask Location / Ask Direction
+## 🎯 Four-Class Intent Routing
 
-Before entering memory navigation, the server classifies every request via Qwen3.5-0.8B vLLM and routes `task` along one of three paths:
+The server classifies every request via Qwen3.5-0.8B vLLM at the front of the pipeline and routes `task` along one of four paths:
 
 | Intent | Example triggers | Handler | Response shape |
 |--------|------------------|---------|----------------|
 | `navigate` | "go to C8 reception", "take me to D building", "return to start" | memory navigation main flow | `action=[x,y,yaw]` + `memory_info` |
 | `ask_location` | "where am I", "current location", "what position now" | `handle_ask_location` | `action=[0,0,0]` + `response_text` |
 | `ask_direction` | "how do I get to D building", "how to reach the lobby" | `handle_ask_direction` | `action=[0,0,0]` + `response_text` |
+| `mapping` | "开始建图", "启动扫图", "停止建图", "完成扫图", or hardcoded `mapping` / `stop_mapping` | mapping session lifecycle (start/stop decided by keywords) | `mode="mapping"` + `log` / `mapping` or `summary` |
 
-Backend priority: **Qwen3.5-0.8B (port 8198)** → Qwen3.5-9B (port 8199) fallback → keyword-rule fallback. ~50 ms per classification.
+Backend priority: **Qwen3.5-0.8B (port 8198)** → Qwen3.5-9B (port 8199) fallback → keyword-rule fallback. ~50 ms per classification. Measured 17/17 classification accuracy (including 6 mapping natural-language utterances).
 
 ### Ask-location response example
 
@@ -578,6 +580,15 @@ python tests/test_memory_ws.py --mode mapping
 ---
 
 ## 📋 Changelog
+
+### v2.5.1
+
+- **🗺️ Online mapping lifted to the 4th intent class**: Intent classification expanded from 3 to 4 classes (navigate / ask_location / ask_direction / **mapping**)
+  - Natural utterances like "开始建图" / "启动扫图" / "请开始建图" automatically create a `MappingSession`
+  - Natural utterances like "停止建图" / "结束建图" / "完成扫图" automatically trigger `finalize`
+  - Hardcoded `task="mapping"` / `task="stop_mapping"` remain backward-compatible with zero LLM overhead
+  - Measured 17/17 classification accuracy on the 4-class test set
+- **🔧 Unified dispatch in `handle_client`**: Intent classification moved from `process_inference_with_memory` up to `handle_client`, routing by intent label directly; `process_inference_with_memory` gains an `intent` parameter to avoid duplicate classification
 
 ### v2.5.0
 

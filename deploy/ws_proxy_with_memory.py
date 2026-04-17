@@ -927,8 +927,9 @@ import re as _re  # 避免和局部导入 re 冲突
 INTENT_NAVIGATE = "navigate"
 INTENT_ASK_LOCATION = "ask_location"
 INTENT_ASK_DIRECTION = "ask_direction"
+INTENT_MAPPING = "mapping"
 
-_INTENT_SYSTEM_PROMPT = """你是机器人指令意图分类器。将用户的单条指令准确归类为下面三类之一：
+_INTENT_SYSTEM_PROMPT = """你是机器人指令意图分类器。将用户的单条指令准确归类为下面四类之一：
 
 1. navigate — 直接命令机器人前往某地(指令式、不含"怎么/如何/怎样")。
    例: "前往C8前台" / "带我去D栋大厅" / "走到电梯口" / "回到起点"
@@ -939,19 +940,47 @@ _INTENT_SYSTEM_PROMPT = """你是机器人指令意图分类器。将用户的�
 3. ask_direction — 询问去某地的路线/走法/方向（通常含"怎么/如何/怎样/指路/路线"等询问词)。
    例: "请问前往D栋怎么走" / "去大堂怎么走" / "如何前往C8" / "怎么去A8前台" / "指路到前台"
 
-关键区别: 是否含"怎么/如何/怎样/指路/路线/方向/问一下/请问"这类询问语气。
-含 → ask_direction；不含且是命令 → navigate；含"哪/位置" → ask_location。
+4. mapping — 涉及"在线建图/扫图/录制地图/结束建图"等建图生命周期的指令。
+   例(开始): "开始建图" / "启动建图" / "开始扫图" / "开始录制地图" / "请开始建图" / "mapping"
+   例(结束): "结束建图" / "停止建图" / "完成建图" / "停止扫图" / "结束录制" / "stop mapping"
 
-只输出 navigate / ask_location / ask_direction 其中一个，不要解释、不要标点。"""
+关键区分:
+- 含"建图/扫图/录制地图/mapping"等建图词汇 → mapping
+- 其余含"怎么/如何/怎样/指路/路线/方向/问一下/请问"询问语气 → ask_direction
+- 不含以上且是命令 → navigate；含"哪/位置"询问 → ask_location
+
+只输出 navigate / ask_location / ask_direction / mapping 其中一个，不要解释、不要标点。"""
 
 _INTENT_RULES = [
-    # ask_direction 更具体, 优先匹配
+    # mapping 优先 (关键词最具体)
+    (_re.compile(r'(建图|扫图|绘图|录制(地图)?|mapping)'), INTENT_MAPPING),
+    # ask_direction 次之 (具体的询问语气)
     (_re.compile(r'(怎么走|如何(前往|到达|去)|怎(样|么)(前往|到达|去)|指路|路线|方向|怎么到)'), INTENT_ASK_DIRECTION),
     # ask_location
     (_re.compile(r'(在哪|什么位置|哪个位置|当前位置|现在的位置|所在位置|现在在哪)'), INTENT_ASK_LOCATION),
-    # navigate
+    # navigate 最后 (动词性最泛)
     (_re.compile(r'(前往|去|到|走到|导航|带我|回(到|去))'), INTENT_NAVIGATE),
 ]
+
+
+# mapping 子动作关键词: 用于 intent=mapping 之后判断 start vs stop
+_STOP_MAPPING_RE = _re.compile(r'(停止|结束|完成|终止|关闭|结束了|完成了|完成啦|停|stop|finish|end)')
+_START_MAPPING_RE = _re.compile(r'(开始|启动|开启|启用|start|begin)')
+
+
+def is_stop_mapping_task(task: str) -> bool:
+    """mapping 意图下判断是 start 还是 stop: 含结束类关键词 → True 视为 stop_mapping。"""
+    if not task:
+        return False
+    s = task.strip().lower()
+    # 纯字符串精确匹配 (向后兼容路径, handle_client 会提前拦截, 这里是兜底)
+    if s in {'stop_mapping', 'stop mapping', 'finish_mapping'}:
+        return True
+    # 先看是否明确含 stop 关键词
+    if _STOP_MAPPING_RE.search(task):
+        # 如果 stop 和 start 都出现, 以后出现的为准 (一般说 "停止建图" 比 "开始结束建图" 更常见, 简单起见看 stop)
+        return True
+    return False
 
 
 class IntentClassifier:
@@ -1027,7 +1056,8 @@ class IntentClassifier:
         r.raise_for_status()
         raw = r.json()["choices"][0]["message"]["content"].strip()
         clean = _re.sub(r'<think>.*?</think>', '', raw, flags=_re.DOTALL).strip().lower()
-        for cand in (INTENT_ASK_DIRECTION, INTENT_ASK_LOCATION, INTENT_NAVIGATE):
+        # 顺序: mapping 最具体, ask_direction / ask_location 次之, navigate 最泛
+        for cand in (INTENT_MAPPING, INTENT_ASK_DIRECTION, INTENT_ASK_LOCATION, INTENT_NAVIGATE):
             if cand in clean:
                 return cand, raw
         return None, raw
@@ -1767,7 +1797,8 @@ async def process_inference_with_memory(message_data, session_state,
                                          navigator: Optional[MemoryNavigator],
                                          nav_state: MemoryNavState,
                                          memory_enabled: bool,
-                                         classifier: Optional[IntentClassifier] = None):
+                                         classifier: Optional[IntentClassifier] = None,
+                                         intent: Optional[str] = None):
     """
     处理推理请求（带记忆导航能力 + 询问位置 / 指路 分流）
 
@@ -1897,22 +1928,25 @@ async def process_inference_with_memory(message_data, session_state,
                 }
 
         # ================================================================
-        # 意图分类: navigate / ask_location / ask_direction
+        # 意图分类: navigate / ask_location / ask_direction (mapping 意图已在 handle_client 处理)
+        # intent 参数由 handle_client 预先分类传入, 为 None 时此处兜底分类
         # ask_* 分支在此直接短路返回, 不进入下面的 task 变化检测, 不修改 nav_state
         # ================================================================
         _SPECIAL_TASKS = {"STOP", "stop", "turn left", "turn right", "go straight"}
-        if instruction in _SPECIAL_TASKS:
-            intent = INTENT_NAVIGATE  # 特殊控制指令一律走导航分支的原有处理
-        elif classifier is not None:
-            intent = classifier.classify(instruction)
-        else:
-            intent = IntentClassifier._classify_by_rule(instruction)
-            logger.info(f"🎯 [Intent] '{instruction}' → {intent} (rule, no classifier)")
+        if intent is None:
+            if instruction in _SPECIAL_TASKS:
+                intent = INTENT_NAVIGATE
+            elif classifier is not None:
+                intent = classifier.classify(instruction)
+            else:
+                intent = IntentClassifier._classify_by_rule(instruction)
+                logger.info(f"🎯 [Intent] '{instruction}' → {intent} (rule, no classifier)")
 
         if intent == INTENT_ASK_LOCATION:
             return await handle_ask_location(message_data, session_state, navigator, nav_state, classifier)
         if intent == INTENT_ASK_DIRECTION:
             return await handle_ask_direction(message_data, session_state, navigator, nav_state, classifier)
+        # intent == INTENT_MAPPING 不应该到这里 (handle_client 已拦截); 若到这里视为 navigate 兜底
 
         # ================================================================
         # 检测 task 变化 → 清空历史 + 重置记忆状态
@@ -2695,64 +2729,89 @@ async def handle_client(websocket):
                             **mapping_session.status(),
                         }
 
-                # ---- 处理推理请求 (task 驱动 nav / mapping 分流) ----
+                # ---- 处理推理请求 (按 4 类意图 navigate/ask_location/ask_direction/mapping 分流) ----
                 else:
                     task_value = (data.get('task') or '').strip()
+                    _origin = None  # 意图来源: 'hardcoded' / 'intent' / 'fallback'
+                    intent_label = None
 
-                    # task == "stop_mapping": 触发 finalize, 切回 nav
+                    # Step 1: 硬编码 mapping 字符串 (向后兼容, 零 LLM 调用)
                     if task_value == 'stop_mapping':
-                        if not mapping_session or mapping_session.finalized:
-                            response = {"status": "error",
-                                        "message": "当前没有活跃建图会话",
-                                        "mode": session_state['mode']}
-                        else:
-                            try:
-                                summary = await asyncio.to_thread(mapping_session.finalize)
-                                session_state['mode'] = 'nav'
-                                response = {
-                                    "status": "success",
-                                    "message": "建图完成",
-                                    "mode": "nav",
-                                    "summary": summary,
-                                }
-                                logger.info(f"🗺️ 建图会话结束 [{client_id}]: {summary.get('artifacts')}")
-                            except Exception as e:
-                                logger.error(f"finalize 失败: {e}", exc_info=True)
-                                response = {"status": "error", "message": f"finalize 失败: {e}"}
-
-                    # task == "mapping": 第一帧自动创建 session, 之后每帧喂入
+                        intent_label = INTENT_MAPPING
+                        _origin = 'hardcoded_stop'
                     elif task_value == 'mapping':
-                        if mapping_session is None or mapping_session.finalized:
-                            try:
-                                shared_extractor = (
-                                    memory_navigator.extractor
-                                    if (memory_navigator is not None
-                                        and getattr(memory_navigator, "extractor", None))
-                                    else None
-                                )
-                                overrides = data.get('config') or {}
-                                ms_kwargs = dict(
-                                    client_id=client_id,
-                                    config_overrides=overrides if isinstance(overrides, dict) else None,
-                                    shared_vpr_extractor=shared_extractor,
-                                )
-                                # MappingSession __init__ 加载 Depth/GD 等重模型 (~10s), 走线程池
-                                mapping_session = await asyncio.to_thread(
-                                    lambda: MappingSession(**ms_kwargs)
-                                )
-                                session_state['mode'] = 'mapping'
-                                logger.info(f"🗺️ 建图模式开启 [{client_id}] -> {mapping_session.output_dir}")
-                            except Exception as e:
-                                logger.error(f"启动建图失败: {e}", exc_info=True)
-                                response = {"status": "error",
-                                            "message": f"启动建图失败: {e}",
-                                            "mode": session_state['mode']}
-                                await websocket.send(json.dumps(response, ensure_ascii=False))
-                                logger.info(f"已发送响应 [{client_id}]")
-                                continue
-                        response = await process_mapping_frame(data, session_state, mapping_session)
+                        intent_label = INTENT_MAPPING
+                        _origin = 'hardcoded_start'
+                    # Step 2: 跳过意图分类的情况 (特殊硬编码控制, 空 task, 仅传 command)
+                    elif not task_value or task_value in {"STOP", "stop", "turn left", "turn right", "go straight", "None", "none"}:
+                        intent_label = INTENT_NAVIGATE
+                        _origin = 'fallback'
+                    # Step 3: 其他自然语言 task → 意图分类 (navigate / ask_location / ask_direction / mapping)
+                    else:
+                        intent_label = (intent_classifier.classify(task_value)
+                                         if intent_classifier else IntentClassifier._classify_by_rule(task_value))
+                        _origin = 'intent'
 
-                    # 其他 task: nav 模式 (若之前在 mapping, 自动 finalize 切回)
+                    # ---- mapping 意图分流 ----
+                    if intent_label == INTENT_MAPPING:
+                        # stop vs start: 硬编码 stop_mapping 或自然语言含"停止/结束/完成"关键词
+                        _is_stop = (_origin == 'hardcoded_stop') or (_origin == 'intent' and is_stop_mapping_task(task_value))
+
+                        if _is_stop:
+                            # ── stop_mapping ──
+                            if not mapping_session or mapping_session.finalized:
+                                response = {"status": "error",
+                                            "message": "当前没有活跃建图会话",
+                                            "mode": session_state['mode']}
+                            else:
+                                try:
+                                    summary = await asyncio.to_thread(mapping_session.finalize)
+                                    session_state['mode'] = 'nav'
+                                    _src_tag = " (自然语言)" if _origin == 'intent' else ""
+                                    response = {
+                                        "status": "success",
+                                        "message": f"建图完成{_src_tag}",
+                                        "mode": "nav",
+                                        "summary": summary,
+                                    }
+                                    logger.info(f"🗺️ 建图会话结束{_src_tag} [{client_id}] task='{task_value}': {summary.get('artifacts')}")
+                                except Exception as e:
+                                    logger.error(f"finalize 失败: {e}", exc_info=True)
+                                    response = {"status": "error", "message": f"finalize 失败: {e}"}
+                        else:
+                            # ── start/continue mapping ──
+                            if mapping_session is None or mapping_session.finalized:
+                                try:
+                                    shared_extractor = (
+                                        memory_navigator.extractor
+                                        if (memory_navigator is not None
+                                            and getattr(memory_navigator, "extractor", None))
+                                        else None
+                                    )
+                                    overrides = data.get('config') or {}
+                                    ms_kwargs = dict(
+                                        client_id=client_id,
+                                        config_overrides=overrides if isinstance(overrides, dict) else None,
+                                        shared_vpr_extractor=shared_extractor,
+                                    )
+                                    # MappingSession __init__ 加载 Depth/GD 等重模型 (~10s), 走线程池
+                                    mapping_session = await asyncio.to_thread(
+                                        lambda: MappingSession(**ms_kwargs)
+                                    )
+                                    session_state['mode'] = 'mapping'
+                                    _src_tag = " (自然语言触发)" if _origin == 'intent' else ""
+                                    logger.info(f"🗺️ 建图模式开启{_src_tag} [{client_id}] task='{task_value}' -> {mapping_session.output_dir}")
+                                except Exception as e:
+                                    logger.error(f"启动建图失败: {e}", exc_info=True)
+                                    response = {"status": "error",
+                                                "message": f"启动建图失败: {e}",
+                                                "mode": session_state['mode']}
+                                    await websocket.send(json.dumps(response, ensure_ascii=False))
+                                    logger.info(f"已发送响应 [{client_id}]")
+                                    continue
+                            response = await process_mapping_frame(data, session_state, mapping_session)
+
+                    # ---- 非 mapping 意图: 导航 / 询问位置 / 要求指路 ----
                     else:
                         if (mapping_session and not mapping_session.finalized
                                 and session_state['mode'] == 'mapping'):
@@ -2766,6 +2825,7 @@ async def handle_client(websocket):
                             data, session_state,
                             memory_navigator, nav_state, memory_enabled,
                             classifier=intent_classifier,
+                            intent=intent_label,
                         )
 
                 await websocket.send(json.dumps(response, ensure_ascii=False))
@@ -2894,7 +2954,7 @@ async def main():
     logger.info("║  ┌─ 输入字段 ────────────────────────────────────────┐   ║")
     logger.info("║  │  id        机器人ID                                │   ║")
     logger.info("║  │  pts       时间戳 (ms)                             │   ║")
-    logger.info("║  │  task      三类: 导航(去X)/询问位置/要求指路        │   ║")
+    logger.info("║  │  task      四类: 导航/询问位置/要求指路/在线建图     │   ║")
     logger.info("║  │  images    front_1(必需) + camera_1~4(VPR必需)      │   ║")
     logger.info("║  └────────────────────────────────────────────────────┘   ║")
     logger.info("║  ┌─ 输出字段 ────────────────────────────────────────┐   ║")

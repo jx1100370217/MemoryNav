@@ -633,12 +633,12 @@ CUDA_VISIBLE_DEVICES=0 python online_mapper/run_online_map.py \
 
 ### 9.2.x WebSocket 建图模式 (双模式 ws_proxy)
 
-`deploy/ws_proxy_with_memory.py` 同时承载**导航 (nav)** 和**建图 (mapping)** 两种模式, 通过 `session_state['mode']` 路由。所有请求保持统一形状 `{id, task, pts, images}`, 由 `task` 字段驱动模式切换:
+`deploy/ws_proxy_with_memory.py` 同时承载**导航 (nav)** 和**建图 (mapping)** 两种模式, 通过 `session_state['mode']` 路由。所有请求保持统一形状 `{id, task, pts, images}`, 由**四类意图分类**驱动 (Qwen3.5-0.8B vLLM + 关键词规则兜底):
 
-- 默认 `mode='nav'`, 走记忆导航三层策略 + 意图分类路由 (导航 / 询问位置 / 要求指路).
-- 发送 `task="mapping"` 进入建图模式: 首帧服务端自动创建独立 `MappingSession`, 之后每帧喂入 `OnlineMapperCore.process_frame`.
-- 发送 `task="stop_mapping"` 触发 `finalize` + 可视化, 返回 summary, 切回 nav (请求仍带 images, 服务端不消费).
-- 当 client 在 mapping 模式下发送其他 task 值 (包括导航指令), 服务端自动 `finalize` 当前 session 然后切回 nav.
+- 默认 `mode='nav'`. 意图分为 `navigate` / `ask_location` / `ask_direction` / `mapping` 四类, 前三类走记忆导航主流程 / 询问位置 / 指路分支, mapping 类进入建图分支.
+- `mapping` 意图 (无论来自自然语言"开始建图"/"请开始建图" 还是硬编码 `task="mapping"`) 触发 MappingSession: 首帧自动创建独立 session, 之后每帧喂入 `OnlineMapperCore.process_frame`.
+- `mapping` 意图的 stop 子类 (自然语言"停止建图"/"结束建图"/"完成扫图" 或硬编码 `task="stop_mapping"`) 触发 `finalize` + 可视化, 返回 summary, 切回 nav.
+- 当 client 在 mapping 模式下发送非 mapping 意图 (导航/询问位置/指路), 服务端自动 `finalize` 当前 session 然后切回 nav.
 - `{"command": "mapping_status"}` 查询当前 session 进度 (不驱动模式切换, 仅查询).
 
 关键实现要点 (踩过的坑):

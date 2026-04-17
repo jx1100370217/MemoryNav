@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-2.5.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.5.0)
+[![Version](https://img.shields.io/badge/Version-2.5.1-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.5.1)
 
 基于视觉位置识别（VPR）和拓扑地图的机器人记忆导航系统
 
@@ -23,9 +23,10 @@ MemoryNav 是一个面向移动机器人的视觉记忆导航系统。系统通�
 
 ### 核心能力
 
-- **🎯 意图分类路由** (**v2.5.0 新增**)：Qwen3.5-0.8B vLLM 将每条 task 自动分为 `navigate`（导航）/ `ask_location`（询问位置）/ `ask_direction`（要求指路）三类，各走独立处理路径；优先级 Qwen3.5-0.8B → Qwen3.5-9B fallback → 关键词规则兜底
+- **🎯 四类意图分类路由** (**v2.5.1**)：Qwen3.5-0.8B vLLM 将每条 task 自动分为 `navigate`（导航）/ `ask_location`（询问位置）/ `ask_direction`（要求指路）/ `mapping`（在线建图）四类，各走独立处理路径；优先级 Qwen3.5-0.8B → Qwen3.5-9B fallback → 关键词规则兜底
 - **📍 询问当前位置**：收到"我在哪""当前位置"类指令时，仅跑 VPR 定位，返回 `response_text="当前的位置是 X"`；VPR 低于阈值时取 top-2 最相似节点回复"位于 A 和 B 中间"
 - **🧭 要求指路**：收到"请问前往 X 怎么走"类指令时，VPR 起点 + `find_destination` 终点 + 最短路径规划，再用 Qwen3.5-0.8B 将路径润色成自然中文指路回答
+- **🗺️ 自然语言触发在线建图**：收到"开始建图""启动扫图""停止建图""完成扫图"等指令时自动创建/结束 `MappingSession`；硬编码 `task="mapping"` / `"stop_mapping"` 仍向后兼容
 - **🔁 打断后恢复导航**：询问位置 / 要求指路分支**不修改** `nav_state.plan` / `last_task`，客户端下帧 `task=None` 延用上次导航任务继续推进
 - **🛰️ 在线主动建图** (`online_mapper/`, **v2.3.0**)：三层架构（Geometry+Topology+Semantics）流式在线建图。**VGGT-1B 几何前端**（depth + VO + 占据栅格 dense 点云 单次推理同时供给）、**结构化节点命名** `NodeName(category, organization, nearby_plates, ...)`（`前台·DEEPROUTE.AI` 取代 `DEEPROUTE.AI前台` 字符串拼接）、门牌**两阶段归属**（防 EUMANN 串扰）、ConnectionBuilder **几何方向先验**（cos 相似度 + 反向硬惩罚修复 cam→neighbor 错配）、多帧投票幻觉过滤、闭环几何验证、双语命名、空间 KNN 邻接重建；输出 `merged_labeled_data/` schema 并新增 `category/organization/nearby_plates/nearby_landmarks` 字段。完整设计见 [`docs/online_mapper.md`](docs/online_mapper.md)
 - **🔍 多方案 VPR 定位**：支持 4 种 SOTA 视觉位置识别方案，统一配置文件一键切换
@@ -370,17 +371,18 @@ anyloc:
 
 ---
 
-## 🎯 意图分类 + 询问位置 / 要求指路
+## 🎯 四类意图分类
 
-服务端在每帧请求进入记忆导航前先做意图分类（Qwen3.5-0.8B vLLM），把 `task` 路由到三条处理路径：
+服务端在每帧请求的最前端做意图分类（Qwen3.5-0.8B vLLM），把 `task` 路由到四条独立处理路径：
 
 | 意图 | 触发词示例 | 处理分支 | 响应形态 |
 |------|------------|----------|----------|
 | `navigate` | "前往 C8 前台" / "带我去 D 栋" / "回到起点" | 记忆导航主流程 | `action=[x,y,yaw]` + `memory_info` |
 | `ask_location` | "我在哪" / "当前位置" / "现在在什么位置" | `handle_ask_location` | `action=[0,0,0]` + `response_text` |
 | `ask_direction` | "请问前往 D 栋怎么走" / "去大堂怎么走" | `handle_ask_direction` | `action=[0,0,0]` + `response_text` |
+| `mapping` | "开始建图" / "启动扫图" / "停止建图" / "完成扫图"，或硬编码 `mapping` / `stop_mapping` | 建图生命周期 (start/stop 由关键词二次判断) | `mode="mapping"` + `log` / `mapping` 或 `summary` |
 
-分类器后端优先级：**Qwen3.5-0.8B (8198)** → Qwen3.5-9B (8199) fallback → 关键词规则兜底。单次分类 ~50ms。
+分类器后端优先级：**Qwen3.5-0.8B (8198)** → Qwen3.5-9B (8199) fallback → 关键词规则兜底。单次分类 ~50ms。实测 17/17 用例分类准确（含 6 个 mapping 自然语言）。
 
 ### 询问位置响应样例
 
@@ -479,13 +481,13 @@ python online_mapper/run_online_map.py \
 
 ### WebSocket 双模式接入
 
-`deploy/ws_proxy_with_memory.py` 监听 **9528** 端口, 单个连接同时支持**导航**与**建图**两种模式。所有请求保持统一形状 `{id, task, pts, images}`, 由 `task` 字段驱动模式切换:
+`deploy/ws_proxy_with_memory.py` 监听 **9528** 端口, 单个连接同时支持**导航**与**建图**两种模式。所有请求保持统一形状 `{id, task, pts, images}`, 由**四类意图分类**驱动:
 
-| `task` 值 | 作用 |
-|----------|------|
-| `"mapping"` | 进入 / 保持建图模式; 首帧自动创建 `MappingSession`, 之后每帧喂入 `OnlineMapperCore` |
-| `"stop_mapping"` | 触发 `finalize` + 可视化, 返回 summary, 切回 nav |
-| 其他 (导航指令 / `null` / 询问位置 / 要求指路) | 走记忆导航; 若之前在 mapping, 自动 `finalize` 后再切回 nav |
+| `task` 值 | 意图 | 作用 |
+|----------|------|------|
+| `"mapping"` / `"开始建图"` / `"启动扫图"` … | `mapping` (start) | 进入 / 保持建图模式; 首帧自动创建 `MappingSession`, 之后每帧喂入 `OnlineMapperCore` |
+| `"stop_mapping"` / `"停止建图"` / `"完成扫图"` … | `mapping` (stop) | 触发 `finalize` + 可视化, 返回 summary, 切回 nav |
+| 导航 / 询问位置 / 指路 | `navigate` / `ask_location` / `ask_direction` | 走记忆导航主流程; 若之前在 mapping, 自动 `finalize` 后再切回 nav |
 
 控制命令 (`{"command": "..."}`) 只剩状态查询: `mapping_status` / `memory_status` / `session_status` / `reset` / `reset_memory` / `toggle_memory`。
 
@@ -708,6 +710,15 @@ python tests/test_memory_ws.py --mode mapping
 ---
 
 ## 📋 更新日志
+
+### v2.5.1
+
+- **🗺️ 在线建图剥离为第四类 task**: 意图分类从 3 类扩展到 4 类（navigate / ask_location / ask_direction / **mapping**）
+  - 自然语言"开始建图""启动扫图""请开始建图"等自动触发 `MappingSession` 创建
+  - 自然语言"停止建图""结束建图""完成扫图"等自动触发 `finalize`
+  - 硬编码 `task="mapping"` / `task="stop_mapping"` 仍向后兼容, 零 LLM 开销
+  - 4 类意图分类实测 17/17 准确
+- **🔧 handle_client 统一派发**: 意图分类从 `process_inference_with_memory` 提到 `handle_client` 顶层, 按 intent 值直接分流; `process_inference_with_memory` 新增 `intent` 参数避免重复分类
 
 ### v2.5.0
 

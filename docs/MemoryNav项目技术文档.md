@@ -1,6 +1,6 @@
 # MemoryNav 项目技术文档
 
-> **版本**: v2.5.1 — 意图分类扩展为 4 类 (navigate / ask_location / ask_direction / mapping), 截止 2026-04-17
+> **版本**: v2.5.1 — 意图分类扩展为 4 类 (navigate / ask_location / ask_direction / mapping), 指路叙述加三层幻觉防护, 截止 2026-04-17
 >
 > **代码根**: `/home/ubuntu/Disk/codes/jianxiong/MemoryNav/`
 
@@ -1066,6 +1066,10 @@ Prompt (zero-shot 四分类, `max_tokens=16`, `temperature=0`):
 
 实测 17/17 用例分类准确 (含 6 个 mapping 自然语言指令)。
 
+除 `classify()` 外, `IntentClassifier` 还提供 `narrate_path(node_names)` 用于
+ask_direction 分支的路径叙述。该方法对 LLM 输出做 prompt 收紧 + 残留字符幻觉校验,
+详见 3.14.3.1。
+
 #### 3.14.2 handle_ask_location (询问当前位置)
 
 ```
@@ -1102,13 +1106,57 @@ Prompt (zero-shot 四分类, `max_tokens=16`, `temperature=0`):
 4. navigator.plan_navigation(goal, start) → NavigationPlan
        若 !success → "从{start}到{goal}暂时没有可用路线"
 5. 取 plan.path 对应的节点名列表 [start, mid1, ..., goal]
-6. Qwen3.5-0.8B LLM 叙述 (narrate_path):
-       prompt = "你是一个园区/建筑指路助手(场景覆盖室内外)。把下面的最短路径转成一句..."
-       response_text = LLM 输出 (失败时退化为字符串模板 "从{start}出发，依次经过...到达{goal}")
+6. Qwen3.5-0.8B LLM 叙述 (narrate_path, 三层防护, 见 3.14.3.1):
+       response_text = LLM 输出 (失败/校验未过时退化为字符串模板)
 7. 返回 { action=[0,0,0], response_text,
          vpr: {matched_node_id, matched_node_name, confidence},
          route: {start_id/name, goal_id/name, total_steps, path_ids, path_names},
          nav_preserved: {...} | 省略 }
+```
+
+##### 3.14.3.1 LLM 路径叙述的三层防护 (防幻觉)
+
+0.8B 小模型在自由叙述时易插入"穿过 / 进入实验室 / 再走 / 沿着"等数据里
+没有的**动作描述**, 给用户错误的路径印象。采用三层防护保证输出忠于 plan.path:
+
+**(1) Prompt 收紧** — `IntentClassifier.narrate_path` 的 prompt 明确规定:
+```
+1. 只能使用列表中的节点名, 不得新增任何其他地点、地标、楼层或房间
+2. 只能用 '出发'/'经过'/'到达'/'依次经过'/'即可' 等连接词;
+   不得使用 '穿过'/'进入'/'走到'/'沿着'/'直行'/'左转'/'右转' 等动作词
+3. 不解释, 不添加寒暄以外的说明, 最多 80 字
+4. 不使用 markdown、引号、括号注释
+```
+并显式传入 起点 / 终点 / 中间节点 / 完整路径 四个字段; `temperature=0.0` 降低随机发挥。
+
+**(2) 输出校验 (幻觉检测器)** — narrate_path 内部残留字符检测:
+1. 归一化空白: 去掉 LLM 输出里所有空白 (兼容"c8 打印机" vs "c8打印机")
+2. 遍历 `node_names`, 去掉所有节点名
+3. 遍历白名单连接词 `_NARRATE_ALLOWED_TOKENS` 去掉 (您好 / 您要去 / 请从 / 出发 /
+   依次 / 接着 / 然后 / 之后 / 最后 / 经过 / 到达 / 前往 / 即可 / 目的地 / 从 / 去 /
+   在 / 到 / 里 / 前 / 后 / 上 / 下 / 为 / 即 / 再 / 标点)
+4. 去掉所有 ASCII (c8 / a8 / 数字等)
+5. 剩余中文字符 **≥ 4 字** → 视为幻觉, `return None` 走模板兜底
+
+**(3) 严格模板兜底** — `_build_direction_template(start, goal, names)`:
+- `len=2`: `"您好，从{start}直接前往{goal}即可到达。"`
+- `len=3`: `"您好，从{start}出发，经过{mid[0]}即可到达{goal}。"`
+- `len≥4`: `"您好，您要去{goal}，请从{start}出发，依次经过{mids}，到达{goal}。"`
+
+只使用节点名 + 固定连接词, 零幻觉风险。
+
+**实测对比** (task=`"请问前往a8前台怎么走？"`, plan.path 7 节点):
+
+```
+旧 prompt (自由度高):
+  "您好，从微波炉区域出发，您可以先前往 c8 打印机，随后经过 c8 男厕所门口，
+   再走 c8 玻璃门进入实验室，最后到达 24 号会议室门口，之后即可前往 a8 前台。"
+  ❌ "进入实验室" 是幻觉, plan.path 里只有"实验室门口"这个节点名
+
+新 prompt + 校验器:
+  "从微波炉区域出发，依次经过 c8 打印机、c8 男厕所门口、c8 玻璃门、实验室门口，
+   最后到达 24 号会议室门口，再前往 a8 前台。"
+  ✓ 7 节点与 plan.path 严格 1:1, 只用"出发/依次经过/最后到达/再前往"中性连接词
 ```
 
 #### 3.14.4 导航任务连续性
@@ -2065,4 +2113,6 @@ CUDA_VISIBLE_DEVICES=0 python online_mapper/run_online_map.py \
 }
 ```
 
-`route.path_names` 由 Qwen3.5-0.8B 润色成自然中文句子, 若 LLM 调用失败则退化为模板: `"前往{goal}，请从{start}出发，依次经过{mid1}、{mid2}，最终到达{goal}。"`
+`route.path_names` 由 Qwen3.5-0.8B 润色成自然中文句子 (prompt 禁用动作词 +
+残留字符幻觉校验, 见 3.14.3.1); 若 LLM 调用失败或校验未过则退化为严格模板:
+`"您好，您要去{goal}，请从{start}出发，依次经过{mids}，到达{goal}。"`

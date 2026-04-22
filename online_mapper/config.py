@@ -47,7 +47,7 @@ class OnlineMapperConfig:
     # door plate retrospective
     enable_door_plate_detection: bool = True
     door_plate_min_score: float = 0.30
-    plate_scan_every_n_frames: int = 3
+    plate_scan_every_n_frames: int = 1
 
     # connection builder (real next_positions)
     enable_real_connections: bool = True

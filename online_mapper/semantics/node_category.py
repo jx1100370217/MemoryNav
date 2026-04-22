@@ -391,6 +391,16 @@ class NodeCategoryClassifier:
                 return CategoryDecision(
                     NodeCategory.BUILDING_LANDMARK, bl, bl,
                     reason=f"building_landmark plate='{plate_text}'")
+        # scene_describe 分支: multi-cam 识别到 'C座入口'/'A座入口' 等
+        # BUILDING_LANDMARK 场景 (非 plate) 也作为有效 node name. 救 test1
+        # fidx=34/37 机器人在 C 座入口附近, cam3/cam4 看到 C 座建筑但没门牌,
+        # 之前被 classify 为 reject.
+        if scene_describe and scene_verified:
+            bl = match_building_landmark(scene_describe)
+            if bl:
+                return CategoryDecision(
+                    NodeCategory.BUILDING_LANDMARK, bl, bl,
+                    reason=f"building_landmark scene='{scene_describe}'")
 
         # ---- E. Shop / proper-noun storefront ----
         if plate_text_verified and plate_text:

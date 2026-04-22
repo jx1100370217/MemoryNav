@@ -38,6 +38,7 @@ from online_mapper.semantics.hallucination_filter import (
 from online_mapper.semantics.node_category import (
     NodeCategoryClassifier, NodeCategory, JunctionKind, CategoryDecision,
     cn_to_en, FUNCTION_AREA_WHITELIST, LANDMARK_FACILITY_WHITELIST,
+    BUILDING_LANDMARK_PATTERNS,
 )
 from online_mapper.semantics.colocation_merger import ColocationMerger
 from online_mapper.geometry.junction_detector import JunctionDetector
@@ -365,40 +366,65 @@ class OnlineMapperCore:
                                     scene_cands.append((cam_id, cand))
                                     verify_img_map[cand] = img
 
+                        def _canonicalize(name: str) -> str:
+                            """Normalize to canonical form for voting:
+                              '打印机房'/'打印机'/'打印区' → '打印区'
+                              '电梯口'/'电梯厅' → '电梯口'
+                              'C座入口' BUILDING_LANDMARK → 原样
+                              '大堂'/'广场'/'办公区' 泛化 → 原样.
+                            保证同义 raw name 合并为同一票."""
+                            for kw, cn in FUNCTION_AREA_WHITELIST.items():
+                                if kw in name:
+                                    return cn
+                            for kw, cn in LANDMARK_FACILITY_WHITELIST.items():
+                                if kw in name:
+                                    return cn
+                            for pat in BUILDING_LANDMARK_PATTERNS:
+                                if pat.match(name):
+                                    return name
+                            return name
+
                         def _specificity_rank(name: str) -> int:
-                            """越小越具体: 0=function_area 白名单命中,
-                               1=landmark_facility 白名单命中, 2=其他."""
                             for kw in FUNCTION_AREA_WHITELIST:
                                 if kw in name:
                                     return 0
                             for kw in LANDMARK_FACILITY_WHITELIST:
                                 if kw in name:
                                     return 1
-                            return 2
+                            for pat in BUILDING_LANDMARK_PATTERNS:
+                                if pat.match(name):
+                                    return 2
+                            return 3
 
                         if scene_cands:
-                            scene_cands.sort(key=lambda c: _specificity_rank(c[1]))
-                            best_cam, best_name = scene_cands[0]
-                            # canonicalize to whitelist form if matched (e.g.
-                            # '打印机' -> '打印区')
-                            canon = None
-                            for kw, cn in FUNCTION_AREA_WHITELIST.items():
-                                if kw in best_name:
-                                    canon = cn; break
-                            if canon is None:
-                                for kw, cn in LANDMARK_FACILITY_WHITELIST.items():
-                                    if kw in best_name:
-                                        canon = cn; break
-                            scene_describe = canon or best_name
-                            logger.info(f"[MultiCamScene] fidx={fidx} "
-                                        f"cands={scene_cands} → '{scene_describe}' "
-                                        f"(via {best_cam})")
-                            # verify with best cam's image
-                            vimg = verify_img_map.get(best_name)
-                            if (vimg is not None and self.verifier
-                                    and self.verifier.available
-                                    and self.verifier.verify_scene(vimg, scene_describe)):
-                                scene_verified = True
+                            # 投票: 每 cam 1 票, canonicalize 后计数.
+                            # 规则 (用户 2026-04-22 指定):
+                            #   - 至少 2 cam 投同一 canonical name → 用该 name
+                            #   - 所有 cam 各不相同 → 无共识, 不创建 node
+                            # tie-break: 多 name 并列最高票时按 specificity
+                            #   rank 取更具体的 (FUNCTION_AREA > BUILDING >
+                            #   LANDMARK > 泛化).
+                            canonical_cands = [(c, _canonicalize(n)) for c, n in scene_cands]
+                            from collections import Counter
+                            vote_cnt = Counter(n for _, n in canonical_cands)
+                            top = vote_cnt.most_common()
+                            top_count = top[0][1]
+                            if top_count >= 2:
+                                top_names = [n for n, c in top if c == top_count]
+                                top_names.sort(key=_specificity_rank)
+                                scene_describe = top_names[0]
+                                scene_verified = True  # 2+ cam 共识即认为 verified
+                                logger.info(f"[MultiCamScene] fidx={fidx} "
+                                            f"cands={scene_cands} votes={dict(vote_cnt)} "
+                                            f"→ '{scene_describe}' (consensus={top_count}/"
+                                            f"{len(canonical_cands)})")
+                            else:
+                                # 无共识 (所有 cam 给不同 name), 不创建 node
+                                scene_describe = None
+                                scene_verified = False
+                                logger.info(f"[MultiCamScene] fidx={fidx} "
+                                            f"cands={scene_cands} votes={dict(vote_cnt)} "
+                                            f"→ NO CONSENSUS (all cams differ), skip node")
                     except Exception as e:
                         logger.debug(f"multi-cam scene desc fail: {e}")
 

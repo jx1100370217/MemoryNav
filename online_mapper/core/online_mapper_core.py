@@ -37,7 +37,7 @@ from online_mapper.semantics.hallucination_filter import (
 )
 from online_mapper.semantics.node_category import (
     NodeCategoryClassifier, NodeCategory, JunctionKind, CategoryDecision,
-    cn_to_en,
+    cn_to_en, FUNCTION_AREA_WHITELIST, LANDMARK_FACILITY_WHITELIST,
 )
 from online_mapper.semantics.colocation_merger import ColocationMerger
 from online_mapper.geometry.junction_detector import JunctionDetector
@@ -342,19 +342,65 @@ class OnlineMapperCore:
                 scene_verified = False
                 if self.namer is not None and self.namer._qwen_server:
                     try:
-                        front = cv2.imread(frame["cameras"]["camera_1"])
-                        if front is not None:
-                            r = self.namer._qwen_server.describe_scene(self._b64(front))
+                        # Multi-cam describe_scene: 扫 4 路 cam 各问一次 Qwen,
+                        # 取最具体的场景名 (匹配 FUNCTION_AREA_WHITELIST /
+                        # LANDMARK_FACILITY_WHITELIST 关键词优先). 修复单 cam
+                        # 看不到打印机/茶水间等 landmark 导致错判为 '办公区'.
+                        scene_cands = []
+                        verify_img_map = {}
+                        for cam_id in ('camera_1', 'camera_2', 'camera_3', 'camera_4'):
+                            img_path = frame["cameras"].get(cam_id)
+                            if not img_path:
+                                continue
+                            img = cv2.imread(img_path)
+                            if img is None:
+                                continue
+                            try:
+                                r = self.namer._qwen_server.describe_scene(self._b64(img))
+                            except Exception:
+                                continue
                             if r.get("status") == "ok":
                                 cand = (r.get("name_cn") or "").strip()
                                 if cand and cand not in ("未知", "未知位置"):
-                                    scene_describe = cand
-                                    if (self.verifier
-                                            and self.verifier.available
-                                            and self.verifier.verify_scene(front, cand)):
-                                        scene_verified = True
+                                    scene_cands.append((cam_id, cand))
+                                    verify_img_map[cand] = img
+
+                        def _specificity_rank(name: str) -> int:
+                            """越小越具体: 0=function_area 白名单命中,
+                               1=landmark_facility 白名单命中, 2=其他."""
+                            for kw in FUNCTION_AREA_WHITELIST:
+                                if kw in name:
+                                    return 0
+                            for kw in LANDMARK_FACILITY_WHITELIST:
+                                if kw in name:
+                                    return 1
+                            return 2
+
+                        if scene_cands:
+                            scene_cands.sort(key=lambda c: _specificity_rank(c[1]))
+                            best_cam, best_name = scene_cands[0]
+                            # canonicalize to whitelist form if matched (e.g.
+                            # '打印机' -> '打印区')
+                            canon = None
+                            for kw, cn in FUNCTION_AREA_WHITELIST.items():
+                                if kw in best_name:
+                                    canon = cn; break
+                            if canon is None:
+                                for kw, cn in LANDMARK_FACILITY_WHITELIST.items():
+                                    if kw in best_name:
+                                        canon = cn; break
+                            scene_describe = canon or best_name
+                            logger.info(f"[MultiCamScene] fidx={fidx} "
+                                        f"cands={scene_cands} → '{scene_describe}' "
+                                        f"(via {best_cam})")
+                            # verify with best cam's image
+                            vimg = verify_img_map.get(best_name)
+                            if (vimg is not None and self.verifier
+                                    and self.verifier.available
+                                    and self.verifier.verify_scene(vimg, scene_describe)):
+                                scene_verified = True
                     except Exception as e:
-                        logger.debug(f"scene desc fail: {e}")
+                        logger.debug(f"multi-cam scene desc fail: {e}")
 
                 decision = self.category_clf.classify(
                     plate_text=plate_text,
@@ -744,13 +790,17 @@ class OnlineMapperCore:
                 #     trigger 在 1770097836 中段) 被 DEEPROUTE.AI (best frame 1770097843
                 #     = 前台柜台近视) attach 时, relocate 到 DEEPROUTE.AI 帧更合理.
                 target_from_plate = getattr(target, "_from_plate_best", False)
+                # 用户偏好 (test2 N5 前台 fidx=15 十字路口): keyframe-sourced
+                # node 的 trigger 帧常位于路口/通道节点等语义中心 (acc_rot/
+                # acc_trans/vpr 变化触发), crop 画面有通道/交叉方位 hint, 更
+                # 适合导航. brand plate 的 best-view (bbox 最大) 常是"贴近招
+                # 牌"的视角, 对导航反而缺通道语义. 所以 KEEP 原 base frame,
+                # 只吸收 brand 到 position_name.
                 if replaced_org and not target_from_plate:
-                    target.timestamp = obs.timestamp
-                    target.cameras = dict(obs.cameras)
-                    logger.info(f"[DoorPlate-RELOCATE-DISPLAY] node {nearest_nid} "
-                                f"display ts -> {obs.timestamp} "
-                                f"(brand '{vote_key}' best view, keyframe-sourced target); "
-                                f"topology frame_idx stays at {target.frame_idx}")
+                    logger.info(f"[DoorPlate-KEEP-DISPLAY-KFS] node {nearest_nid} "
+                                f"keyframe-sourced, keeping original trigger frame "
+                                f"ts={target.timestamp} (brand '{vote_key}' attached "
+                                f"to name only, not relocating display)")
                 elif replaced_org:
                     logger.info(f"[DoorPlate-ATTACH-KEEP-DISPLAY] node {nearest_nid} "
                                 f"({target.position_name or target.category}) "

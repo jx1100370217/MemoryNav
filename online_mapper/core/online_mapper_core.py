@@ -790,17 +790,19 @@ class OnlineMapperCore:
                 #     trigger 在 1770097836 中段) 被 DEEPROUTE.AI (best frame 1770097843
                 #     = 前台柜台近视) attach 时, relocate 到 DEEPROUTE.AI 帧更合理.
                 target_from_plate = getattr(target, "_from_plate_best", False)
-                # 用户偏好 (test2 N5 前台 fidx=15 十字路口): keyframe-sourced
-                # node 的 trigger 帧常位于路口/通道节点等语义中心 (acc_rot/
-                # acc_trans/vpr 变化触发), crop 画面有通道/交叉方位 hint, 更
-                # 适合导航. brand plate 的 best-view (bbox 最大) 常是"贴近招
-                # 牌"的视角, 对导航反而缺通道语义. 所以 KEEP 原 base frame,
-                # 只吸收 brand 到 position_name.
+                # 2026-04-22 修订: 纯 '前台' (无 plate) 的 keyframe-sourced node
+                # 会因 replaced_org=False 自然走入 KEEP 路径 (保留 fidx=15
+                # 十字路口等 trigger 帧). 当 brand attach 实际发生 (replaced_org=
+                # True), RELOCATE 到 brand best-view 对 brand-attached node
+                # (如 '前台·DEEPROUTE.AI', brand best-view area 远大于 keyframe
+                # trigger 帧) 的导航 crop 更有价值 (能看到品牌招牌作 landmark).
                 if replaced_org and not target_from_plate:
-                    logger.info(f"[DoorPlate-KEEP-DISPLAY-KFS] node {nearest_nid} "
-                                f"keyframe-sourced, keeping original trigger frame "
-                                f"ts={target.timestamp} (brand '{vote_key}' attached "
-                                f"to name only, not relocating display)")
+                    target.timestamp = obs.timestamp
+                    target.cameras = dict(obs.cameras)
+                    logger.info(f"[DoorPlate-RELOCATE-DISPLAY] node {nearest_nid} "
+                                f"display ts -> {obs.timestamp} "
+                                f"(brand '{vote_key}' best view, keyframe-sourced target); "
+                                f"topology frame_idx stays at {target.frame_idx}")
                 elif replaced_org:
                     logger.info(f"[DoorPlate-ATTACH-KEEP-DISPLAY] node {nearest_nid} "
                                 f"({target.position_name or target.category}) "

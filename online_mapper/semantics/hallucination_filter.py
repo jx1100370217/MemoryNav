@@ -301,6 +301,17 @@ class MultiFrameVoter:
         n = name.strip()
         return any(kw in n for kw in cls.SINGLE_FRAME_WHITELIST_KEYWORDS)
 
+    # Building-landmark 类 plate 天然距离远 (X 座/X 栋/X 座入口, 户外观测),
+    # area 阈值单独降档. Pattern 本地副本, 避免循环 import node_category.
+    _BUILDING_LANDMARK_MIN_AREA = 1200
+    _BUILDING_LANDMARK_RE = re.compile(
+        r"^([A-Za-z]座(入口|大堂)?|[A-Za-z]栋(入口|大堂)?|\d+号楼|\d+栋)$"
+    )
+
+    @classmethod
+    def _is_building_landmark_name(cls, name: str) -> bool:
+        return bool(cls._BUILDING_LANDMARK_RE.match((name or "").strip()))
+
     def is_confirmed(self, name: str) -> bool:
         vs = self._votes.get(name, [])
         if not vs:
@@ -308,8 +319,12 @@ class MultiFrameVoter:
         # 任意一票 bbox 面积必须超过下限 — 否则视为远距离 OCR 幻觉
         # (白名单高置信单帧 fast-pass 不强制此条, 否则会丢 'NEUMANN' 这种
         # 单镜头近距离品牌牌)
+        # BUILDING_LANDMARK (X座/X栋/X座入口) 远距离户外观测, area 小属正常,
+        # 单独降档到 _BUILDING_LANDMARK_MIN_AREA=1200 (救 'C座入口'/'A座入口' 等).
         max_area = max((v.area or 0.0) for v in vs)
-        meets_area = max_area >= self.MIN_MAX_AREA
+        is_bl = self._is_building_landmark_name(name)
+        area_thresh = self._BUILDING_LANDMARK_MIN_AREA if is_bl else self.MIN_MAX_AREA
+        meets_area = max_area >= area_thresh
 
         distinct_frames = {v.frame_idx for v in vs}
         if len(distinct_frames) >= self.MIN_FRAMES and meets_area:

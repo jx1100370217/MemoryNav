@@ -1,6 +1,6 @@
 """轻量 2D pose graph (x, y, theta) — scipy least-squares 优化"""
 import logging, numpy as np
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
@@ -12,6 +12,10 @@ class PoseNode:
     x: float = 0.0
     y: float = 0.0
     theta: float = 0.0
+    # P3.18: motion-based body heading (atan2 of position delta to next keyframe).
+    # Preferred over `theta` for cam azimuth matching when available,
+    # because VGGT yaw estimate drifts (all 4 nodes estimated to -85°).
+    motion_theta: Optional[float] = None
 
 
 @dataclass

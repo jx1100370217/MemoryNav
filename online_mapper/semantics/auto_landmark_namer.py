@@ -223,6 +223,83 @@ class QwenNamingServer:
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
+    def pick_best_cam(self, cam_imgs_b64: dict, target_img_b64: str,
+                       max_tokens: int = 8) -> Optional[str]:
+        """Single-image VQA via grid composition (Qwen 4096 ctx limit = cannot
+        fit 5 separate images). Target at top-left, candidate cams labeled 1-4.
+
+        cam_imgs_b64: dict {cam_name -> b64 jpeg}
+        target_img_b64: b64 jpeg of target node
+        Returns chosen cam_name or None.
+        """
+        if not self._ready:
+            return None
+        cam_names = list(cam_imgs_b64.keys())
+        if not cam_names:
+            return None
+
+        # Decode and build grid
+        try:
+            import base64 as _b64m, cv2 as _cv2, numpy as _np
+            def _decode(b):
+                buf = _np.frombuffer(_b64m.b64decode(b), _np.uint8)
+                return _cv2.imdecode(buf, _cv2.IMREAD_COLOR)
+            tgt = _decode(target_img_b64)
+            cams = [(n, _decode(cam_imgs_b64[n])) for n in cam_names]
+            if tgt is None or any(img is None for _, img in cams):
+                return None
+            tile = 256
+            cols = 3
+            rows = (1 + len(cams) + cols - 1) // cols
+            canvas = _np.full((rows * tile, cols * tile, 3), 255, _np.uint8)
+            def _place(i, lbl, img):
+                r, c = i // cols, i % cols
+                resized = _cv2.resize(img, (tile, tile))
+                canvas[r*tile:(r+1)*tile, c*tile:(c+1)*tile] = resized
+                _cv2.rectangle(canvas, (c*tile, r*tile), (c*tile+tile-1, r*tile+tile-1), (0, 0, 255), 2)
+                _cv2.putText(canvas, lbl, (c*tile+10, r*tile+30),
+                             _cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+            _place(0, "TARGET", tgt)
+            for i, (name, img) in enumerate(cams):
+                _place(i + 1, str(i + 1), img)
+            _, grid_buf = _cv2.imencode('.jpg', canvas, [_cv2.IMWRITE_JPEG_QUALITY, 88])
+            grid_b64 = _b64m.b64encode(grid_buf).decode('utf-8')
+        except Exception as e:
+            logger.warning(f"pick_best_cam grid build failed: {e}")
+            return None
+
+        prompt_text = (
+            f"图中 TARGET 是目标场景,数字 1-{len(cams)} 是机器人 {len(cams)} 个相机的当前视角. "
+            f"哪个数字(1-{len(cams)})的图与 TARGET 里的建筑/地标/场景最相似? "
+            f"只回答一个数字, 不要解释."
+        )
+        content = [
+            {"type": "image_url", "image_url": {"url": _build_image_url(grid_b64)}},
+            {"type": "text", "text": prompt_text},
+        ]
+        messages = [{"role": "user", "content": content}]
+        payload = {
+            "model": self.model_name, "messages": messages,
+            "max_tokens": max_tokens, "temperature": 0.0,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+        try:
+            session = self._get_session()
+            resp = session.post(f"{self.base_url}/chat/completions",
+                                json=payload, timeout=self.timeout)
+            resp.raise_for_status()
+            txt = resp.json()["choices"][0]["message"]["content"].strip()
+            logger.info(f"pick_best_cam raw={txt!r}")
+            for ch in txt:
+                if ch.isdigit():
+                    idx = int(ch) - 1
+                    if 0 <= idx < len(cam_names):
+                        return cam_names[idx]
+                    break
+        except Exception as e:
+            logger.warning(f"pick_best_cam request failed: {e}")
+        return None
+
     def __del__(self):
         self.stop()
 
@@ -287,6 +364,25 @@ class AutoLandmarkNamer:
     def generate_self_position_names(self, position_id, camera_images=None):
         cn, en = self.generate_position_name(position_id, camera_images)
         return {"position_name": cn, "position_name_eng": en}
+
+    def vqa_pick_cam(self, self_cam_imgs: dict, target_img) -> Optional[str]:
+        """Ask Qwen VLM which cam image matches target scene best.
+
+        self_cam_imgs: dict {cam_name -> BGR numpy}
+        target_img: BGR numpy of target node
+        Returns cam_name or None.
+        """
+        if not self.use_qwen or not self._qwen_server or not self._qwen_server.is_ready:
+            return None
+        try:
+            cam_b64 = {n: self._b64(img) for n, img in self_cam_imgs.items() if img is not None}
+            if not cam_b64:
+                return None
+            tgt_b64 = self._b64(target_img)
+            return self._qwen_server.pick_best_cam(cam_b64, tgt_b64)
+        except Exception as e:
+            logger.warning(f"vqa_pick_cam: {e}")
+            return None
 
     def stop(self):
         if self._qwen_server:

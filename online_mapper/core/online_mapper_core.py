@@ -856,13 +856,44 @@ class OnlineMapperCore:
                 name_struct=ns.to_dict() if ns is not None else None,
             )
 
+        # 3.9 P3.18: 为每个 node 计算 motion-based body heading
+        # (atan2 of displacement to next/prev keyframe). 这绕开 VGGT pose.theta
+        # 的 yaw 漂移 (4 节点全估 -85°), 给 ConnectionBuilder 的几何先验提供
+        # 可靠的机器人朝向.
+        try:
+            import math as _math
+            ordered = sorted(self.topo.nodes.keys(),
+                              key=lambda i: self.topo.nodes[i].frame_idx)
+            for i, nid in enumerate(ordered):
+                if nid not in self.pose_graph.nodes:
+                    continue
+                cur = self.pose_graph.nodes[nid]
+                dx = dy = None
+                # prefer forward-to-next delta; fallback to prev-to-self
+                if i + 1 < len(ordered) and ordered[i + 1] in self.pose_graph.nodes:
+                    nxt = self.pose_graph.nodes[ordered[i + 1]]
+                    dx, dy = nxt.x - cur.x, nxt.y - cur.y
+                if dx is None or abs(dx) + abs(dy) < 1e-3:
+                    if i > 0 and ordered[i - 1] in self.pose_graph.nodes:
+                        prv = self.pose_graph.nodes[ordered[i - 1]]
+                        dx, dy = cur.x - prv.x, cur.y - prv.y
+                if dx is not None and abs(dx) + abs(dy) > 1e-3:
+                    cur.motion_theta = _math.atan2(dy, dx)
+                    logger.info(f"[MotionHeading] node {nid}: "
+                                f"θ_motion={_math.degrees(cur.motion_theta):+.1f}° "
+                                f"(θ_pose={_math.degrees(cur.theta):+.1f}°)")
+        except Exception as e:
+            logger.warning(f"motion_heading compute failed: {e}")
+
         # 4. ConnectionBuilder: 真实 next_positions
         if self.cfg.enable_real_connections:
             try:
                 from online_mapper.topology.connection_builder import ConnectionBuilder
                 cb = ConnectionBuilder(
                     sim_threshold=self.cfg.connection_sim_threshold,
-                    qwen_gpu=self.cfg.qwen_gpu, namer=self.namer)
+                    qwen_gpu=self.cfg.qwen_gpu, namer=self.namer,
+                    depth_estimator=self.depth,  # P3 traversability
+                    detector=self.detector)  # P3.8 person penalty
                 node_dirs = {nid: out_root / nid for nid in self.topo.nodes}
                 for nid, node in self.topo.nodes.items():
                     nbs = [self.topo.nodes[nbid] for nbid in node.neighbors
@@ -1493,7 +1524,29 @@ class OnlineMapperCore:
             if nid in self.pose_graph.nodes:
                 pn = self.pose_graph.nodes[nid]
                 poses[nid] = (pn.x, pn.y)
+        # P3: cross-gap filter — 若两 node timestamp 差 > 60s 且中间无 keyframe
+        # 跨越 (同时 pose 差 > 3m), 拒绝生成 edge (memory_test_data 的 6.2 min
+        # 数据断档会虚构跨段 connection, 如 N7↔N13).
+        ts_map: Dict[str, int] = {}
+        for nid in ids:
+            try:
+                ts_map[nid] = int(self.topo.nodes[nid].timestamp)
+            except Exception:
+                pass
+        CROSS_GAP_MS = 60 * 1000  # 60s
+        def _cross_gap(a: str, b: str) -> bool:
+            ta, tb = ts_map.get(a), ts_map.get(b)
+            if ta is None or tb is None:
+                return False
+            dt = abs(ta - tb)
+            if dt <= CROSS_GAP_MS:
+                return False
+            # timestamp 差大, 检查中间是否有其他 node 作为 bridging keyframe
+            lo, hi = min(ta, tb), max(ta, tb)
+            bridged = any(lo < ts < hi for kid, ts in ts_map.items() if kid not in (a, b))
+            return not bridged
         added_spatial = 0
+        dropped_cross_gap = 0
         for nid in ids:
             if nid not in poses:
                 continue
@@ -1507,6 +1560,9 @@ class OnlineMapperCore:
                 dists.append((d, other))
             dists.sort()
             for _, other in dists[:k_spatial]:
+                if _cross_gap(nid, other):
+                    dropped_cross_gap += 1
+                    continue
                 edge = (min(nid, other), max(nid, other))
                 if edge not in self.topo.edges:
                     self.topo.add_edge(nid, other)

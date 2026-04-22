@@ -147,6 +147,32 @@ class VGGTDepthEstimator:
             h, w = bgr_image.shape[:2]
             return np.ones((h, w), dtype=np.float32)
 
+    def estimate_stateless_with_points(self, bgr_image):
+        """旁路调用, 同时返回 depth 和 camera-frame 点云。
+
+        Returns dict:
+          'depth': HxW float32 (原图尺寸, 米)
+          'points_camera': HxWx3 float32 (VGGT 原尺寸 518x..., 相机系 x-right y-down z-forward, 米)
+        或 None 不可用时。
+        """
+        if not self.available or bgr_image is None:
+            return None
+        try:
+            out = self._sw.infer_stateless(bgr_image)
+            import cv2
+            h, w = bgr_image.shape[:2]
+            depth_img = cv2.resize(out["depth"].astype(np.float32),
+                                   (w, h), interpolation=cv2.INTER_LINEAR)
+            # world_points → camera frame via latest extri
+            wp = out["world_points"]
+            R = out["extri"][:3, :3].astype(np.float32)
+            T = out["extri"][:3, 3].astype(np.float32)
+            pts_cam = (wp @ R.T) + T  # HxWx3 (VGGT resolution, not original)
+            return {"depth": depth_img, "points_camera": pts_cam.astype(np.float32)}
+        except Exception as e:
+            logger.warning(f"VGGT estimate_stateless_with_points failed: {e}")
+            return None
+
 
 # ======================================================================
 def build_depth_estimator(cfg):

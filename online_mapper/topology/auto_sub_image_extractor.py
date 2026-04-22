@@ -30,7 +30,7 @@ class AutoSubImageExtractor:
     MID_SHRINK = 0.87
     SMALL_SHRINK = 0.75
 
-    POINT_PROMPT = "通道正中间位置"
+    POINT_PROMPT = "前方通道最远处的地面中心点"
 
     # Y 坐标限制 (人工标注规律: Y ≈ 47%~50%)
     MAX_Y_PCT = 0.52    # Y 超过此比例则修正

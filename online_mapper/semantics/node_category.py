@@ -62,16 +62,15 @@ FUNCTION_AREA_WHITELIST = {
     "关爱室": "关爱室",
     "care":   "关爱室",
     "母婴室": "母婴室",
-    "休息":   "休息区",
-    "lounge": "休息区",
-    "休闲":   "休息区",
+    # 移除 '休息' / '休闲' / 'lounge' / '休息区' (2026-04-22 用户反馈):
+    # '休息区' 语义泛化 (沙发区/咖啡座/公共椅任意摆放都能被 Qwen describe 成
+    # 休息区), 不适合作独立导航节点, 与 '办公区' 同样排除.
     "零食":   "零食区",
     "snack":  "零食区",
     "工位":   "工位区",
     "工位区": "工位区",
     # 中文规范名自匹配 (Qwen describe_scene 直接返回中文 canonical)
-    # 注意: 不收 '办公区' / '办公' — 办公区太泛化, 不适合作导航节点
-    "休息区": "休息区",
+    # 注意: 不收 '办公区' / '办公' / '休息区' / '休闲' — 过于泛化, 不适合作导航节点
     "零食区": "零食区",
     "前台区": "前台",
     # 园区/楼宇公共区 (campus-level lobbies and service points)
@@ -392,6 +391,16 @@ class NodeCategoryClassifier:
                 return CategoryDecision(
                     NodeCategory.BUILDING_LANDMARK, bl, bl,
                     reason=f"building_landmark plate='{plate_text}'")
+        # scene_describe 分支: multi-cam 识别到 'C座入口'/'A座入口' 等
+        # BUILDING_LANDMARK 场景 (非 plate) 也作为有效 node name. 救 test1
+        # fidx=34/37 机器人在 C 座入口附近, cam3/cam4 看到 C 座建筑但没门牌,
+        # 之前被 classify 为 reject.
+        if scene_describe and scene_verified:
+            bl = match_building_landmark(scene_describe)
+            if bl:
+                return CategoryDecision(
+                    NodeCategory.BUILDING_LANDMARK, bl, bl,
+                    reason=f"building_landmark scene='{scene_describe}'")
 
         # ---- E. Shop / proper-noun storefront ----
         if plate_text_verified and plate_text:

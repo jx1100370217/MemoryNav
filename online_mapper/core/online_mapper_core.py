@@ -37,7 +37,8 @@ from online_mapper.semantics.hallucination_filter import (
 )
 from online_mapper.semantics.node_category import (
     NodeCategoryClassifier, NodeCategory, JunctionKind, CategoryDecision,
-    cn_to_en,
+    cn_to_en, FUNCTION_AREA_WHITELIST, LANDMARK_FACILITY_WHITELIST,
+    BUILDING_LANDMARK_PATTERNS,
 )
 from online_mapper.semantics.colocation_merger import ColocationMerger
 from online_mapper.geometry.junction_detector import JunctionDetector
@@ -342,19 +343,90 @@ class OnlineMapperCore:
                 scene_verified = False
                 if self.namer is not None and self.namer._qwen_server:
                     try:
-                        front = cv2.imread(frame["cameras"]["camera_1"])
-                        if front is not None:
-                            r = self.namer._qwen_server.describe_scene(self._b64(front))
+                        # Multi-cam describe_scene: 扫 4 路 cam 各问一次 Qwen,
+                        # 取最具体的场景名 (匹配 FUNCTION_AREA_WHITELIST /
+                        # LANDMARK_FACILITY_WHITELIST 关键词优先). 修复单 cam
+                        # 看不到打印机/茶水间等 landmark 导致错判为 '办公区'.
+                        scene_cands = []
+                        verify_img_map = {}
+                        for cam_id in ('camera_1', 'camera_2', 'camera_3', 'camera_4'):
+                            img_path = frame["cameras"].get(cam_id)
+                            if not img_path:
+                                continue
+                            img = cv2.imread(img_path)
+                            if img is None:
+                                continue
+                            try:
+                                r = self.namer._qwen_server.describe_scene(self._b64(img))
+                            except Exception:
+                                continue
                             if r.get("status") == "ok":
                                 cand = (r.get("name_cn") or "").strip()
                                 if cand and cand not in ("未知", "未知位置"):
-                                    scene_describe = cand
-                                    if (self.verifier
-                                            and self.verifier.available
-                                            and self.verifier.verify_scene(front, cand)):
-                                        scene_verified = True
+                                    scene_cands.append((cam_id, cand))
+                                    verify_img_map[cand] = img
+
+                        def _canonicalize(name: str) -> str:
+                            """Normalize to canonical form for voting:
+                              '打印机房'/'打印机'/'打印区' → '打印区'
+                              '电梯口'/'电梯厅' → '电梯口'
+                              'C座入口' BUILDING_LANDMARK → 原样
+                              '大堂'/'广场'/'办公区' 泛化 → 原样.
+                            保证同义 raw name 合并为同一票."""
+                            for kw, cn in FUNCTION_AREA_WHITELIST.items():
+                                if kw in name:
+                                    return cn
+                            for kw, cn in LANDMARK_FACILITY_WHITELIST.items():
+                                if kw in name:
+                                    return cn
+                            for pat in BUILDING_LANDMARK_PATTERNS:
+                                if pat.match(name):
+                                    return name
+                            return name
+
+                        def _specificity_rank(name: str) -> int:
+                            for kw in FUNCTION_AREA_WHITELIST:
+                                if kw in name:
+                                    return 0
+                            for kw in LANDMARK_FACILITY_WHITELIST:
+                                if kw in name:
+                                    return 1
+                            for pat in BUILDING_LANDMARK_PATTERNS:
+                                if pat.match(name):
+                                    return 2
+                            return 3
+
+                        if scene_cands:
+                            # 投票: 每 cam 1 票, canonicalize 后计数.
+                            # 规则 (用户 2026-04-22 指定):
+                            #   - 至少 2 cam 投同一 canonical name → 用该 name
+                            #   - 所有 cam 各不相同 → 无共识, 不创建 node
+                            # tie-break: 多 name 并列最高票时按 specificity
+                            #   rank 取更具体的 (FUNCTION_AREA > BUILDING >
+                            #   LANDMARK > 泛化).
+                            canonical_cands = [(c, _canonicalize(n)) for c, n in scene_cands]
+                            from collections import Counter
+                            vote_cnt = Counter(n for _, n in canonical_cands)
+                            top = vote_cnt.most_common()
+                            top_count = top[0][1]
+                            if top_count >= 2:
+                                top_names = [n for n, c in top if c == top_count]
+                                top_names.sort(key=_specificity_rank)
+                                scene_describe = top_names[0]
+                                scene_verified = True  # 2+ cam 共识即认为 verified
+                                logger.info(f"[MultiCamScene] fidx={fidx} "
+                                            f"cands={scene_cands} votes={dict(vote_cnt)} "
+                                            f"→ '{scene_describe}' (consensus={top_count}/"
+                                            f"{len(canonical_cands)})")
+                            else:
+                                # 无共识 (所有 cam 给不同 name), 不创建 node
+                                scene_describe = None
+                                scene_verified = False
+                                logger.info(f"[MultiCamScene] fidx={fidx} "
+                                            f"cands={scene_cands} votes={dict(vote_cnt)} "
+                                            f"→ NO CONSENSUS (all cams differ), skip node")
                     except Exception as e:
-                        logger.debug(f"scene desc fail: {e}")
+                        logger.debug(f"multi-cam scene desc fail: {e}")
 
                 decision = self.category_clf.classify(
                     plate_text=plate_text,
@@ -744,6 +816,12 @@ class OnlineMapperCore:
                 #     trigger 在 1770097836 中段) 被 DEEPROUTE.AI (best frame 1770097843
                 #     = 前台柜台近视) attach 时, relocate 到 DEEPROUTE.AI 帧更合理.
                 target_from_plate = getattr(target, "_from_plate_best", False)
+                # 2026-04-22 修订: 纯 '前台' (无 plate) 的 keyframe-sourced node
+                # 会因 replaced_org=False 自然走入 KEEP 路径 (保留 fidx=15
+                # 十字路口等 trigger 帧). 当 brand attach 实际发生 (replaced_org=
+                # True), RELOCATE 到 brand best-view 对 brand-attached node
+                # (如 '前台·DEEPROUTE.AI', brand best-view area 远大于 keyframe
+                # trigger 帧) 的导航 crop 更有价值 (能看到品牌招牌作 landmark).
                 if replaced_org and not target_from_plate:
                     target.timestamp = obs.timestamp
                     target.cameras = dict(obs.cameras)

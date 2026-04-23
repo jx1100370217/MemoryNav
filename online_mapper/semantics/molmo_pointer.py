@@ -48,19 +48,24 @@ class MolmoPointer:
                     f"device={device}, dtype={dtype})")
 
     def _load(self):
-        if self._model is not None:
+        if self._model is not None or getattr(self, "_load_failed", False):
             return
-        import torch
-        from transformers import AutoProcessor, AutoModelForCausalLM, GenerationConfig
-        td = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}[self._dtype]
-        logger.info(f"[MolmoPointer] 加载 {self._model_id} ...")
-        self._processor = AutoProcessor.from_pretrained(
-            self._model_id, trust_remote_code=True, torch_dtype=td)
-        self._model = AutoModelForCausalLM.from_pretrained(
-            self._model_id, trust_remote_code=True, torch_dtype=td).to(self._device).eval()
-        self._gen_cfg = GenerationConfig(
-            max_new_tokens=128, stop_strings="<|endoftext|>")
-        logger.info(f"[MolmoPointer] 就绪")
+        try:
+            import torch
+            from transformers import AutoProcessor, AutoModelForCausalLM, GenerationConfig
+            td = {"bf16": torch.bfloat16, "fp16": torch.float16,
+                  "fp32": torch.float32}[self._dtype]
+            logger.info(f"[MolmoPointer] 加载 {self._model_id} ...")
+            self._processor = AutoProcessor.from_pretrained(
+                self._model_id, trust_remote_code=True, torch_dtype=td)
+            self._model = AutoModelForCausalLM.from_pretrained(
+                self._model_id, trust_remote_code=True, torch_dtype=td).to(self._device).eval()
+            self._gen_cfg = GenerationConfig(
+                max_new_tokens=128, stop_strings="<|endoftext|>")
+            logger.info(f"[MolmoPointer] 就绪")
+        except Exception as e:
+            self._load_failed = True
+            logger.error(f"[MolmoPointer] 加载失败 (后续 predict 静默返回 fail): {e}")
 
     def start(self):
         try:

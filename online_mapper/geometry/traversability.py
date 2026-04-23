@@ -142,6 +142,55 @@ def detect_vertical_obstacle_columns(points_camera: np.ndarray,
     return col_coverage >= min_col_coverage
 
 
+def resolve_crop_point(trav_map: np.ndarray,
+                       preferred_cx: int,
+                       target_y_frac: float = 0.48,
+                       edge_margin_frac: float = 0.10,
+                       max_cx_offset_frac: float = 0.30,
+                       points_camera: np.ndarray | None = None,
+                       y_ground: float | None = None) -> tuple[int, int] | None:
+    """Pointer-preserve crop point resolver.
+
+    与 find_best_traversable_point 不同, 此函数优先保留 pointer 的 cx 信号,
+    TRAV 只做:
+      1. cy 强制固定到 target_y_frac 行 (地面带)
+      2. cx 仅在落边缘或柱子列时 veto, 找最近可通行列替代
+      3. 所有候选列都不通时返回 None
+
+    目的: 让不同 pointer (qwen/gdino/geom/molmo/gsam2) 的 cx 差异真正体现在最终
+    crop, 避免 find_best_traversable_point 的"widest segment center"把所有 pointer
+    结果拉到同样几个热点列 (上一轮对比发现三方 cx 被离散到 577/664/730/1378 等).
+    """
+    H, W = trav_map.shape[:2]
+    row = int(H * target_y_frac)
+    edge_px = int(W * edge_margin_frac)
+    max_cx_offset = int(W * max_cx_offset_frac)
+    col_obstacle = None
+    if points_camera is not None:
+        col_obstacle = detect_vertical_obstacle_columns(points_camera, y_ground)
+        if col_obstacle is not None and col_obstacle.shape[0] != W:
+            col_obstacle = None
+
+    def _cx_usable(cx: int) -> bool:
+        if cx < edge_px or cx >= W - edge_px:
+            return False
+        if col_obstacle is not None and col_obstacle[cx]:
+            return False
+        return True
+
+    if _cx_usable(preferred_cx):
+        return preferred_cx, row
+
+    # veto triggered: search nearest usable cx within max_cx_offset
+    lo = max(edge_px, preferred_cx - max_cx_offset)
+    hi = min(W - edge_px, preferred_cx + max_cx_offset + 1)
+    candidates = [cx for cx in range(lo, hi) if _cx_usable(cx)]
+    if not candidates:
+        return None
+    best_cx = min(candidates, key=lambda c: abs(c - preferred_cx))
+    return best_cx, row
+
+
 def find_best_traversable_point(trav_map: np.ndarray,
                                  preferred_cx: int | None = None,
                                  target_y_frac: float = 0.48,

@@ -115,13 +115,16 @@ def validate_point(trav_map: np.ndarray, cx: int, cy: int,
 
 def detect_vertical_obstacle_columns(points_camera: np.ndarray,
                                       y_ground: float | None = None,
-                                      min_col_coverage: float = 0.15) -> np.ndarray | None:
+                                      min_col_coverage: float = 0.15,
+                                      bottom_frac: float = 0.5) -> np.ndarray | None:
     """Per-column mask of vertical obstacles (pillars, walls, chair backs).
 
-    A column is flagged if a significant fraction of its pixels sit meaningfully
-    above the ground plane. Catches structures whose base touches the floor — e.g.
-    pillars — which per-pixel ground/obstacle thresholds can still pass as
-    "ground" at the target-row sample height.
+    A column is flagged if a significant fraction of pixels in the BOTTOM half
+    of the image sit meaningfully above the ground plane. Limiting to the
+    bottom half excludes ceilings (indoor scenes): a ceiling at 2.5m fills the
+    top half of every column with above-ground pixels, which would otherwise
+    flag every column as an obstacle. Pillars/walls/chairs still qualify
+    because their base reaches down into the bottom half.
     """
     if points_camera is None or points_camera.ndim != 3 or points_camera.shape[2] != 3:
         return None
@@ -130,11 +133,12 @@ def detect_vertical_obstacle_columns(points_camera: np.ndarray,
         y_ground = estimate_ground_y(points_camera)
     if y_ground is None:
         return None
-    y = points_camera[..., 1]
-    z = points_camera[..., 2]
+    row_start = int(H * (1.0 - bottom_frac))
+    y = points_camera[row_start:, :, 1]
+    z = points_camera[row_start:, :, 2]
     valid = np.isfinite(y) & np.isfinite(z) & (z > MIN_DEPTH_M) & (z < MAX_DEPTH_M)
     above = valid & ((y_ground - y) > OBSTACLE_ABOVE_M)
-    col_coverage = above.sum(axis=0) / H
+    col_coverage = above.sum(axis=0) / (H - row_start)
     return col_coverage >= min_col_coverage
 
 

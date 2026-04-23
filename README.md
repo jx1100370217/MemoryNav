@@ -28,7 +28,7 @@ MemoryNav 是一个面向移动机器人的视觉记忆导航系统。系统通�
 - **🧭 要求指路**：收到"请问前往 X 怎么走"类指令时，VPR 起点 + `find_destination` 终点 + 最短路径规划，再用 Qwen3.5-0.8B 将路径润色成自然中文指路回答
 - **🗺️ 自然语言触发在线建图**：收到"开始建图""启动扫图""停止建图""完成扫图"等指令时自动创建/结束 `MappingSession`；硬编码 `task="mapping"` / `"stop_mapping"` 仍向后兼容
 - **🔁 打断后恢复导航**：询问位置 / 要求指路分支**不修改** `nav_state.plan` / `last_task`，客户端下帧 `task=None` 延用上次导航任务继续推进
-- **🛰️ 在线主动建图** (`online_mapper/`, **v2.3.0**)：三层架构（Geometry+Topology+Semantics）流式在线建图。**VGGT-1B 几何前端**（depth + VO + 占据栅格 dense 点云 单次推理同时供给）、**结构化节点命名** `NodeName(category, organization, nearby_plates, ...)`（`前台·DEEPROUTE.AI` 取代 `DEEPROUTE.AI前台` 字符串拼接）、门牌**两阶段归属**（防 EUMANN 串扰）、ConnectionBuilder **几何方向先验**（cos 相似度 + 反向硬惩罚修复 cam→neighbor 错配）、多帧投票幻觉过滤、闭环几何验证、双语命名、空间 KNN 邻接重建；输出 `merged_labeled_data/` schema 并新增 `category/organization/nearby_plates/nearby_landmarks` 字段。完整设计见 [`docs/online_mapper.md`](docs/online_mapper.md)
+- **🛰️ 在线主动建图** (`online_mapper/`)：三层架构（Geometry+Topology+Semantics）流式在线建图。**VGGT-1B 几何前端**（depth + VO + 占据栅格 dense 点云 单次推理同时供给）、**Traversability 地面平面可通行度**辅助 crop 点修正、**结构化节点命名** `NodeName(category, organization, nearby_plates, ...)` 显示 `category·organization`、门牌**两阶段归属** + `RELOCATE-DISPLAY` 规则、ConnectionBuilder **几何方向先验**（motion-heading 优先 + 反向硬惩罚 + 行人遮挡惩罚 + cx 边缘硬约束）、多 cam `describe_scene` 投票 + 连续 3 帧 temporal consensus、`BUILDING_LANDMARK` 需 votes ≥ 4 挡 OCR 字母幻觉、canonical 归一（电梯口/电梯间→电梯厅、快递柜/外卖柜/储物柜→外卖柜区）、`ColocationMerger` 跨类合并守卫 + anchor tie-break、闭环几何验证、双语命名、空间 KNN 邻接重建 + cross-gap filter；输出 `merged_labeled_data/` schema 含 `category/organization/nearby_plates/nearby_landmarks` 字段。完整设计见 [`docs/online_mapper.md`](docs/online_mapper.md)
 - **🔍 多方案 VPR 定位**：支持 4 种 SOTA 视觉位置识别方案，统一配置文件一键切换
 - **🗺️ 拓扑记忆图**：自动从标注数据构建节点-边拓扑图，支持最短路径规划
 - **🔄 循环移位匹配**：4 相机循环移位算法，支持任意朝向下的定位与偏转角估计
@@ -83,7 +83,7 @@ MemoryNav/
 │   └── memory_visualization_server.py  # 可视化服务 (子图匹配 + 打点 + 遮挡检测)
 ├── pretrained/                     # 预训练模型 (YOLOv8n, DINOv3 等)
 ├── merged_labeled_data/            # 记忆标注数据
-├── online_mapper/                  # 🛰️ 在线主动建图模块 (v2.3.0, 三层架构)
+├── online_mapper/                  # 🛰️ 在线主动建图模块 (三层架构)
 │   ├── config.py                   # 全局配置 (含 depth/vo/occ_backend 开关)
 │   ├── run_online_map.py           # CLI 入口 (baseline 离线回放)
 │   ├── core/online_mapper_core.py  # ⭐ run() + process_frame() + finalize() 流式主循环
@@ -125,7 +125,7 @@ MemoryNav/
 ├── tests/                          # 测试
 │   └── test_memory_ws.py           # WebSocket 集成测试
 └── docs/                           # 文档
-    └── online_mapper.md            # 📘 online_mapper 完整设计文档 (v2.3.0)
+    └── online_mapper.md            # 📘 online_mapper 完整设计文档
 ```
 
 ---
@@ -459,16 +459,13 @@ ask_location / ask_direction 两条分支**不修改** `nav_state.plan` / `curre
 
 ## 🛰️ 在线建图 (online_mapper)
 
-`online_mapper/` 是 MemoryNav 的建图模块, 采用三层架构 (Geometry + Topology + Semantics) 流式在线建图, 产出 `merged_labeled_data/` schema.
+`online_mapper/` 是 MemoryNav 的流式在线主动建图模块, VGGT-1B 单次推理同时给出 depth / pose / dense 点云, 由 `OnlineMapperCore` 编排几何 / 拓扑 / 语义三层产出高质量语义拓扑图。
 
-- **Geometry 层**: VGGT-1B 几何前端 (depth + VO + 占据栅格 dense 点云 单次推理), scipy LM pose graph, 4-camera depth 路口检测
-- **Topology 层**: 多触发关键帧 (VPR + 位移 + 旋转 + 信息增益 + 路口), auto-tune + ORB 几何验证闭环, ConnectionBuilder 几何方向先验
-- **Semantics 层**: STRICT prompt + QwenVerifier + MultiFrameVoter 多帧投票, 7 大类白名单, ColocationMerger 同位置合并, 结构化 NodeName + CN/EN 双语命名
-- **API**: `OnlineMapperCore.run()` / `process_frame(frame)` / `finalize()`, 支持流式输入
-- **可视化**: `finalize()` 末尾自动产出 `pose_graph.png` / `occupancy.png` / `keyframe_timeline.png` / `scene_overview.txt`
-
-完整设计文档见 **[`docs/online_mapper.md`](docs/online_mapper.md)** (v2.3.0, 12 章).
-迭代历史 (v2.1.0 → v2.3.0) 见 [`docs/online_mapper.md` §10](docs/online_mapper.md). r1→r6 早期 metrics 见 **[`online_mapper/RESULTS.md`](online_mapper/RESULTS.md)**.
+- **⚙️ 几何前端**: VGGT-1B 滑窗 4 帧 bf16 单例; `VisualOdometry` 零额外推理直接复用 VGGT 的 extrinsics; `OccupancyGrid` 用 dense 点云直填; `Traversability` 从点云估计地面平面可通行度, 用于 crop 点修正
+- **🕸️ 拓扑**: 多触发关键帧 (VPR + 位移 + 旋转 + 信息增益 + 路口 + 白名单); 每帧全局 VPR + ORB 几何验证闭环; `ConnectionBuilder` 给 next_positions 叠加几何方向先验 (motion-heading 优先 `pose.theta`, ALPHA=0.5, 反向硬惩罚) + traversability 地面校正 + GroundingDINO 行人遮挡惩罚 + `cx` 边缘硬约束; finalize 时按 spatial / temporal KNN 重建邻接, 含 cross-gap filter (> 60s 且无 bridging keyframe → 拒绝时间边)
+- **🧠 语义**: 多 cam `describe_scene` 投票 (≥2 cam 一致才建节点, 4 cam 全不同则 skip) + 连续 3 帧 temporal consensus (非白名单 winner 需近 3 帧曾出现才 verified); 门牌 STRICT prompt + Qwen 二次验证 + `MultiFrameVoter`, `BUILDING_LANDMARK` 需 votes ≥ 4 (挡字母 OCR 幻觉) 且禁用数字幻觉单帧 fast-pass; canonical 归一 (电梯口 / 电梯间 → 电梯厅; 快递柜 / 外卖柜 / 储物柜 / 智能取餐柜 → 外卖柜区); `NodeName` 结构化命名 `category·organization`; `ColocationMerger` 跨类合并守卫 + anchor tie-break; 门牌两阶段归属 (functional 先建, brand 后 attach, `RELOCATE-DISPLAY` 规则按目标节点来源决定是否重定位 display 帧)
+- **🎯 输出**: `merged_labeled_data/<id>/node_position_info.json` (结构化 `self_position` + `next_positions` + crops), `scene_graph.json`, `pose_graph.json`, `metrics.json`, `online_mapping_log.jsonl`, `plate_voter_dump.json`
+- **🔁 示例**: `memory_test_data` 园区漫游 281 帧 → 8 节点链 `电梯厅 → 前台 → C座 → H座电梯 → A座 → B座入口 → 外卖柜区·EXHIOH → 2号外卖柜`
 
 ### 基线离线回放
 
@@ -481,7 +478,7 @@ python online_mapper/run_online_map.py \
 
 ### WebSocket 双模式接入
 
-`deploy/ws_proxy_with_memory.py` 监听 **9528** 端口, 单个连接同时支持**导航**与**建图**两种模式。所有请求保持统一形状 `{id, task, pts, images}`, 由**四类意图分类**驱动:
+`deploy/ws_proxy_with_memory.py` 监听 **9528** 端口, 单个连接同时支持**导航**与**建图**两种模式。所有请求保持统一形状 `{id, task, pts, images}`, 由**四类意图分类** (`navigate / ask_location / ask_direction / mapping`) 驱动:
 
 | `task` 值 | 意图 | 作用 |
 |----------|------|------|

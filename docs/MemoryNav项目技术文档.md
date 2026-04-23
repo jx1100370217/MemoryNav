@@ -109,7 +109,7 @@ MemoryNav/
 │   ├── start_server.sh               # 服务启动脚本
 │   └── logs/                         # 日志 + 可视化图像
 │
-├── online_mapper/                    # 在线建图 (v2.3.0)
+├── online_mapper/                    # 在线建图
 │   ├── config.py                     # OnlineMapperConfig
 │   ├── run_online_map.py             # CLI 入口
 │   ├── core/
@@ -1202,62 +1202,63 @@ ask_* 两个分支**不修改** `nav_state` 和 `session_state['last_task']`。�
 
 ### 4.1 系统总览
 
-`online_mapper/` 是**流式在线主动建图模块**，在机器人边走边拍的场景下实时构建导航用的**语义拓扑图**。
-
-当前版本 **v2.3.0**, 架构按 **几何 / 拓扑 / 语义** 三层解耦：
+`online_mapper/` 是**流式在线主动建图模块**，在机器人边走边拍的场景下实时构建导航用的**高质量语义拓扑图**。架构按 **几何 / 拓扑 / 语义** 三层解耦，由 `OnlineMapperCore (core/online_mapper_core.py)` 负责编排：
 
 ```
-                    OnlineMapperCore (编排器, ~984行)
+                    OnlineMapperCore (core/online_mapper_core.py)
                               │
       ┌───────────────────────┼───────────────────────┐
       │                       │                       │
-┌─────▼──────┐         ┌──────▼──────┐         ┌──────▼──────────────┐
-│ Geometry   │         │ Topology    │         │ Semantics           │
-│ (几何)     │         │ (拓扑)      │         │ (语义)              │
-├────────────┤         ├─────────────┤         ├─────────────────────┤
-│ VGGTBackend│ ◄单例   │ KeyframeSel │         │ OpenSetDetector     │
-│ ├VGGTDepth │         │ LoopCloser  │         │ DoorPlateTracker    │
-│ ├VGGTVO    │ 零推理  │ TopoGraph   │         │ MultiFrameVoter     │
-│ ├Occupancy │ ◄dense  │ ConnBuilder │ 几何先验│ QwenVerifier        │
-│ └PoseGraph │         │ JunctionDet │         │ NodeCategoryClf     │
-└────────────┘         └─────────────┘         │ ColocationMerger    │
-                                               │ NodeName (结构化)   │
-                                               │ NameDeduplicator    │
-                                               └─────────────────────┘
+┌─────▼──────────┐     ┌──────▼──────────┐     ┌─────▼──────────────┐
+│ Geometry (几何)│     │ Topology (拓扑) │     │ Semantics (语义)   │
+├────────────────┤     ├─────────────────┤     ├────────────────────┤
+│ VGGTBackend    │单例 │ KeyframeSelector│     │ OpenSetDetector    │
+│ ├VGGTDepth     │     │ LoopCloser      │     │ DoorPlateTracker   │
+│ ├VGGTVO        │零推理│ ConnBuilder    │几何+│ MultiFrameVoter    │
+│ ├Occupancy     │dense│ ├traversability │person│ HallucinationFilt │
+│ ├PoseGraph     │motion│└motion-heading │occ  │ QwenVerifier       │
+│ ├JunctionDet   │_theta│ AutoSubImgExt  │     │ NodeCategoryClf    │
+│ └Traversability│     │ TopoGraph/Node  │     │ NodeName           │
+└────────────────┘     └─────────────────┘     │ ColocationMerger   │
+                                               │ NameDeduplicator   │
+                                               │ SceneGraph         │
+                                               └────────────────────┘
 ```
 
-#### 特性一览 (v2.4.0)
+#### 特性一览
 
-| 维度 | online_mapper (v2.4.0) |
-|------|---------------------|
-| 时序 | 流式, 逐帧决策 (`process_frame` + `finalize`) |
-| 几何前端 | VGGT-1B (depth + pose + point cloud 一次推理) |
-| VO | 复用 VGGT pose, 零额外推理 |
-| 占据栅格 | VGGT dense point map 直填 |
-| 关键帧 | VPR + 累积位移 + 累积旋转 + 信息增益 |
-| 闭环 | 全局 VPR + ORB 几何验证, auto-tune 阈值 |
-| 节点命名 | 结构化 NodeName + 多帧投票 + 二次验证 + 类别白名单 |
-| cam→neighbor | 视觉 Hungarian + 几何方向先验 (α=0.2) |
+| 维度 | online_mapper |
+|------|---------------|
+| 时序 | 流式逐帧决策 (`process_frame` + `finalize`) |
+| 几何前端 | VGGT-1B 单例滑窗 (depth + pose + 点云 一次推理，bf16, window=4) |
+| VO | 复用 VGGT extri 算 (dtrans, dyaw), 零额外推理 |
+| 占据栅格 | VGGT dense 点云直填 + 沿射线等距标 FREE |
+| 位姿图 | scipy LM；`PoseNode` 含 `motion_theta` (相邻 keyframe 位置增量 atan2) |
+| 可通行度 | `Traversability` 从 camera-frame 点云估计地面 y + traversable 掩码 |
+| 关键帧 | VPR 不相似 / 累积位移 / 累积旋转 / 信息增益 / 路口 / 语义白名单触发 |
+| 闭环 | 全局 VPR top-k + ORB 几何验证 + auto-tune |
+| 语义命名 | 多帧投票 + Qwen 二次验证 + 类别决策树 + canonical 归一 + BL 专用门槛 |
+| 多相机场景描述 | 4-cam 并行 `describe_scene` 投票 + canonical 归一 + temporal consensus |
+| cam→neighbor | DINOv3 视觉 Hungarian + 几何方向先验 (ALPHA = 0.5, 反向硬惩罚) + traversability 校正 + person-occlusion 惩罚 + cx 硬约束 |
 | 接入 | CLI (`run_online_map.py`) 或 WebSocket 建图模式 (`ws_proxy_with_memory.py`) |
-| 可视化 | `viz/visualize.py` 输出 `pose_graph.png` / `occupancy.png` / `keyframe_timeline.png` / `scene_overview.txt` |
 
 ### 4.2 几何层
 
 #### 4.2.1 VGGT 后端 (`geometry/vggt_backend.py`)
 
-VGGT-1B 是几何层的核心，**单次推理同时输出 5 种信息**：
+VGGT-1B 是几何层核心，**单次推理同时输出 5 种信息**：
 
 ```
-输入: BGR 图像序列 (滑窗, 默认4帧)
+输入: BGR 图像序列 (滑窗, 默认 4 帧)
 输出:
-  depth:        [H×W float] 深度图 (米, VGGT自洽尺度)
-  depth_conf:   [H×W float] 深度置信度 (expp1激活, ≥1.0)
+  depth:        [H×W float] 深度图 (米, VGGT 自洽尺度)
+  depth_conf:   [H×W float] 深度置信度 (expp1 激活, ≥1.0)
   world_points: [H×W×3 float] 稠密点云 (VGGT-world frame)
   extri:        [3×4 float] 外参 (cam-from-world, X_cam = R*X_w + T)
   intri:        [3×3 float] 内参
 ```
 
-**VGGTBackend** 是进程内单例，懒加载 `pretrained/vggt-1b/model.pt`：
+`VGGTBackend` 为进程内单例，懒加载 `pretrained/vggt-1b/model.pt`：
 
 ```python
 class VGGTBackend:
@@ -1270,12 +1271,12 @@ class VGGTBackend:
         return cls._instance
 
     def infer_bgr_list(self, bgr_list) -> dict:
-        # 预处理: BGR→RGB, resize到518px宽, 归一化
+        # 预处理: BGR→RGB, resize 到 518px 宽, 归一化
         # VGGT forward → 解码各输出
         # 按帧拆分返回
 ```
 
-**VGGTSlidingWindow** 维护一个 BGR ring buffer 提供时序上下文：
+`VGGTSlidingWindow` 维护 BGR ring buffer，提供时序上下文：
 
 ```python
 class VGGTSlidingWindow:
@@ -1287,7 +1288,7 @@ class VGGTSlidingWindow:
         # 返回: (最新帧结果, 倒数第二帧结果)  # 同坐标系
 
     def infer_stateless(self, bgr):
-        # 单帧推理, 不入栈 (旁路用, 如 junction_detector)
+        # 单帧推理, 不入栈 (旁路用, 如 JunctionDetector)
 ```
 
 #### 4.2.2 深度估计 (`geometry/depth_estimator.py`)
@@ -1296,13 +1297,10 @@ class VGGTSlidingWindow:
 
 | 后端 | 类 | 说明 |
 |------|-----|------|
-| `"vggt"` (默认) | `VGGTDepthEstimator` | 维护滑窗, 缓存 last/prev_extri, last_points_camera |
-| `"da_v2"` | `DepthEstimator` | Depth-Anything-V2-Small, 旧后端, 用于回退 |
+| `"vggt"` (默认) | `VGGTDepthEstimator` | 维护滑窗；缓存 last/prev_extri、last/prev_intri、last_depth_conf、last_world_points、last_points_camera |
+| `"da_v2"` | `DepthEstimator` | Depth-Anything-V2-Small, 旧管线 |
 
-`VGGTDepthEstimator` 额外缓存：
-- `last_extri`, `prev_extri`: 当前帧和上一帧外参（同坐标系）
-- `last_world_points`: 当前帧点云（VGGT-world frame）
-- `last_points_camera`: 当前帧点云（转到 camera frame, 给占据栅格用）
+`VGGTDepthEstimator` 额外缓存 camera-frame 点云 `last_points_camera`，给占据栅格与 `Traversability` 使用。
 
 #### 4.2.3 视觉里程计 (`geometry/visual_odometry.py`)
 
@@ -1310,8 +1308,8 @@ class VGGTSlidingWindow:
 
 | 后端 | 类 | 耗时 |
 |------|-----|------|
-| `"vggt"` (默认) | `VGGTVisualOdometry` | ~0.004s/帧 (零推理, 复用外参) |
-| `"orb"` | `MonoVO` | ~4.87s/49帧 (ORB+EssentialMatrix+recoverPose) |
+| `"vggt"` (默认) | `VGGTVisualOdometry` | 读 last/prev_extri, 零额外推理 |
+| `"orb"` | `MonoVO` | ORB + EssentialMatrix + recoverPose |
 
 VGGT VO 算法：
 
@@ -1331,63 +1329,85 @@ dyaw = atan2(R_rel[0,2], R_rel[2,2])  # 绕 Y 轴
 
 支持两种集成方式：
 
-| 方式 | 后端 | 信息量 |
-|------|------|--------|
-| `integrate(depth_row, fov)` | DA-V2 | 1D ray-cast, ~8 free / 207 occ |
-| `integrate_pointcloud(points_camera, ...)` | VGGT | dense 点云直填, ~28 free / 588 occ |
+| 方式 | 后端路径 | 描述 |
+|------|---------|------|
+| `integrate(robot_pose, depth_row, fov)` | DA-V2 legacy | 1D ray-cast |
+| `integrate_pointcloud(points_camera, robot_x, robot_y, robot_theta, conf)` | VGGT 默认 | dense 点云直填 |
 
 VGGT 点云直填流程：
 
 ```
-1. 置信度过滤 (conf >= 1.0)
+1. 置信度过滤 (conf ≥ 1.0)
 2. Z 范围过滤 ([0.05, 10] m)
 3. 高度过滤 ([-1.5, 1.5] m)
-4. 随机稀疏采样 (默认 6000 点)
-5. Camera frame → Robot local (forward=z, left=-x)
+4. 随机稀疏采样 (6000 点)
+5. Camera frame → Robot local (forward = z, left = -x)
 6. 旋转 robot_theta + 平移
-7. 标记 OCC 栅格
-8. 沿 robot→OCC 射线等距采样标记 FREE 栅格
+7. 标 OCC 栅格
+8. 沿 robot → OCC 射线等距采样标 FREE 栅格
 ```
 
-#### 4.2.5 路口检测 (`geometry/junction_detector.py`)
+#### 4.2.5 位姿图 (`geometry/pose_graph.py`)
 
-使用 4 个相机的深度图判断当前是否为路口：
+基于 scipy LM 的 pose graph。`PoseNode` 字段 `(x, y, theta, motion_theta)`：
+
+- `theta` 来自 VO 累积偏航，可能出现 VGGT yaw 漂移。
+- `motion_theta` 由相邻 keyframe 的 `atan2(dy, dx)` 计算，得到**位置增量驱动的 heading**，作为 `ConnectionBuilder` 几何方向先验的主信号，绕开 VGGT yaw 漂移。
+
+#### 4.2.6 路口检测 (`geometry/junction_detector.py`)
+
+用 4 相机深度图判断路口，通过 `depth.estimate_stateless(img)` 隔离单帧推理，避免污染 VGGT 滑窗：
 
 ```
 对 camera_1~4 分别:
   depth.estimate_stateless(img)  # 单帧推理, 不污染滑窗
   统计各方向通行度
-判断: 十字路口 / T字路口 / 直线走廊
+判断: 十字路口 / T 字路口 / 直线走廊
+```
+
+#### 4.2.7 可通行度 (`geometry/traversability.py`)
+
+从 VGGT camera-frame 点云估计像素级可通行度，用于 `ConnectionBuilder` 将 crop 中心修正到可走地面。
+
+```python
+estimate_ground_y(points_camera, image_bottom_frac=0.33)
+  # 取底部 1/3 画面、z ∈ [0.3, 12m] 的有效点
+  # 返回 y 的 75 分位（ground 为 y-down 最大）
+
+compute_traversability_map(points_camera, y_ground=None) -> HxW float32
+  # GROUND band: |Δy - y_ground| ≤ 0.30m → 1.0
+  # Obstacle : y < y_ground - 0.25m      → 0.0
+  # 其余 (无效 depth / 远距)              → 0.4 (unknown)
+
+validate_point(trav_map, cx, cy, radius)
+  # 半径窗口内 traversable ≥ 55% 且 obstacle ≤ 25% 才通过
+
+find_best_traversable_point(trav_map, preferred_cx,
+                            target_y_frac=0.48,
+                            edge_margin_frac=0.10,
+                            max_offset_frac=0.30)
+  # 在 target 行带内找可通行列，相对 preferred_cx 偏移 ≤ 30% 画面宽度
+  # 硬屏蔽边缘 10% 列 (绕开 VGGT 全景边缘的 traversable 假阳)
+  # 返回 (cx, row) 或 None
 ```
 
 ### 4.3 拓扑层
 
 #### 4.3.1 关键帧选择 (`topology/keyframe_selector.py`)
 
-4 个触发条件 (OR 关系)，全部受 `min_keyframe_frame_interval` (默认 3) 约束：
+多个触发条件 OR：VPR 不相似 ≥ 0.50 / 累积位移 ≥ 1.5m / 累积旋转 ≥ 0.6 rad / 信息增益 ≥ 0.05 / 最小 frame 间隔 3；同时接受**路口命中**和**语义白名单命中**作为额外触发：
 
 | 触发条件 | 默认阈值 | 含义 |
 |----------|---------|------|
-| VPR dissimilarity | 0.50 | 当前帧与上一关键帧的 VPR 差异 |
-| 累积位移 | 1.5m | VO 累积平移距离 |
+| VPR dissimilarity | 0.50 | 当前帧与上一关键帧 VPR 差异 |
+| 累积位移 | 1.5 m | VO 累积平移距离 |
 | 累积旋转 | 0.6 rad | VO 累积偏航角 |
 | 信息增益 | 0.05 | 占据栅格新信息比例 |
-
-```python
-def should_trigger(self, frame_idx, vpr_dissim, dtrans, dyaw, info_gain):
-    if frame_idx - self.last_kf_idx < self.min_interval:
-        return False
-    self.acc_trans += dtrans
-    self.acc_rot += abs(dyaw)
-    return (vpr_dissim > self.vpr_thresh
-            or self.acc_trans > self.trans_thresh
-            or self.acc_rot > self.rot_thresh
-            or info_gain > self.ig_thresh)
-```
+| 最小间隔 | 3 frame | `min_keyframe_frame_interval` |
 
 #### 4.3.2 闭环检测 (`topology/loop_closure.py`)
 
-每帧执行闭环检测，特点是**自适应阈值**：
+每帧 detect, top-k = 5, ORB 几何验证 (min_inliers = 15), auto-tune 阈值：
 
 ```
 检测流程:
@@ -1403,150 +1423,205 @@ auto-tune 阈值:
   连续 N 帧不命中 → 微调降低阈值
 ```
 
-循环相似度计算（与导航系统一致）：
+循环相似度（与导航系统一致）：
 
 ```python
 def _cyclic_similarity(self, feat_a, feat_b):
     # feat_a, feat_b: {camera_1: vec, ..., camera_4: vec}
-    # 4种shift, 取最佳
+    # 4 种 shift, 取最佳
     best = max(mean(cosine(a[shift_map(i)], b[i])) for shift in 0..3)
     return best
 ```
 
 #### 4.3.3 邻接构建 (`topology/connection_builder.py`)
 
-`ThresholdedSubImageExtractor` 继承自 `online_mapper.topology.AutoSubImageExtractor`,增加了**几何方向先验**(α=0.2):
+`ConnectionBuilder` 继承自 `AutoSubImageExtractor`，在 DINOv3 Hungarian 匹配的基础上增加：阈值过滤、几何方向先验、traversability 校正、person-occlusion 惩罚、cx 硬约束。
 
-```
-对每个节点的 4 个相机 ↔ 所有邻居节点:
+**几何方向先验**（使用 `motion_theta` 作为主 heading，避开 VGGT yaw 漂移）：
 
-1. GroundedPointer (Qwen vLLM): 在每个相机上找 "通道正中间位置" → crop bbox
-2. DINOv3 CLS feature: 提取每个 crop 和每条走廊路径的视觉特征
-3. 视觉相似度矩阵: sim_matrix[cam_i][nb_j] = cosine(crop_feat, corridor_feat)
-4. 几何方向先验:
-   cam_angles = {camera_1: 0, camera_2: -π/2, camera_3: π, camera_4: π/2}
-   对每个 (cam_i, nb_j):
-     nb_pose = neighbor 的 (x, y, theta)
-     robot_ang = atan2(nb.y - my.y, nb.x - my.x) - my.theta
-     diff = wrap(robot_ang - cam_angles[cam_i])
-     angular_score = cos(diff)
-     if angular_score < -0.3: hard_penalty = -1.0  # 反向惩罚
+```python
+cam_angles = {camera_1: 0, camera_2: -π/2, camera_3: π, camera_4: π/2}
 
-   final_sim = visual_sim + 0.6 * angular_score + hard_penalty
+for (cam_id, nb_id):
+    dx, dy = nb.x - my.x, nb.y - my.y
+    world_ang = atan2(dy, dx)
+    # 优先用 motion_theta（基于位置增量），fallback pose.theta
+    heading = my.motion_theta if my.motion_theta is not None else my.theta
+    robot_ang = wrap(world_ang - heading)
+    diff = wrap(robot_ang - cam_angles[cam_id])
+    score = cos(diff)
 
-5. Hungarian 匹配 → cam ↔ neighbor 1-to-1 最优配对
-6. 相似度阈值过滤 (connection_sim_threshold=0.40)
-7. 为每个匹配对保存 big/mid/small 三级子图
+final_sim_matrix = visual_sim + ALPHA * angular_score        # ALPHA = 0.5
+if angular_score < -0.3: sim -= 1.0                          # 反向硬惩罚
 ```
 
-#### 4.3.4 拓扑重建
+**Person-occlusion 惩罚**（避免误选走廊上挡路的人作为"下一节点方向"）：
 
-`_rebuild_topology_neighbors_spatial(k_spatial=1, k_temporal=1)` 在 finalize 阶段执行：
+```python
+# 每个候选 cam 图跑 GD 查 "person"
+for cam in cams:
+    persons = detector.detect(cam_img, queries=["person"])
+    # 中心 40%x40% 区域的 person 覆盖率
+    ratio = sum(person 与 center 相交面积) / center_area
+    if ratio > 0.15:
+        sim_matrix[:, cam_idx] -= 0.30
+```
+
+**Traversability 校正 + cx 硬约束**（把 Qwen 给的 crop 中心修正到可走地面；屏蔽画面边缘噪声）：
+
+```python
+# Qwen 给的原始点 (qx, qy) 走 find_best_traversable_point
+trav_map = compute_traversability_map(points_camera)
+best = find_best_traversable_point(trav_map, preferred_cx=qx, ...)
+if best is not None and |best.cx - qx| ≤ 30% * W:
+    cx, cy = best         # 点修正到可走地面
+else:
+    keep qwen (qx, qy)
+# 画面宽度硬约束: cx 必须在 [15%W, 85%W] 内 (edge noise 防御)
+```
+
+Hungarian 匹配后按 `connection_sim_threshold = 0.40` 过滤，输出 cam ↔ neighbor 1-to-1 最优配对，并为每个匹配对保存 big/mid/small 三级子图。
+
+#### 4.3.4 AutoSubImageExtractor (`topology/auto_sub_image_extractor.py`)
+
+`ConnectionBuilder` 的基类，提供 DINOv3 CLS feature + 走廊中间帧 corridor_features 的基础匹配管线。
+
+#### 4.3.5 拓扑重建 (`_rebuild_topology_neighbors_spatial`)
+
+finalize 阶段清空所有 keyframe / plate 临时边后，按 `k_spatial = 1, k_temporal = 1` 的空间 KNN ∪ 时间 KNN 重建邻接：
 
 ```
-1. 清空所有边
+1. 清空所有边 (keyframe + plate 临时边)
 2. 空间 KNN: 按 pose 距离找最近的 k_spatial 个邻居
 3. 时间 KNN: 按时间顺序找最近的 k_temporal 个邻居
-4. 合并去重 → 重建邻接关系
+4. 合并去重 → 重建邻接
 ```
+
+**Cross-gap filter**：相邻 keyframe 时间差 > 60s 且中间无 bridging keyframe 时，拒绝该时间边（用于应对数据中间断流场景）。
 
 ### 4.4 语义层
 
 #### 4.4.1 开放集检测 (`semantics/open_set_detector.py`)
 
-基于 Grounding-DINO-Base，支持文本 query 检测：
+`OpenSetDetector` 为 Grounding-DINO-Base 封装。默认 query：
 
 ```
-默认 query:
-  door plate, room number sign, printer, trash can, white chair,
-  stool, elevator, fire extinguisher, potted plant, vending machine,
-  sofa, table, monitor
+door plate, room number sign, printer, trash can, white chair,
+stool, elevator, fire extinguisher, potted plant, vending machine,
+sofa, table, monitor
 ```
 
-#### 4.4.2 门牌追踪与三层防幻觉
+#### 4.4.2 门牌追踪 (`semantics/door_plate_tracker.py`)
 
-**DoorPlateTracker** (`semantics/door_plate_tracker.py`):
-- Grounding-DINO 每帧检测门牌
-- 选取每个门牌文字的"最佳代表帧"（清晰度最高）
+`DoorPlateTracker` 为每个 plate 维护 best observation（按最大 bbox 面积选代表帧）。
 
-**三层防幻觉** (`semantics/hallucination_filter.py`):
+#### 4.4.3 多帧投票与防幻觉 (`semantics/hallucination_filter.py`)
 
-```
-第 1 层: STRICT Prompt
-  Qwen 输出必须包含 confidence 字段
-  不确定 → 返回 false
+三层防幻觉管线：STRICT prompt → `QwenVerifier` 二次验证 → `MultiFrameVoter`。
 
-第 2 层: QwenVerifier 二次验证
-  用整张相机图问 "图中是否真有文字 X?"
-  三种 prompt 模式: strict / scene / specific-name
+`MultiFrameVoter` / `HallucinationFilter` 确认规则：
 
-第 3 层: MultiFrameVoter 多帧投票
-  ≥2 不同帧确认, 或同帧 ≥2 个相机确认
-  白名单 fast-pass (常见功能区名称)
-  子串变体合并 (如 EUMANN → NEUMANN)
-```
+- `MIN_FRAMES = 2` / `MIN_CAMERAS = 2`
+- `MIN_MAX_AREA` 为通用门槛；BUILDING_LANDMARK 单独使用 `_BUILDING_LANDMARK_MIN_AREA = 1200`（户外远距 OCR 面积天然小）。
+- **BUILDING_LANDMARK 专用 `_BUILDING_LANDMARK_MIN_VOTES = 4`**：BL name 必须累计 vote 记录 ≥ 4 才 confirmed，挡下 Qwen 对玻璃幕墙建筑 OCR 出的 "D座" / "D栋" 等字母幻觉（实测幻觉 votes ≤ 3，真实最小为 B 座 = 4）。
+- **单帧白名单 fast-pass 对 BUILDING_LANDMARK 禁用**（`is_bl == True` 时跳过 fast-pass），挡下 "13 号楼" / "1 号楼" 等数字幻觉的单帧偷渡。
+- `_BUILDING_LANDMARK_RE = ^([A-Za-z]座(入口|大堂)?|[A-Za-z]栋(入口|大堂)?|\d+号楼|\d+栋)$`。
 
-#### 4.4.3 节点类别分类 (`semantics/node_category.py`)
+子串合并：`EUMANN → NEUMANN`；大写 Latin 4–8 字符在 edit-distance ≤ 2 范围内做模糊聚类。
+
+#### 4.4.4 多相机场景描述与时序一致性
+
+关键帧创建阶段，`core/semantics` 管线对 4 个相机并行跑 `describe_scene`，再按 canonical 归一做投票与时序确认：
+
+- **并行 describe_scene**：4 路相机并行调用 Qwen `describe_scene`，候选按 specificity rank 排序：`FUNCTION_AREA (0) > LANDMARK_FACILITY (1) > BUILDING_LANDMARK (2) > generic (3)`。
+- **多相机投票**：≥ 2 cam 一致 → 采纳 winner；4 cam 全不同 → skip（不建 node）。
+- **Temporal consensus**：
+  - winner 命中白名单（FUNCTION_AREA 或 LANDMARK_FACILITY）→ 直接 verified；
+  - 非白名单 → 检查近 3 帧 `_recent_scene_winners` deque：已出现 → verified；未出现 → tentative（`scene_describe = None`，不建 node，但 winner 仍入队等待后续帧确认）。
+
+上述投票 + 时序确认的 winner 连同 confirmed plate、junction、GD landmarks 一起交给 `NodeCategoryClassifier`。
+
+#### 4.4.5 节点类别分类 (`semantics/node_category.py`)
 
 决策树优先级：
 
 ```
 ROOM_NUMBERED > ROOM_NAMED > FUNCTION_AREA > LANDMARK_FACILITY
-  > 通用X室 > SHOP > JUNCTION (十字/T字) > REJECT
+  > BUILDING_LANDMARK > 通用 X 室 > SHOP > JUNCTION > REJECT
 ```
 
-包含白名单（强电井、关爱室、打印区、茶水间…）、拒绝关键词（广告、品牌噪声…）、中英文映射表。
+**Canonical 归一（词表）**：
 
-`JunctionKind` 枚举: `CROSS` (十字路口), `T_JUNCTION` (T字路口), `NONE` (直线走廊)。
+| canonical | 归并来源（variants） |
+|-----------|--------------------|
+| 电梯厅 | 电梯 / 电梯口 / 电梯厅 / 电梯间 |
+| 外卖柜区 | 快递柜 / 快递柜区 / 外卖柜 / 外卖柜区 / 储物柜 / locker / 智能取餐柜 |
 
-#### 4.4.4 结构化命名 (`semantics/node_naming.py`)
+**白名单与模式**：
 
-替代旧的字符串拼接命名，解决了 "DEEPROUTE.AI前台" 这类粘连问题：
+- `FUNCTION_AREA_WHITELIST`：前台、打印区、休息区（已移除 "休息" 泛词）、外卖柜区、电梯厅 等。
+- `LANDMARK_FACILITY_WHITELIST`：电梯、安全出口、消防栓、B 座入口 等。
+- `BUILDING_LANDMARK_PATTERNS`：`[A-Z]座` / `[A-Z]座入口` / `\d+号楼` / `[A-Z]栋` 等。
+
+**Scene describe → BUILDING_LANDMARK 分支**：当 Qwen `scene_describe` 的结果匹配 `_BUILDING_LANDMARK_RE` 时，直接归入 BUILDING_LANDMARK 类别，避免被 SHOP / generic 分支截走。
+
+`JunctionKind` 枚举：`CROSS` (十字路口), `T_JUNCTION` (T 字路口), `NONE` (直线走廊)。
+
+#### 4.4.6 结构化命名 (`semantics/node_naming.py`)
 
 ```python
 @dataclass
 class NodeName:
-    category: str = ""              # 主类型 (中文), 如 "前台"
-    category_en: str = ""           # 英文, 如 "Reception"
-    organization: str = ""          # 关联实体 (品牌/门牌), 如 "DEEPROUTE.AI"
-    nearby_plates: list = []        # 同节点其他门牌
-    nearby_landmarks: list = []     # GD 检测到的物体
-    instance_suffix: str = ""       # 重名后缀 "_2", "_3"
+    category: str = ""              # 主类型 (canonical 中文)
+    category_en: str = ""
+    organization: str = ""          # 品牌/门牌主名 (原文保留)
+    nearby_plates: list = []
+    nearby_landmarks: list = []
+    instance_suffix: str = ""       # 全局重名后缀
 
     def display_cn(self) -> str:
-        # "前台·DEEPROUTE.AI" (中点分隔, 不再粘连)
         if self.organization and self.category and self.organization != self.category:
             base = f"{self.category}·{self.organization}"
         else:
             base = self.category or self.organization
         return f"{base}{self.instance_suffix}"
+
+    def dedup_key(self) -> tuple:
+        return (self.category, self.organization)
 ```
 
-**organization 选择**评分：
-- brand-like (Latin 大写起头) +100
-- camera_1 (前向) +30
-- bbox 面积 +0..20
-- 投票次数 +0..20
+- `select_organization(plate_obs, category)` 打分：brand-like Latin +100；camera_1 +30；bbox 面积 +0..20；投票数 +0..20。
+- `merge_names(anchor, other)`：category 取 `_SEMANTIC_RANK` 更高的一方；organization 优先 brand-like；plates / landmarks 取并集。
 
-**merge_names(anchor, other)**: 两个共位节点合并时的命名策略:
-- category 取语义等级更高的一方
-- organization 优先 brand-like
-- nearby_plates / nearby_landmarks 取并集
+#### 4.4.7 同位置节点合并 (`semantics/colocation_merger.py`)
 
-**全局唯一性**: `NameDeduplicator` 按 `(category, organization)` 元组分组，VPR 高相似 → 合并；否则追加 `_2, _3...` 后缀。
+- `VPR_SIM_THRESHOLD = 0.85` 强信号单独触发合并；`frame + spatial` 弱信号组合触发。
+- **`_category_mismatch` guard**：不同 category 的节点禁止合并（防止 BUILDING_LANDMARK 误吸 SHOP）。
+- **Anchor tie-break on frame_idx smaller**：合并时取 `frame_idx` 更小的节点作为 anchor，把另一方的 ts / cameras / next_positions transfer 过来。
+- `_combined_name` 调用 `NodeName.merge_names` 融合命名。
 
-#### 4.4.5 同位置节点合并 (`semantics/colocation_merger.py`)
+#### 4.4.8 全局唯一性 (`NameDeduplicator`)
 
-合并条件（OR）：
-- VPR 相似度 >= 0.85
-- 帧间隔 <= 8 AND 空间距离 <= 0.5m
+按 `dedup_key = (category, organization)` 分组：VPR 高相似组内合并为 alias；其余按顺序追加 `instance_suffix = _2 / _3 / ...`，最终由 `display_cn()` 统一渲染。
 
-合并策略：
-- 按 `_CATEGORY_RANK` 选择 anchor（功能区/房间 > SHOP）
-- 调用 `NodeName.merge_names(anchor, other)` 融合命名
-- SHOP 不再抢占 anchor，仅作 organization 附加
+#### 4.4.9 门牌两阶段归属 (`core/online_mapper_core.py:_create_door_plate_nodes`)
 
-### 4.5 输出与终结化
+**第一遍**：functional / landmark plate 创建独立 `door-plate node`（`node._from_plate_best = True`），需满足：
+
+- `plate_voter.is_confirmed(name)`（受上文 BL MIN_VOTES / MIN_FRAMES / MIN_MAX_AREA 约束）；
+- 分类 ≠ REJECT、≠ SHOP（brand 留到第二遍）；
+- canonical name 未被现有 keyframe 节点占用。
+
+**第二遍**：brand-like plate attach：
+
+- 搜帧距 ≤ 12 且 category 非空的 functional / room node；
+- 写 organization（若已占且 `new_votes > 1.5 × old_votes` 才替换，旧 org 进 `nearby_plates`）；
+- **RELOCATE-DISPLAY 规则**（仅调 timestamp + cameras，不动 frame_idx / pose / VPR feat）分三种情况：
+  1. target 由 plate best-view 创建（`_from_plate_best = True`）→ keep 原帧（plate 帧已是到门口近视的最佳视角）；
+  2. target 由 keyframe trigger 创建（无 `_from_plate_best`）→ relocate 到 brand best-view 帧；
+  3. brand 是别处副标（`brand.pos ≠ target.pos`）→ keep target 原帧，避免离开功能中心。
+
+### 4.5 主循环与终结化
 
 #### 主循环 (`OnlineMapperCore.run()`)
 
@@ -1555,95 +1630,120 @@ StreamLoader yields frame (4 cameras + timestamp + frame_idx)
   │
   ▼
 ┌──────────────────────────────────────────────────────┐
-│ 每帧主循环                                             │
+│ 每帧主循环                                           │
 ├──────────────────────────────────────────────────────┤
-│ 1. depth.estimate(camera_1)                           │
-│    → VGGT 滑窗推理 (window=4)                         │
-│ 2. _vo_motion(camera_1, depth)                        │
-│    → VGGT VO: (dtrans_m, dyaw_rad), 零额外推理        │
-│ 3. 累积 robot pose (x, y, theta)                      │
-│ 4. occ.integrate_pointcloud(points, pose)             │
-│    → dense 点云直填占据栅格                             │
-│ 5. vpr.extract_camera_features(4 cams)                │
-│ 6. loop_closer.detect(feats, node_features)           │
-│    → 全局 top-k + ORB 几何验证                         │
-│ 7. _scan_door_plates(frame, fidx)                     │
-│    → GD 检测 → STRICT prompt → Qwen 二次验证          │
-│    → voter.add(NameVote) + door_tracker.add()         │
-│ 8. keyframe_selector.should_trigger?                  │
-│    是 → 创建关键帧:                                    │
-│      8a. junction_detector.classify(4 cams)            │
-│      8b. 选 confirmed plate (functional > brand)      │
-│      8c. namer.describe_scene + verifier.verify_scene  │
-│      8d. category_clf.classify(...)                    │
-│      8e. ACCEPTED → 创建 TopoNode + NodeName           │
-│          收集 GD landmarks, 添加 spatial/loop edges    │
+│ 1. depth.estimate(camera_1)                          │
+│    VGGT 滑窗推理 (window=4), 缓存 extri + points     │
+│ 2. vo.estimate(camera_1)                             │
+│    VGGT VO 读 last/prev_extri 算 (dtrans, dyaw)      │
+│ 3. 累积 robot pose (x, y, theta)                     │
+│ 4. occ.integrate_pointcloud(points_camera, pose)     │
+│ 5. vpr.extract_camera_features(4 cams)               │
+│ 6. loop_closer.detect(feats, node_features)          │
+│    全局 top-k + ORB 几何验证 + auto-tune             │
+│ 7. _scan_door_plates(frame, fidx)                    │
+│    GD 每帧检测 → STRICT prompt → Qwen 二次验证 →    │
+│    voter.add(NameVote) + door_tracker.add(...)       │
+│ 8. keyframe_selector.should_trigger?                 │
+│    是 → 进入 keyframe creation:                      │
+│      8a. junction_detector.classify(4 cams)          │
+│      8b. 选 confirmed plate (functional CJK > brand) │
+│      8c. multi-cam describe_scene 投票 + canonical   │
+│      8d. temporal consensus (近 3 帧 deque)          │
+│      8e. category_clf.classify(plate, scene, junction│
+│          , gd_landmarks)                             │
+│      8f. hallucination_filter.is_confirmed (含 BL)   │
+│      8g. 若 ACCEPTED: 创建 TopoNode + NodeName       │
+│          收集 GD landmarks, 添加 spatial/loop edges  │
 └──────────────────────────────────────────────────────┘
   │
   ▼ (流结束)
 ┌──────────────────────────────────────────────────────┐
-│ _finalize() — 终结化                                    │
+│ _finalize() 终结化                                    │
 ├──────────────────────────────────────────────────────┤
-│ 1. _create_door_plate_nodes() (两阶段)                 │
-│    第一遍: functional plate (强电井, 关爱室) → 独立node │
-│    第二遍: brand plate (DEEPROUTE.AI) → attach 到       │
-│           帧距≤12 的 functional node 作 organization    │
-│ 2. ColocationMerger.merge()                            │
-│    → NodeName.merge_names 融合                         │
-│ 3. _rebuild_topology_neighbors_spatial(k=1,1)          │
-│ 4. _generate_names()                                   │
-│    → 优先从 name_struct.display_cn() 渲染              │
-│ 5. NameDeduplicator.resolve()                          │
-│    → (category, organization) 元组去重 + 后缀           │
-│ 6. writer.write_node() → merged_labeled_data/<id>/     │
-│ 7. ConnectionBuilder.build_for_node(pose_graph=...)    │
-│    → 几何先验 + Hungarian 匹配 → next_positions         │
-│ 8. 写 scene_graph.json / pose_graph.json / metrics     │
+│ 1. _create_door_plate_nodes()  两阶段                │
+│    第一遍: functional / landmark plate → 独立 node   │
+│    第二遍: brand plate → attach 到帧距 ≤ 12 且       │
+│            category 非空的 functional node;          │
+│            三种情况走 RELOCATE-DISPLAY 规则          │
+│ 2. ColocationMerger.merge()                          │
+│    - category mismatch guard                         │
+│    - anchor tie-break on frame_idx smaller           │
+│    - NodeName.merge_names 融合                       │
+│ 3. _rebuild_topology_neighbors_spatial(k=1, 1)       │
+│    - spatial ∪ temporal KNN                          │
+│    - cross-gap filter (Δt > 60s 且无 bridging)       │
+│ 4. _generate_names()  优先 name_struct.display_cn()  │
+│ 5. NameDeduplicator.resolve()                        │
+│ 6. writer.write_node() → merged_labeled_data/<id>/   │
+│ 7. ConnectionBuilder.build_for_node(pose_graph=...)  │
+│    Hungarian + 几何先验 + traversability + person +  │
+│    cx 硬约束 → next_positions                        │
+│ 8. 写 scene_graph.json / pose_graph.json /           │
+│    online_mapping_log.jsonl / metrics.json /         │
+│    plate_voter_dump.json                             │
 └──────────────────────────────────────────────────────┘
 ```
 
-#### 门牌两阶段归属
+#### 层次场景图 (`semantics/scene_graph.py`)
 
-解决了 v2.2.0 的 "EUMANN关爱室" 串扰 bug：
+`SceneGraph` 按 `floor → room → object_id` 组织。finalize 末尾按最终 node 的 room 重建 `floors` 索引。
 
-```
-第一遍: functional/landmark plate (强电井, 关爱室)
-        → 创建独立 door-plate node, 跳过 brand-like SHOP
-
-第二遍: brand-like plate (DEEPROUTE.AI, NEUMANN)
-        → 找帧距≤12 且 category 非空的 functional/room node
-        → 若找到:
-            attach 为 organization
-            旧 organization 进 nearby_plates
-            重定位 timestamp + cameras (display 层)
-            不动 frame_idx + pose (避免 coloc 误合并)
-        → 若未找到:
-            创建 standalone SHOP node
-```
-
-#### 输出格式
+#### 输出目录结构
 
 ```
 output_dir/
-├── 1/                                 # node_id
-│   ├── 1770097720_camera_1.jpg        # 4路相机原图
-│   ├── 1770097720_camera_2.jpg
-│   ├── 1770097720_camera_3.jpg
-│   ├── 1770097720_camera_4.jpg
-│   ├── crops/                         # 三级子图
-│   │   ├── ...__big__...jpg
-│   │   ├── ...__mid__...jpg
-│   │   └── ...__small__...jpg
-│   └── node_position_info.json        # 节点元数据 (含结构化命名字段)
-├── 2/ ...
-│
-scene_graph.json                       # 层次场景图
-pose_graph.json                        # 位姿图
-online_mapping_log.jsonl               # 每帧决策日志
-metrics.json                           # 统计指标
+├── <node_id>/
+│   ├── <ts>_camera_{1..4}.jpg                              # display 帧
+│   ├── crops/
+│   │   └── <ts>_camera_X__<target_id>__<size>__<x>_<y>_<w>_<h>.jpg
+│   └── node_position_info.json
+scene_graph.json
+pose_graph.json
+online_mapping_log.jsonl
+metrics.json
+plate_voter_dump.json
 ```
 
-### 4.6 配置项
+#### node_position_info.json 示例
+
+```json
+{
+  "self_position": {
+    "position_id": "14",
+    "position_name": "外卖柜区·EXHIOH",
+    "position_name_eng": "Locker Area · EXHIOH",
+    "category": "外卖柜区",
+    "category_eng": "Locker Area",
+    "organization": "EXHIOH",
+    "nearby_plates": [],
+    "nearby_landmarks": [],
+    "instance_suffix": "",
+    "camera_1": "1776152264641_camera_1.jpg",
+    "camera_2": "...",
+    "camera_3": "...",
+    "camera_4": "..."
+  },
+  "next_positions": [
+    {
+      "position_id": "13",
+      "position_name": "B座入口",
+      "camera_name": "camera_4",
+      "landmark_name": "椅子",
+      "big_box": "...",
+      "mid_box": "...",
+      "small_box": "...",
+      "crop_image_paths": {"big": "...", "mid": "...", "small": "..."},
+      "position_name_eng": "B座入口",
+      "landmark_name_eng": "chair"
+    }
+  ]
+}
+```
+
+`metrics.json` 包含：`n_nodes / n_edges / n_loop_closures / n_keyframes_triggered / kf_accepted_by_category / kf_rejected_by_category / plate_voter.{confirmed_names, rejected_names, min_frames, min_cameras} / plate_drops_{verify, category, unconfirmed, already_attached} / plate_attached_to_keyframe / coloc_merge.{pairs_examined, merges, aliases, by_reason} / same_name_merge / topology_rebuild / runtime_s.{depth, vpr, detect, vo, name, total, plate_scan}`。
+
+### 4.6 配置项 (`online_mapper/config.py`)
 
 ```python
 @dataclass
@@ -1668,12 +1768,13 @@ class OnlineMapperConfig:
     loop_closure_min_inliers: int = 15
 
     # 几何 (VGGT)
-    depth_backend: str = "vggt"              # "da_v2" | "vggt"
+    depth_model_id: str = "pretrained/depth-anything-v2-small-hf"
+    depth_backend: str = "vggt"              # "vggt" | "da_v2"
     vggt_model_path: str = "pretrained/vggt-1b/model.pt"
     vggt_window_size: int = 4
     vggt_dtype: str = "bf16"
-    vo_backend: str = "vggt"                 # "orb" | "vggt"
-    occ_backend: str = "vggt"                # "depth_row" | "vggt"
+    vo_backend: str = "vggt"                 # "vggt" | "orb"
+    occ_backend: str = "vggt"                # "vggt" | "depth_row"
 
     # 语义
     enable_grounding_dino: bool = True
@@ -1688,7 +1789,7 @@ class OnlineMapperConfig:
 
     # 占据栅格
     grid_resolution: float = 0.2             # 米/格
-    grid_size: int = 200                     # 200×200格
+    grid_size: int = 200                     # 200×200 格
 
     start_id: int = 1
 ```
@@ -1696,22 +1797,47 @@ class OnlineMapperConfig:
 #### 启动方式
 
 ```bash
-# 1. 准备 (一次性)
-mkdir -p third_party && huggingface-cli download facebook/vggt --repo-type space --local-dir third_party/vggt_space
+# 一次性准备
+huggingface-cli download facebook/vggt --repo-type space \
+  --local-dir third_party/vggt_space
 huggingface-cli download facebook/VGGT-1B --local-dir pretrained/vggt-1b
-# 启 Qwen vLLM (GPU1)
-CUDA_VISIBLE_DEVICES=1 python -m vllm.entrypoints.openai.api_server \
-  --model Qwen/Qwen3.5-9B --port 8199 --max-model-len 4096 &
+huggingface-cli download IDEA-Research/grounding-dino-base \
+  --local-dir pretrained/grounding-dino-base
+./deploy/start_qwen_vllm.sh   1 8199       # Qwen3.5-9B vLLM, GPU 1, 端口 8199
+./deploy/start_qwen08_vllm.sh 0 8198       # Qwen3.5-0.8B vLLM (仅 ws_proxy nav 分支用)
 
-# 2. 端到端建图
-conda activate internvla
+# 端到端 CLI 建图
 CUDA_VISIBLE_DEVICES=0 python online_mapper/run_online_map.py \
   --input memory_test_data \
   --output online_mapper/output/merged_labeled_data
-
-# 3. 切回旧后端 (回归测试)
-# 修改 config: depth_backend="da_v2", vo_backend="orb", occ_backend="depth_row"
 ```
+
+WebSocket 建图模式由 `deploy/ws_proxy_with_memory.py` 承载，通过四类意图分类 (`navigate / ask_location / ask_direction / mapping`) 路由到 nav 或 mapping session。
+
+### 4.7 运行示例 (memory_test_data 园区漫游 281 帧)
+
+节点链（按建图顺序）：
+
+```
+电梯厅 → 前台 → C座 → H座电梯 → A座 → B座入口 → 外卖柜区·EXHIOH → 2号外卖柜
+```
+
+主要指标：
+
+- `n_nodes = 8`, `n_edges = 7`, `n_loop_closures = 13`, `n_connections = 17`, `n_named_landmarks = 14`；
+- `n_keyframes_triggered = 44`；`kf_accepted_by_category = {building_landmark: 8, function_area: 6, landmark_facility: 4}`, `kf_rejected = 26`；
+- `plate_voter`：24 confirmed / 23 rejected（含 "13 号楼" / "1 号楼" / "D座" / "D栋" 等 BUILDING_LANDMARK 幻觉被 reject）；
+- `runtime_s.total ≈ 1356s`（depth ≈ 61s, vpr ≈ 113s, detect ≈ 34s, plate_scan ≈ 953s, vo ≈ 0.02s）。
+
+### 4.8 已知限制
+
+1. VGGT 尺度自洽但绝对尺度偏小；相对几何一致，不影响拓扑。
+2. VGGT 滑窗默认 4；调大到 8 / 12 可能更精但更慢。
+3. VGGT 单帧 stateless 仅 `JunctionDetector` 使用，多视图约束缺失。
+4. Qwen3.5-9B vLLM 是第三方依赖，目前没有纯本地 fallback。
+5. 门牌 `ATTACH_GAP = 12 帧` 适合步行（~1 Hz）场景；高速移动需缩短。
+6. 几何方向先验依赖 pose_graph 准确性。
+7. BUILDING_LANDMARK `votes ≥ 4` 门槛在极低照明 / 单次经过的场景下可能过严。
 
 ---
 

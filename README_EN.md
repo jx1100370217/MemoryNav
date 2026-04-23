@@ -83,7 +83,7 @@ MemoryNav/
 │   └── memory_visualization_server.py  # Visualization (sub-image + grounding + occlusion)
 ├── pretrained/                     # Pretrained models (YOLOv8n, DINOv3, etc.)
 ├── merged_labeled_data/            # Memory annotated data
-├── online_mapper/                  # 🛰️ Online active mapping (v2.3.0, 3-layer)
+├── online_mapper/                  # 🛰️ Online active mapping (3-layer)
 │   ├── run_online_map.py           # CLI entry
 │   ├── config.py                   # Global config (depth/vo/occ_backend switches)
 │   ├── core/online_mapper_core.py  # ⭐ Main orchestrator (streaming: process_frame + finalize)
@@ -124,7 +124,7 @@ MemoryNav/
 ├── tests/
 │   └── test_memory_ws.py           # WebSocket integration tests
 └── docs/
-    └── online_mapper.md            # 📘 Full online_mapper design doc (v2.3.0)
+    └── online_mapper.md            # 📘 Full online_mapper design doc
 ```
 
 ---
@@ -309,14 +309,17 @@ anyloc:
 
 ## 🛰️ Online Mapping (online_mapper)
 
-The `online_mapper/` module performs streaming online active mapping with a 3-layer architecture (Geometry + Topology + Semantics). It consumes per-frame inputs via `OnlineMapperCore.process_frame(frame)` and flushes artifacts via `finalize()`, producing `merged_labeled_data/` plus `scene_graph.json` / `pose_graph.json` / `online_mapping_log.jsonl` / `metrics.json`, with visualizations `pose_graph.png` / `occupancy.png` / `keyframe_timeline.png` / `scene_overview.txt` emitted by `online_mapper/viz/visualize.py`.
+`online_mapper/` is MemoryNav's streaming online active mapping module. A single VGGT-1B pass yields depth / pose / dense point cloud, and `OnlineMapperCore` orchestrates a three-layer (Geometry + Topology + Semantics) pipeline to build a high-quality semantic topo graph.
 
-Full `online_mapper` design doc: **[`docs/online_mapper.md`](docs/online_mapper.md)** (13 chapters, ~47k characters).
-`online_mapper` iteration history (r1→r6) and detailed before/after metrics: **[`online_mapper/RESULTS.md`](online_mapper/RESULTS.md)**.
+- **⚙️ Geometry**: VGGT-1B sliding-window (4 frames, bf16) singleton; `VisualOdometry` reuses VGGT extrinsics with zero extra inference; `OccupancyGrid` fills directly from the dense point cloud; `Traversability` estimates a pixel-wise ground-plane walkability map that corrects crop anchors.
+- **🕸️ Topology**: multi-trigger keyframes (VPR + translation + rotation + info-gain + junction + semantic whitelist); per-frame global VPR + ORB loop closure; `ConnectionBuilder` augments `next_positions` with a geometric heading prior (motion-heading preferred over `pose.theta`, `ALPHA=0.5`, hard penalty for reverse-facing matches) + traversability ground correction + GroundingDINO person-occlusion penalty + a `cx` edge hard-constraint; finalize rebuilds neighbours via spatial / temporal KNN with a cross-gap filter (> 60 s gap and no bridging keyframe → drop the temporal edge).
+- **🧠 Semantics**: multi-cam `describe_scene` voting (≥2 cams must agree to create a node; if all 4 disagree the keyframe is skipped) plus 3-frame temporal consensus (non-whitelist winners must have appeared in the last 3 `_recent_scene_winners` to be verified); door plates go through STRICT prompt + Qwen verifier + `MultiFrameVoter`; `BUILDING_LANDMARK` requires ≥ 4 votes (blocks letter-style OCR hallucinations) and disables single-frame fast-pass (blocks numeric hallucinations); canonical normalisation folds `电梯 / 电梯口 / 电梯间` → `电梯厅` and `快递柜 / 外卖柜 / 储物柜 / 智能取餐柜` → `外卖柜区`; `NodeName` produces structured `category · organization` names; `ColocationMerger` applies a category-mismatch guard and an anchor tie-break; door plates follow a two-stage attachment (functional first, brand attached later with a `RELOCATE-DISPLAY` rule that moves the display frame only when the target node was keyframe-triggered rather than plate-best-view).
+- **🎯 Outputs**: `merged_labeled_data/<id>/node_position_info.json` (structured `self_position` + `next_positions` + crops), `scene_graph.json`, `pose_graph.json`, `metrics.json`, `online_mapping_log.jsonl`, `plate_voter_dump.json`.
+- **🔁 Reference run**: `memory_test_data` 281-frame campus walk → 8-node chain `电梯厅 → 前台 → C座 → H座电梯 → A座 → B座入口 → 外卖柜区·EXHIOH → 2号外卖柜`.
 
 ### 🌐 WebSocket Dual-Mode Access
 
-`deploy/ws_proxy_with_memory.py` listens on port **9528** and supports **two modes** through a single connection. All requests keep the same shape `{id, task, pts, images}`; routing is driven by **four-class intent classification**:
+`deploy/ws_proxy_with_memory.py` listens on port **9528** and supports **two modes** through a single connection. All requests keep the same shape `{id, task, pts, images}`; routing is driven by **four-class intent classification** (`navigate / ask_location / ask_direction / mapping`):
 
 | `task` value | Intent | Effect |
 |-------------|--------|--------|

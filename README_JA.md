@@ -79,7 +79,7 @@ MemoryNav/
 │   └── memory_visualization_server.py  # 可視化サービス (サブ画像 + 打点 + 遮蔽検出)
 ├── pretrained/                     # 事前学習モデル (YOLOv8n, DINOv3等)
 ├── merged_labeled_data/            # 記憶アノテーションデータ
-├── online_mapper/                  # 🛰️ オンライン能動建図モジュール (v2.3.0, 3 層)
+├── online_mapper/                  # 🛰️ オンライン能動建図モジュール (3 層)
 │   ├── run_online_map.py           # CLI エントリ
 │   ├── config.py                   # グローバル設定 (depth/vo/occ_backend スイッチ)
 │   ├── core/online_mapper_core.py  # ⭐ メインオーケストレーター (process_frame + finalize)
@@ -120,7 +120,7 @@ MemoryNav/
 ├── tests/
 │   └── test_memory_ws.py           # WebSocket統合テスト
 └── docs/
-    └── online_mapper.md            # 📘 online_mapper 完全設計ドキュメント (v2.3.0)
+    └── online_mapper.md            # 📘 online_mapper 完全設計ドキュメント
 ```
 
 ---
@@ -304,30 +304,17 @@ ask_location / ask_direction ハンドラーは `nav_state.plan` / `current_step
 
 ## 🛰️ オンライン能動建図 (online_mapper)
 
-オンライン能動建図モジュール (`online_mapper/`) は、ロボット走行中のストリーミングフレームに対して、フレームごとに geometry → VPR → ループ → プレートスキャン → KF トリガー → 分類 → ノード生成を実行し、`merged_labeled_data/` スキーマを生成します。
+`online_mapper/` は MemoryNav のストリーミング オンライン能動建図モジュールです。VGGT-1B の単一推論で depth / pose / dense 点群を同時取得し、`OnlineMapperCore` が幾何 / トポロジー / 語義の 3 層を編成して高品質なセマンティック トポグラフを生成します。
 
-| 項目 | `online_mapper/` (オンライン能動) |
-|---|---|
-| **位置付け** | ロボット走行中のストリーミング決定 |
-| **時系列前提** | 「到達済み」フレームのみ |
-| **メインループ** | フレームごと: geometry → VPR → ループ → プレートスキャン → KF トリガー → 分類 → ノード生成 |
-| **キーフレーム戦略** | VPR + 累積並進 + 累積回転 + 情報ゲイン + 交差点 + セマンティックホワイトリスト |
-| **ループクロージャ** | 全域 VPR + ORB 幾何検証、毎フレーム実行 |
-| **命名** | 多フレーム投票 + 二次検証 + カテゴリーホワイトリスト + CN/EN バイリンガル |
-| **ノードフィルタ** | 7 カテゴリーホワイトリスト、装飾壁 / 観葉植物 / 空廊下を拒否 |
-| **幻覚防御** | STRICT プロンプト + QwenVerifier + MultiFrameVoter + サブストリング変異マージ |
-| **出力スキーマ** | `merged_labeled_data/` スキーマを生成 + 追加の `scene_graph.json` / `pose_graph.json` / `online_mapping_log.jsonl` / `metrics.json` |
-| **API** | `OnlineMapperCore.process_frame` + `finalize` (ストリーミング対応) |
-| **可視化** | `finalize` 時に `pose_graph.png` / `occupancy.png` / `keyframe_timeline.png` / `scene_overview.txt` を生成 |
-
-出力は `deploy/build_memory.sh` で直接記憶構築に使用できます。
-
-完全な online_mapper 設計ドキュメント: **[`docs/online_mapper.md`](docs/online_mapper.md)** (v2.3.0, 12 章)
-online_mapper イテレーション履歴 (v2.1.0 → v2.3.0): [`docs/online_mapper.md` §10](docs/online_mapper.md). 初期 r1→r6 メトリクス: **[`online_mapper/RESULTS.md`](online_mapper/RESULTS.md)**
+- **⚙️ 幾何フロントエンド**: VGGT-1B スライディング ウィンドウ 4 フレーム bf16 シングルトン; `VisualOdometry` は VGGT の extrinsics を再利用し追加推論ゼロ; `OccupancyGrid` は dense 点群から直接充填; `Traversability` は点群から地面平面の可通行度を推定し、crop 中心点の補正に使用
+- **🕸️ トポロジー**: 複数トリガー キーフレーム (VPR + 並進 + 回転 + 情報ゲイン + 交差点 + セマンティック ホワイトリスト); 毎フレーム 全域 VPR + ORB 幾何検証ループ閉じ; `ConnectionBuilder` は `next_positions` に幾何方向事前分布 (motion-heading を `pose.theta` より優先, `ALPHA=0.5`, 逆向きはハード ペナルティ) + traversability 地面補正 + GroundingDINO 人物遮蔽ペナルティ + `cx` エッジ ハード制約を付与; finalize では spatial / temporal KNN で隣接を再構築、cross-gap filter (> 60s かつ bridging keyframe なし → 時間エッジを拒否) 付き
+- **🧠 語義**: マルチカム `describe_scene` 投票 (≥2 cam 一致でノード作成、4 cam 全不一致なら skip) + 連続 3 フレーム temporal consensus (ホワイトリスト外 winner は近 3 フレームの `_recent_scene_winners` に出現していれば verified); 門牌は STRICT prompt + Qwen 二次検証 + `MultiFrameVoter`, `BUILDING_LANDMARK` は votes ≥ 4 必須 (文字 OCR 幻覚を遮断) かつ数字幻覚の単一フレーム fast-pass は無効化; canonical 正規化 (電梯口 / 電梯間 → 電梯厅; 快递柜 / 外卖柜 / 储物柜 / 智能取餐柜 → 外卖柜区); `NodeName` が構造化命名 `category · organization` を出力; `ColocationMerger` はカテゴリ不一致ガード + anchor tie-break; 門牌の 2 段階帰属 (functional を先に作成、brand は後 attach、`RELOCATE-DISPLAY` ルールはターゲット ノードの由来に基づき display フレームを再配置するか判断)
+- **🎯 出力**: `merged_labeled_data/<id>/node_position_info.json` (構造化 `self_position` + `next_positions` + crops), `scene_graph.json`, `pose_graph.json`, `metrics.json`, `online_mapping_log.jsonl`, `plate_voter_dump.json`
+- **🔁 リファレンス実行**: `memory_test_data` 園区巡回 281 フレーム → 8 ノード連鎖 `電梯厅 → 前台 → C座 → H座電梯 → A座 → B座入口 → 外卖柜区·EXHIOH → 2号外卖柜`
 
 ### 🌐 WebSocket デュアルモードアクセス
 
-`deploy/ws_proxy_with_memory.py` はポート **9528** で待機し、単一接続で**2 つのモード**をサポートします。すべてのリクエストは同じ形式 `{id, task, pts, images}` を保持し、**4 分類の意図ルーティング**がモード切替を駆動します:
+`deploy/ws_proxy_with_memory.py` はポート **9528** で待機し、単一接続で**2 つのモード**をサポートします。すべてのリクエストは同じ形式 `{id, task, pts, images}` を保持し、**4 分類の意図ルーティング** (`navigate / ask_location / ask_direction / mapping`) がモード切替を駆動します:
 
 | `task` の値 | 意図 | 動作 |
 |-------------|------|------|

@@ -79,7 +79,7 @@ MemoryNav/
 │   └── memory_visualization_server.py  # 시각화 서비스 (서브 이미지 + 포인팅 + 차폐 감지)
 ├── pretrained/                     # 사전 학습 모델 (YOLOv8n, DINOv3 등)
 ├── merged_labeled_data/            # 메모리 어노테이션 데이터
-├── online_mapper/                  # 🛰️ 온라인 능동 맵 생성 모듈 (v2.3.0, 3 계층)
+├── online_mapper/                  # 🛰️ 온라인 능동 맵 생성 모듈 (3 계층)
 │   ├── run_online_map.py           # CLI 엔트리
 │   ├── config.py                   # 글로벌 설정 (depth/vo/occ_backend 스위치)
 │   ├── core/online_mapper_core.py  # ⭐ 메인 오케스트레이터 (~870 줄)
@@ -120,7 +120,7 @@ MemoryNav/
 ├── tests/
 │   └── test_memory_ws.py           # WebSocket 통합 테스트
 └── docs/
-    └── online_mapper.md            # 📘 online_mapper 전체 설계 문서 (v2.3.0)
+    └── online_mapper.md            # 📘 online_mapper 전체 설계 문서
 ```
 
 ---
@@ -304,18 +304,17 @@ ask_location 과 ask_direction 핸들러는 `nav_state.plan` / `current_step_idx
 
 ## 🛰️ 온라인 맵 생성 (online_mapper)
 
-온라인 맵 생성 모듈(`online_mapper/`)은 로봇 주행 중 스트리밍으로 위상 내비게이션 그래프를 자동 생성합니다. 3 계층 아키텍처(Geometry + Topology + Semantics) 기반이며, `merged_labeled_data/` 스키마 생성.
+`online_mapper/` 는 MemoryNav 의 스트리밍 온라인 능동 맵 생성 모듈입니다. VGGT-1B 단일 추론으로 depth / pose / dense 포인트 클라우드를 동시에 얻고, `OnlineMapperCore` 가 기하 / 토폴로지 / 시맨틱 세 계층을 조율해 고품질 시맨틱 토폴로지 그래프를 생성합니다.
 
-전체 online_mapper 설계 문서: **[`docs/online_mapper.md`](docs/online_mapper.md)** (13 장, 약 47k 문자)
-online_mapper 이터레이션 기록 (r1→r6): **[`online_mapper/RESULTS.md`](online_mapper/RESULTS.md)**
-
-### OnlineMapperCore API
-
-`run()` 은 공개 `process_frame` + `finalize` 로 분할되어 스트리밍 처리를 지원합니다. `finalize` 는 `pose_graph.png` / `occupancy.png` / `keyframe_timeline.png` / `scene_overview.txt` 를 생성합니다.
+- **⚙️ 기하 프런트엔드**: VGGT-1B 슬라이딩 윈도우 4 프레임 bf16 싱글톤; `VisualOdometry` 는 VGGT extrinsics 를 재사용하여 추가 추론 없음; `OccupancyGrid` 는 dense 포인트 클라우드로 직접 채움; `Traversability` 는 포인트 클라우드에서 지면 평면 주행 가능도를 추정하여 crop 앵커 보정에 사용
+- **🕸️ 토폴로지**: 다중 트리거 키프레임 (VPR + 병진 + 회전 + 정보 이득 + 교차점 + 시맨틱 화이트리스트); 매 프레임 전역 VPR + ORB 기하 검증 루프 클로저; `ConnectionBuilder` 가 `next_positions` 에 기하 방향 사전 (motion-heading 을 `pose.theta` 보다 우선, `ALPHA=0.5`, 역방향 하드 페널티) + traversability 지면 보정 + GroundingDINO 인물 차폐 페널티 + `cx` 가장자리 하드 제약을 결합; finalize 시 spatial / temporal KNN 로 이웃을 재구축하며 cross-gap filter (> 60s 간격이고 bridging keyframe 없으면 시간 엣지 거부) 포함
+- **🧠 시맨틱**: 멀티 카메라 `describe_scene` 투표 (≥2 cam 일치 시 노드 생성, 4 cam 전원 불일치면 skip) + 연속 3 프레임 temporal consensus (화이트리스트 외 winner 는 최근 3 프레임의 `_recent_scene_winners` 에 나타나야 verified); 문패는 STRICT prompt + Qwen 2 차 검증 + `MultiFrameVoter`, `BUILDING_LANDMARK` 는 votes ≥ 4 필수 (글자 OCR 환각 차단) 이며 숫자 환각 단일 프레임 fast-pass 비활성; canonical 정규화 (电梯口 / 电梯间 → 电梯厅; 快递柜 / 外卖柜 / 储物柜 / 智能取餐柜 → 外卖柜区); `NodeName` 가 구조화 `category · organization` 이름 생성; `ColocationMerger` 는 카테고리 불일치 가드 + anchor tie-break; 문패 2 단계 귀속 (functional 을 먼저 생성, brand 는 나중에 attach, `RELOCATE-DISPLAY` 규칙이 타깃 노드의 출처에 따라 display 프레임 재배치 여부 결정)
+- **🎯 출력**: `merged_labeled_data/<id>/node_position_info.json` (구조화 `self_position` + `next_positions` + crops), `scene_graph.json`, `pose_graph.json`, `metrics.json`, `online_mapping_log.jsonl`, `plate_voter_dump.json`
+- **🔁 레퍼런스 실행**: `memory_test_data` 캠퍼스 주행 281 프레임 → 8 노드 체인 `电梯厅 → 前台 → C座 → H座电梯 → A座 → B座入口 → 外卖柜区·EXHIOH → 2号外卖柜`
 
 ### WebSocket 듀얼 모드
 
-`deploy/ws_proxy_with_memory.py` 는 **9528 포트**에서 수신하며, 단일 연결로 **두 가지 모드**를 지원합니다. 모든 요청은 동일한 형태 `{id, task, pts, images}` 를 유지하고, 라우팅은 **4 클래스 의도 라우팅**으로 구동됩니다.
+`deploy/ws_proxy_with_memory.py` 는 **9528 포트**에서 수신하며, 단일 연결로 **두 가지 모드**를 지원합니다. 모든 요청은 동일한 형태 `{id, task, pts, images}` 를 유지하고, 라우팅은 **4 클래스 의도 라우팅** (`navigate / ask_location / ask_direction / mapping`) 으로 구동됩니다.
 
 | `task` 값 | 의도 | 효과 |
 |-----------|------|------|

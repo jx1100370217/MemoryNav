@@ -313,15 +313,19 @@ class MultiFrameVoter:
     def _is_building_landmark_name(cls, name: str) -> bool:
         return bool(cls._BUILDING_LANDMARK_RE.match((name or "").strip()))
 
+    # BUILDING_LANDMARK needs stronger OCR evidence: observed D座/D栋 hallucinations
+    # against glass facades pass 2-cam + 2-vote. Real ones (A/B/C/H 座/入口) reach
+    # ≥ 4 votes (min observed: B座 = 4).
+    _BUILDING_LANDMARK_MIN_VOTES = 4
+
     def is_confirmed(self, name: str) -> bool:
         vs = self._votes.get(name, [])
         if not vs:
             return False
-        # At least one vote must have bbox area above threshold — otherwise
-        # treated as far-distance OCR hallucination. BUILDING_LANDMARK uses a
-        # relaxed threshold due to outdoor-distance observation.
         max_area = max((v.area or 0.0) for v in vs)
         is_bl = self._is_building_landmark_name(name)
+        if is_bl and len(vs) < self._BUILDING_LANDMARK_MIN_VOTES:
+            return False
         area_thresh = self._BUILDING_LANDMARK_MIN_AREA if is_bl else self.MIN_MAX_AREA
         meets_area = max_area >= area_thresh
 

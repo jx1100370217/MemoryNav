@@ -113,21 +113,51 @@ def validate_point(trav_map: np.ndarray, cx: int, cy: int,
             and obstacle_frac <= max_obstacle_frac)
 
 
+def detect_vertical_obstacle_columns(points_camera: np.ndarray,
+                                      y_ground: float | None = None,
+                                      min_col_coverage: float = 0.15) -> np.ndarray | None:
+    """Per-column mask of vertical obstacles (pillars, walls, chair backs).
+
+    A column is flagged if a significant fraction of its pixels sit meaningfully
+    above the ground plane. Catches structures whose base touches the floor — e.g.
+    pillars — which per-pixel ground/obstacle thresholds can still pass as
+    "ground" at the target-row sample height.
+    """
+    if points_camera is None or points_camera.ndim != 3 or points_camera.shape[2] != 3:
+        return None
+    H, W, _ = points_camera.shape
+    if y_ground is None:
+        y_ground = estimate_ground_y(points_camera)
+    if y_ground is None:
+        return None
+    y = points_camera[..., 1]
+    z = points_camera[..., 2]
+    valid = np.isfinite(y) & np.isfinite(z) & (z > MIN_DEPTH_M) & (z < MAX_DEPTH_M)
+    above = valid & ((y_ground - y) > OBSTACLE_ABOVE_M)
+    col_coverage = above.sum(axis=0) / H
+    return col_coverage >= min_col_coverage
+
+
 def find_best_traversable_point(trav_map: np.ndarray,
                                  preferred_cx: int | None = None,
                                  target_y_frac: float = 0.48,
                                  x_search_band: int | None = None,
                                  edge_margin_frac: float = 0.10,
-                                 max_offset_frac: float = 0.30) -> tuple[int, int] | None:
+                                 max_offset_frac: float = 0.30,
+                                 points_camera: np.ndarray | None = None,
+                                 y_ground: float | None = None) -> tuple[int, int] | None:
     """Pick the best traversable (cx, cy) on the map.
 
     Strategy:
       - target_y_frac: row height hint (matches auto_sub_image_extractor.TARGET_Y_PCT)
       - preferred_cx: if given, try to stay near this column (Qwen hint)
-      - edge_margin_frac: ignore left/right edge columns (avoid VGGT noise
-        at panorama borders where cx=0 traversable illusions came from)
+      - edge_margin_frac: ignore left/right edge columns (VGGT panorama border
+        noise)
       - max_offset_frac: reject replacement that moves cx by > this*W from
         preferred_cx (safer than far-off edge artifact)
+      - points_camera: if provided, columns covered by vertical obstacles
+        (pillars, walls) are masked out even when the target-row pixel alone
+        tests as traversable — fixes the pillar-column false positive.
       - Returns None if no safe traversable pixel found; caller keeps qwen.
     """
     H, W = trav_map.shape[:2]
@@ -137,12 +167,15 @@ def find_best_traversable_point(trav_map: np.ndarray,
         return None
     col_score = search.max(axis=0)
 
-    # Hard-mask edge columns: these are where VGGT panorama borders produce
-    # spurious "traversable" noise (observed in P3 round 1: cx=0 replacements)
     edge_px = int(W * edge_margin_frac)
     if edge_px > 0:
         col_score[:edge_px] = SCORE_OBSTACLE
         col_score[W - edge_px:] = SCORE_OBSTACLE
+
+    if points_camera is not None:
+        col_obstacle = detect_vertical_obstacle_columns(points_camera, y_ground)
+        if col_obstacle is not None and col_obstacle.shape[0] == W:
+            col_score[col_obstacle] = SCORE_OBSTACLE
 
     traversable_cols = np.where(col_score >= SCORE_TRAVERSABLE - 1e-3)[0]
     if traversable_cols.size == 0:

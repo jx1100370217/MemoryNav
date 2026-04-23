@@ -42,7 +42,8 @@ class PoseGraph:
 
     def to_dict(self):
         return {
-            "nodes": [{"id": n.node_id, "x": n.x, "y": n.y, "theta": n.theta}
+            "nodes": [{"id": n.node_id, "x": n.x, "y": n.y, "theta": n.theta,
+                       "motion_theta": n.motion_theta}
                       for n in self.nodes.values()],
             "edges": [{"a": e.a, "b": e.b, "dx": e.dx, "dy": e.dy,
                        "dtheta": e.dtheta, "info": e.info, "kind": e.kind}

@@ -136,7 +136,8 @@ class ThresholdedSubImageExtractor(AutoSubImageExtractor):
                 best = _trav.find_best_traversable_point(
                     trav, preferred_cx=cx_t,
                     target_y_frac=self.TARGET_Y_PCT,
-                    x_search_band=max(30, w_pts // 6))
+                    x_search_band=max(30, w_pts // 6),
+                    points_camera=pts)
                 if best is not None:
                     new_cx_t, new_cy_t = best
                     new_cx = int(new_cx_t * w_img / w_pts)
@@ -171,7 +172,8 @@ class ThresholdedSubImageExtractor(AutoSubImageExtractor):
                         trav = _trav.compute_traversability_map(out["points_camera"])
                         h_pts, w_pts = trav.shape
                         best = _trav.find_best_traversable_point(
-                            trav, target_y_frac=self.TARGET_Y_PCT)
+                            trav, target_y_frac=self.TARGET_Y_PCT,
+                            points_camera=out["points_camera"])
                         if best is not None:
                             new_cx_t, new_cy_t = best
                             cx = int(new_cx_t * w / w_pts)
@@ -193,7 +195,7 @@ class ThresholdedSubImageExtractor(AutoSubImageExtractor):
             crop_img, _ = self._make_square_crop(cam_img, cx, cy, scale=1.0)
             if crop_img.size == 0:
                 continue
-            cam_crop_features[cam_id] = self._cls_feature(crop_img)
+            cam_crop_features[cam_id] = self._cls_feature(crop_img, is_crop=True)
             cam_crop_cache[cam_id] = (cam_img, cx, cy)
 
         # ---- Step 3: neighbor corridor / fallback features ----

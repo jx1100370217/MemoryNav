@@ -42,7 +42,8 @@ class AutoSubImageExtractor:
     CORRIDOR_SAMPLE_COUNT = 3  # 采样中间帧数量
 
     def __init__(self, device="cuda:0", qwen_gpu="1",
-                 pointer_backend: str = "qwen", cfg=None):
+                 pointer_backend: str = "qwen", cfg=None, **kwargs):
+        # **kwargs 吸收 namer 等上层传入但本类不使用的参数 (保持向后兼容).
         self.device = device
         self.qwen_gpu = qwen_gpu
         self._pointer_backend = pointer_backend

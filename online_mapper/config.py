@@ -55,8 +55,12 @@ class OnlineMapperConfig:
     # connection builder (real next_positions)
     enable_real_connections: bool = True
     connection_sim_threshold: float = 0.40
-    # target 方向打点器: "qwen" (Qwen35PointGrounder) 或 "gdino"
-    # (Grounding-DINO, 对开放场景整体失锚更稳定).
+    # target 方向打点器, 支持:
+    #   "qwen"  - Qwen35PointGrounder (VLM prompt 推理点)
+    #   "gdino" - Grounding-DINO (开放词表 bbox 中心)
+    #   "geom"  - GeometricPointer (纯 VGGT traversability, 零推理)
+    #   "molmo" - MolmoPointer (allenai/Molmo-7B 原生 pointing)
+    #   "gsam2" - GSAM2Pointer (GDino bbox -> SAM2 mask 重心, 像素级)
     pointer_backend: str = "qwen"
 
     # visual odometry

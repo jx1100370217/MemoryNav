@@ -38,7 +38,8 @@ class ThresholdedSubImageExtractor(AutoSubImageExtractor):
 
     def __init__(self, sim_threshold: float = None, depth_estimator=None,
                  detector=None, pointer_backend: str = "qwen", cfg=None, **kwargs):
-        super().__init__(pointer_backend=pointer_backend, cfg=cfg, **kwargs)
+        super().__init__(pointer_backend=pointer_backend, cfg=cfg,
+                         depth_estimator=depth_estimator, **kwargs)
         if sim_threshold is not None:
             self.SIM_THRESHOLD = sim_threshold
         self._depth_estimator = depth_estimator

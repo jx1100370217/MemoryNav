@@ -42,8 +42,9 @@ class AutoSubImageExtractor:
     CORRIDOR_SAMPLE_COUNT = 3  # 采样中间帧数量
 
     def __init__(self, device="cuda:0", qwen_gpu="1",
-                 pointer_backend: str = "qwen", cfg=None, **kwargs):
-        # **kwargs 吸收 namer 等上层传入但本类不使用的参数 (保持向后兼容).
+                 pointer_backend: str = "qwen", cfg=None,
+                 depth_estimator=None, **kwargs):
+        # **kwargs 吸收 namer 等上层传入但本类不使用的参数 (向后兼容).
         self.device = device
         self.qwen_gpu = qwen_gpu
         self._pointer_backend = pointer_backend
@@ -53,6 +54,15 @@ class AutoSubImageExtractor:
             self._grounder = GDinoPointer(cfg=cfg)
         elif pointer_backend == "qwen":
             self._grounder = Qwen35PointGrounder(gpu=qwen_gpu)
+        elif pointer_backend == "geom":
+            from online_mapper.semantics.geometric_pointer import GeometricPointer
+            self._grounder = GeometricPointer(depth_estimator=depth_estimator)
+        elif pointer_backend == "molmo":
+            from online_mapper.semantics.molmo_pointer import MolmoPointer
+            self._grounder = MolmoPointer(device=device)
+        elif pointer_backend == "gsam2":
+            from online_mapper.semantics.gsam2_pointer import GSAM2Pointer
+            self._grounder = GSAM2Pointer(cfg=cfg, device=device)
         else:
             raise ValueError(f"unknown pointer_backend: {pointer_backend}")
         self._grounder.start()

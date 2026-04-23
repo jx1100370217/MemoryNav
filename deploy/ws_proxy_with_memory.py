@@ -51,6 +51,7 @@ from memory_nav import (
 # 鱼眼去畸变 + 坐标变换
 from memory_nav.fisheye_undistort import FisheyeUndistorter
 from memory_nav.occlusion_detector import OcclusionDetector
+from memory_nav.traffic_light_detector import TrafficLightDetector
 from memory_nav.coord_transform import (
     pixel_target_to_action,
     pixel_norm_to_angle,
@@ -120,6 +121,7 @@ connected_clients = {}
 # 记忆导航全局实例
 memory_navigator: Optional[MemoryNavigator] = None
 occlusion_detector: Optional[OcclusionDetector] = None
+traffic_light_detector: Optional[TrafficLightDetector] = None
 
 # 鱼眼去畸变全局实例
 fisheye_undistorter: Optional[FisheyeUndistorter] = None
@@ -148,6 +150,8 @@ class MemoryNavState:
     # ---- 遮挡检测 ----
     consecutive_occlusions: int = 0   # 连续遮挡次数
     last_occlusion_result: Optional[Dict] = None  # 最近一次遮挡检测结果
+    # ---- 红绿灯检测 ----
+    traffic_light_color: str = "none"  # "red" / "green" / "none"
     last_query_features: Optional[Dict] = None  # 最近一次提取的特征
     last_good_sub_match: Optional[Dict] = None   # 上一帧成功的子图匹配结果 (confidence >= threshold)
     last_good_query_features: Optional[Dict] = None  # 上一帧匹配成功时的 VPR 特征（用于帧间相似度）
@@ -180,6 +184,9 @@ class MemoryNavState:
         self.fallback_instruction = None
         self.fallback_camera_name = None
         self.next_step_sub_match = None
+        self.traffic_light_color = "none"
+        if traffic_light_detector is not None:
+            traffic_light_detector.reset_state()
         logger.info("[MemoryNavState] 状态已重置")
 
     def get_current_step(self) -> Optional[NavigationStep]:
@@ -798,6 +805,7 @@ def build_memory_response(
                            if nav_state.next_step_sub_match else None),
         "lookahead_found": (nav_state.next_step_sub_match.get('match', {}).get('found', False)
                             if nav_state.next_step_sub_match else None),
+        "traffic_light": nav_state.traffic_light_color,
     }
 
     if not message:
@@ -2136,6 +2144,100 @@ async def process_inference_with_memory(message_data, session_state,
                 nav_state.next_step_sub_match = None
                 _perf['5_lookahead_ms'] = (time.time() - _t_la) * 1000 if '_t_la' in dir() else 0
 
+            # ---- 红绿灯检测: 仅在路口区域启用 ----
+            _t_tl = time.time()
+            _tl_color = "none"
+            _tl_step = nav_state.get_current_step()
+            _in_crossing = (_tl_step is not None and
+                            ("路口" in _tl_step.from_node_name and "路口" in _tl_step.to_node_name))
+            if not _in_crossing and nav_state.traffic_light_color != "none":
+                nav_state.traffic_light_color = "none"
+                traffic_light_detector.reset_state() if traffic_light_detector else None
+                logger.info(f"🚦 [TrafficLight] 离开路口区域，清除红绿灯状态")
+            if traffic_light_detector is not None and camera_images and _in_crossing:
+                try:
+                    _tl_raw = await asyncio.to_thread(
+                        traffic_light_detector.detect_multi,
+                        camera_images, ['camera_1', 'camera_2']
+                    )
+                    _tl_color = traffic_light_detector.update_state(_tl_raw)
+                    nav_state.traffic_light_color = _tl_color
+                    if _tl_raw.detected:
+                        _tl_bbox_wh = (f"{_tl_raw.bbox[2]-_tl_raw.bbox[0]}x{_tl_raw.bbox[3]-_tl_raw.bbox[1]}"
+                                       if _tl_raw.bbox else "?")
+                        _tl_icon = "🔴" if _tl_color == "red" else ("🟢" if _tl_color == "green" else "🚦")
+                        logger.info(
+                            f"{_tl_icon} [TrafficLight] pts={pts}, cam={_tl_raw.camera_name}, "
+                            f"raw_color={_tl_raw.color}, smoothed={_tl_color}, "
+                            f"conf={_tl_raw.confidence:.3f}, "
+                            f"bbox={_tl_raw.bbox} ({_tl_bbox_wh}px), "
+                            f"angle={_tl_raw.global_angle_deg:.1f}°, "
+                            f"elapsed={_tl_raw.elapsed_ms:.1f}ms"
+                        )
+                        # 保存红绿灯检测可视化
+                        try:
+                            _tl_cam_img = camera_images.get(_tl_raw.camera_name)
+                            if _tl_cam_img is not None and _tl_raw.bbox:
+                                _tl_vis = _tl_cam_img.copy()
+                                _tx1, _ty1, _tx2, _ty2 = _tl_raw.bbox
+                                if _tl_raw.color == "red":
+                                    _tl_box_color = (0, 0, 255)
+                                elif _tl_raw.color == "green":
+                                    _tl_box_color = (0, 255, 0)
+                                else:
+                                    _tl_box_color = (0, 200, 255)
+                                cv2.rectangle(_tl_vis, (_tx1, _ty1), (_tx2, _ty2), _tl_box_color, 3)
+                                _tl_label = (f"{_tl_raw.color} {_tl_raw.confidence:.2f} "
+                                             f"{_tl_bbox_wh} ang={_tl_raw.global_angle_deg:.0f}")
+                                (_tw, _th), _ = cv2.getTextSize(_tl_label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+                                cv2.rectangle(_tl_vis, (_tx1, _ty1 - _th - 10),
+                                              (_tx1 + _tw + 6, _ty1), _tl_box_color, -1)
+                                cv2.putText(_tl_vis, _tl_label, (_tx1 + 3, _ty1 - 5),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                                _tl_save_path = os.path.join(images_dir, f"{pts}_{_tl_raw.camera_name}_tl.jpg")
+                                cv2.imwrite(_tl_save_path, _tl_vis)
+                                logger.info(f"💾 [TrafficLight] 已保存可视化: {_tl_save_path}")
+                        except Exception as _tl_vis_e:
+                            logger.debug(f"[TrafficLight] 可视化保存失败: {_tl_vis_e}")
+                    else:
+                        logger.debug(f"🚦 [TrafficLight] pts={pts}, 未检测到 ({_tl_raw.elapsed_ms:.1f}ms)")
+                except Exception as e:
+                    logger.warning(f"[Memory] 红绿灯检测异常: {e}")
+            _perf['5b_traffic_light_ms'] = (time.time() - _t_tl) * 1000
+
+            # ---- 红绿灯优先: 红灯 → 原地等待，优先级最高 ----
+            if _tl_color == "red":
+                session_state['request_count'] += 1
+                session_state['last_instruction'] = instruction
+                session_state['last_task'] = current_task
+                resp = {
+                    "status": "success",
+                    "id": robot_id,
+                    "pts": pts,
+                    "task_status": "executing",
+                    "action": [[0.0, 0.0, 0.0]],
+                    "pixel_target": None,
+                    "camera_name": None,
+                    "landmark_name": _tl_step.landmark_name if _tl_step else None,
+                    "sub_image_match": _sub_match,
+                    "memory_active": True,
+                    "memory_info": {
+                        "plan_path": nav_state.plan.path if nav_state.plan else [],
+                        "current_step": nav_state.current_step_idx,
+                        "total_steps": nav_state.plan.total_steps if nav_state.plan else 0,
+                        "from_node": _tl_step.from_node_name if _tl_step else "",
+                        "to_node": _tl_step.to_node_name if _tl_step else "",
+                        "phase": "red_light",
+                        "consecutive_misses": nav_state.consecutive_misses,
+                        "traffic_light": _tl_color,
+                    },
+                    "message": "记忆导航: 检测到红灯，原地等待"
+                }
+                logger.info(f"🔴 [TrafficLight] 红灯停车! pts={pts}, action=[0,0,0]")
+                logger.info(f"📤 响应JSON: {json.dumps(resp, ensure_ascii=False, indent=2)}")
+                return resp
+
+            _t_occ = time.time()
             # ---- 遮挡检测: 只要子图匹配失败就触发，不关心VPR ----
             _sub_match_found = _sub_match.get('match', {}).get('found', False) if _sub_match else False
             # 只用子图匹配返回的最高得分相机；预设step.camera_name仅是采集时方向，不能用于决策
@@ -2963,6 +3065,16 @@ async def main():
     except Exception as e:
         occlusion_detector = None
         logger.warning(f"  ├─ 遮挡检测:    ⚠️ 加载失败 ({e})")
+
+    # ── 红绿灯检测器 (YOLO11n) ──
+    global traffic_light_detector
+    try:
+        traffic_light_detector = TrafficLightDetector(device=vpr_device)
+        traffic_light_detector.preload()
+        logger.info(f"  ├─ 红绿灯检测:  ✅ YOLO11n (device={vpr_device})")
+    except Exception as e:
+        traffic_light_detector = None
+        logger.warning(f"  ├─ 红绿灯检测:  ⚠️ 加载失败 ({e})")
 
     qwen35_status = "❌ 未加载"
     if memory_navigator is not None:

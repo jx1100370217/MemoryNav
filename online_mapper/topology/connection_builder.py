@@ -345,10 +345,40 @@ class ThresholdedSubImageExtractor(AutoSubImageExtractor):
                                 f"center ({old_cx},{old_cy})")
                     continue
                 new_cx, new_cy, theta_h = proj
-                geo_overrides[cam_id] = (new_cx, new_cy)
                 logger.info(f"  GEO[{cam_id}->{nb_id}] qwen-centered (cx={cx_norm:.3f}) "
                             f"-> geo theta_h={theta_h:+.3f}rad ({theta_h*57.30:+.1f}°) "
                             f"new=({new_cx},{new_cy})")
+                # 几何投影点也要经过 traversability 校验, 避免 pose 方向
+                # 正好对着柱子/墙等障碍物 (已观察到 N1 电梯厅 cam_1 投影到柱子).
+                if self._depth_estimator is not None:
+                    out = self._depth_estimator.estimate_stateless_with_points(cam_img)
+                    if out is not None:
+                        pts = out["points_camera"]
+                        h_pts, w_pts = pts.shape[:2]
+                        trav = _trav.compute_traversability_map(pts)
+                        new_cx_t = int(new_cx * w_pts / w)
+                        new_cy_t = int(new_cy * h_pts / h)
+                        if not _trav.validate_point(trav, new_cx_t, new_cy_t):
+                            best = _trav.find_best_traversable_point(
+                                trav, preferred_cx=new_cx_t,
+                                target_y_frac=self.TARGET_Y_PCT,
+                                x_search_band=max(30, w_pts // 6),
+                                points_camera=pts)
+                            if best is not None:
+                                alt_cx_t, alt_cy_t = best
+                                alt_cx = int(alt_cx_t * w / w_pts)
+                                alt_cy = int(alt_cy_t * h / h_pts)
+                                if int(w * 0.15) <= alt_cx <= int(w * 0.85):
+                                    new_cx, new_cy = alt_cx, alt_cy
+                                    logger.info(f"  GEO-TRAV[{cam_id}] geo blocked "
+                                                f"-> ({alt_cx},{alt_cy})")
+                                else:
+                                    logger.info(f"  GEO-TRAV[{cam_id}] alt too close "
+                                                f"to edge; keep geo")
+                            else:
+                                logger.info(f"  GEO-TRAV[{cam_id}] geo blocked, "
+                                            f"no alt; keep geo")
+                geo_overrides[cam_id] = (new_cx, new_cy)
 
         # ---- Step 5: save crops + return next_positions ----
         next_positions = []

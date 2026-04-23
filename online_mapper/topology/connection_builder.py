@@ -428,13 +428,15 @@ class ConnectionBuilder:
 
     def __init__(self, sim_threshold: float = 0.40, device: str = "cuda:0",
                  qwen_gpu: str = "1", namer=None, depth_estimator=None,
-                 detector=None):
+                 detector=None, pointer_backend: str = "qwen", cfg=None):
         self.sim_threshold = sim_threshold
         self._device = device
         self._qwen_gpu = qwen_gpu
         self._namer = namer
         self._depth_estimator = depth_estimator
         self._detector = detector
+        self._pointer_backend = pointer_backend
+        self._cfg = cfg
         self._extractor: Optional[ThresholdedSubImageExtractor] = None
 
     def _ensure(self):
@@ -443,7 +445,9 @@ class ConnectionBuilder:
                 sim_threshold=self.sim_threshold,
                 device=self._device, qwen_gpu=self._qwen_gpu,
                 depth_estimator=self._depth_estimator,
-                detector=self._detector)
+                detector=self._detector,
+                pointer_backend=self._pointer_backend,
+                cfg=self._cfg)
 
     @staticmethod
     def topo_node_to_dict(node, node_dir: Path, pose_graph=None) -> Dict:

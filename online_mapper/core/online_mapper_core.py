@@ -979,7 +979,9 @@ class OnlineMapperCore:
                     sim_threshold=self.cfg.connection_sim_threshold,
                     qwen_gpu=self.cfg.qwen_gpu, namer=self.namer,
                     depth_estimator=self.depth,
-                    detector=self.detector)
+                    detector=self.detector,
+                    pointer_backend=getattr(self.cfg, "pointer_backend", "qwen"),
+                    cfg=self.cfg)
                 node_dirs = {nid: out_root / nid for nid in self.topo.nodes}
                 for nid, node in self.topo.nodes.items():
                     nbs = [self.topo.nodes[nbid] for nbid in node.neighbors

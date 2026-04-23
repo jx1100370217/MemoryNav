@@ -14,6 +14,8 @@ def main():
     p.add_argument("--vpr_config", default="deploy/vpr_config.yaml")
     p.add_argument("--no_depth", action="store_true")
     p.add_argument("--no_grounding_dino", action="store_true")
+    p.add_argument("--pointer_backend", default="qwen", choices=["qwen", "gdino"],
+                   help="target 方向打点器后端")
     p.add_argument("--log_level", default="INFO")
     args = p.parse_args()
 
@@ -28,6 +30,7 @@ def main():
         vpr_config_path=args.vpr_config,
         enable_depth=not args.no_depth,
         enable_grounding_dino=not args.no_grounding_dino,
+        pointer_backend=args.pointer_backend,
     )
     core = OnlineMapperCore(cfg)
     core.run()

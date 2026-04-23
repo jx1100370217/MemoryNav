@@ -47,11 +47,17 @@ class OnlineMapperConfig:
     # door plate retrospective
     enable_door_plate_detection: bool = True
     door_plate_min_score: float = 0.30
-    plate_scan_every_n_frames: int = 1
+    # 门牌扫描节流: 非关键帧每 N 帧扫一次 (1=每帧默认, 越大越省延迟但会漏门牌)
+    # 漏门牌的后果: 投票票数不够 (MultiFrameVoter min_frames=2), 对应 landmark
+    # 节点建不出, 如 '关爱室' 可能因此缺失.
+    plate_scan_every_n_frames: int = 3
 
     # connection builder (real next_positions)
     enable_real_connections: bool = True
     connection_sim_threshold: float = 0.40
+    # target 方向打点器: "qwen" (Qwen35PointGrounder) 或 "gdino"
+    # (Grounding-DINO, 对开放场景整体失锚更稳定).
+    pointer_backend: str = "qwen"
 
     # visual odometry
     enable_real_vo: bool = True

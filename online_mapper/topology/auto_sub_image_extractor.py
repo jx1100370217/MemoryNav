@@ -41,18 +41,27 @@ class AutoSubImageExtractor:
     MAX_CORRIDOR_FRAMES = 30   # 超过此数量的中间帧则 fallback (可能不是直接走廊)
     CORRIDOR_SAMPLE_COUNT = 3  # 采样中间帧数量
 
-    def __init__(self, device="cuda:0", qwen_gpu="1"):
+    def __init__(self, device="cuda:0", qwen_gpu="1",
+                 pointer_backend: str = "qwen", cfg=None):
         self.device = device
         self.qwen_gpu = qwen_gpu
+        self._pointer_backend = pointer_backend
 
-        self._grounder = Qwen35PointGrounder(gpu=qwen_gpu)
+        if pointer_backend == "gdino":
+            from online_mapper.semantics.gdino_pointer import GDinoPointer
+            self._grounder = GDinoPointer(cfg=cfg)
+        elif pointer_backend == "qwen":
+            self._grounder = Qwen35PointGrounder(gpu=qwen_gpu)
+        else:
+            raise ValueError(f"unknown pointer_backend: {pointer_backend}")
         self._grounder.start()
 
         from memory_nav.sub_image_matcher import DINOv3Strategy
         self._dinov3 = DINOv3Strategy(device=device)
         self._dinov3.preload()
 
-        logger.info("AutoSubImageExtractor v10.1 (parallel cameras + corridor-frame match + Hungarian + Y-fix) initialized")
+        logger.info(f"AutoSubImageExtractor initialized "
+                    f"(pointer_backend={pointer_backend})")
 
     # ------------------------------------------------------------------
     # DINOv3 patch 特征 + 滑动匹配 — 直接复用

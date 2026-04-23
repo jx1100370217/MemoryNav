@@ -131,30 +131,25 @@ class ThresholdedSubImageExtractor(AutoSubImageExtractor):
                 cx, cy, conf = camera_points[cam_id]
                 h_img, w_img = cam_img.shape[:2]
                 cx_t = int(cx * w_pts / w_img)
-                cy_t = int(cy * h_pts / h_img)
-                if _trav.validate_point(trav, cx_t, cy_t):
-                    continue
-                best = _trav.find_best_traversable_point(
+                resolved = _trav.resolve_crop_point(
                     trav, preferred_cx=cx_t,
                     target_y_frac=self.TARGET_Y_PCT,
-                    x_search_band=max(30, w_pts // 6),
                     points_camera=pts)
-                if best is not None:
-                    new_cx_t, new_cy_t = best
-                    new_cx = int(new_cx_t * w_img / w_pts)
-                    new_cy = int(new_cy_t * h_img / h_pts)
-                    # Crop center must be at least 15% from image edges to
-                    # avoid the big crop bbox clipping to image border.
-                    if new_cx < int(w_img * 0.15) or new_cx > int(w_img * 0.85):
-                        logger.info(f"  TRAV[{cam_id}] alt ({new_cx},{new_cy}) "
-                                    f"too close to edge; keep qwen")
-                    else:
-                        logger.info(f"  TRAV[{cam_id}] qwen ({cx},{cy}) blocked "
-                                    f"-> traversable ({new_cx},{new_cy})")
-                        camera_points[cam_id] = (new_cx, new_cy, conf)
-                else:
-                    logger.info(f"  TRAV[{cam_id}] qwen ({cx},{cy}) blocked, "
-                                f"no traversable alt; keep qwen")
+                if resolved is None:
+                    logger.info(f"  TRAV[{cam_id}] pointer ({cx},{cy}) blocked, "
+                                f"no walkable alt; keep pointer")
+                    continue
+                new_cx_t, new_cy_t = resolved
+                new_cx = int(new_cx_t * w_img / w_pts)
+                new_cy = int(new_cy_t * h_img / h_pts)
+                if new_cx < int(w_img * 0.15) or new_cx > int(w_img * 0.85):
+                    logger.info(f"  TRAV[{cam_id}] alt cx={new_cx} too close to "
+                                f"edge; keep pointer ({cx},{cy})")
+                    continue
+                if new_cx != cx or new_cy != cy:
+                    logger.info(f"  TRAV[{cam_id}] pointer ({cx},{cy}) -> "
+                                f"({new_cx},{new_cy}) [cx_kept={new_cx==cx}]")
+                camera_points[cam_id] = (new_cx, new_cy, conf)
 
         # When Qwen fails on all cameras, fall back to traversability map
         # argmax (image center as last resort).
@@ -349,8 +344,8 @@ class ThresholdedSubImageExtractor(AutoSubImageExtractor):
                 logger.info(f"  GEO[{cam_id}->{nb_id}] qwen-centered (cx={cx_norm:.3f}) "
                             f"-> geo theta_h={theta_h:+.3f}rad ({theta_h*57.30:+.1f}°) "
                             f"new=({new_cx},{new_cy})")
-                # 几何投影点也要经过 traversability 校验, 避免 pose 方向
-                # 正好对着柱子/墙等障碍物 (已观察到 N1 电梯厅 cam_1 投影到柱子).
+                # 几何投影点走 resolve_crop_point: 保留 cx 只 veto 柱子列,
+                # cy 固定到地面行.
                 if self._depth_estimator is not None:
                     out = self._depth_estimator.estimate_stateless_with_points(cam_img)
                     if out is not None:
@@ -358,27 +353,26 @@ class ThresholdedSubImageExtractor(AutoSubImageExtractor):
                         h_pts, w_pts = pts.shape[:2]
                         trav = _trav.compute_traversability_map(pts)
                         new_cx_t = int(new_cx * w_pts / w)
-                        new_cy_t = int(new_cy * h_pts / h)
-                        if not _trav.validate_point(trav, new_cx_t, new_cy_t):
-                            best = _trav.find_best_traversable_point(
-                                trav, preferred_cx=new_cx_t,
-                                target_y_frac=self.TARGET_Y_PCT,
-                                x_search_band=max(30, w_pts // 6),
-                                points_camera=pts)
-                            if best is not None:
-                                alt_cx_t, alt_cy_t = best
-                                alt_cx = int(alt_cx_t * w / w_pts)
-                                alt_cy = int(alt_cy_t * h / h_pts)
-                                if int(w * 0.15) <= alt_cx <= int(w * 0.85):
-                                    new_cx, new_cy = alt_cx, alt_cy
-                                    logger.info(f"  GEO-TRAV[{cam_id}] geo blocked "
-                                                f"-> ({alt_cx},{alt_cy})")
-                                else:
-                                    logger.info(f"  GEO-TRAV[{cam_id}] alt too close "
-                                                f"to edge; keep geo")
+                        resolved = _trav.resolve_crop_point(
+                            trav, preferred_cx=new_cx_t,
+                            target_y_frac=self.TARGET_Y_PCT,
+                            points_camera=pts)
+                        if resolved is None:
+                            logger.info(f"  GEO-TRAV[{cam_id}] geo blocked, "
+                                        f"no alt; keep geo")
+                        else:
+                            alt_cx_t, alt_cy_t = resolved
+                            alt_cx = int(alt_cx_t * w / w_pts)
+                            alt_cy = int(alt_cy_t * h / h_pts)
+                            if int(w * 0.15) <= alt_cx <= int(w * 0.85):
+                                if alt_cx != new_cx or alt_cy != new_cy:
+                                    logger.info(f"  GEO-TRAV[{cam_id}] ({new_cx},{new_cy})"
+                                                f" -> ({alt_cx},{alt_cy}) "
+                                                f"[cx_kept={alt_cx==new_cx}]")
+                                new_cx, new_cy = alt_cx, alt_cy
                             else:
-                                logger.info(f"  GEO-TRAV[{cam_id}] geo blocked, "
-                                            f"no alt; keep geo")
+                                logger.info(f"  GEO-TRAV[{cam_id}] alt too close "
+                                            f"to edge; keep geo")
                 geo_overrides[cam_id] = (new_cx, new_cy)
 
         # ---- Step 5: save crops + return next_positions ----

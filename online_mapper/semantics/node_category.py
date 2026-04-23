@@ -62,26 +62,26 @@ FUNCTION_AREA_WHITELIST = {
     "关爱室": "关爱室",
     "care":   "关爱室",
     "母婴室": "母婴室",
-    # 移除 '休息' / '休闲' / 'lounge' / '休息区' (2026-04-22 用户反馈):
-    # '休息区' 语义泛化 (沙发区/咖啡座/公共椅任意摆放都能被 Qwen describe 成
-    # 休息区), 不适合作独立导航节点, 与 '办公区' 同样排除.
     "零食":   "零食区",
     "snack":  "零食区",
     "工位":   "工位区",
     "工位区": "工位区",
-    # 中文规范名自匹配 (Qwen describe_scene 直接返回中文 canonical)
-    # 注意: 不收 '办公区' / '办公' / '休息区' / '休闲' — 过于泛化, 不适合作导航节点
+    # Excluded as too generic for navigation nodes: '办公区'/'办公',
+    # '休息区'/'休闲'/'lounge'.
     "零食区": "零食区",
     "前台区": "前台",
-    # 园区/楼宇公共区 (campus-level lobbies and service points)
-    "快递柜":   "快递柜区",
-    "快递柜区": "快递柜区",
+    # Locker-group plates (快递柜/外卖柜/储物柜) are physically the same
+    # cabinet cluster with different Qwen labels; unify canonical to keep
+    # them as one node.
+    "快递柜":   "外卖柜区",
+    "快递柜区": "外卖柜区",
     "外卖柜":   "外卖柜区",
+    "外卖柜区": "外卖柜区",
     "外卖寄存": "外卖柜区",
     "智能取餐柜": "外卖柜区",
-    "储物柜":   "储物柜区",
-    "储物柜区": "储物柜区",
-    "locker":   "储物柜区",
+    "储物柜":   "外卖柜区",
+    "储物柜区": "外卖柜区",
+    "locker":   "外卖柜区",
     # 园区保安亭 / 岗亭: 常与楼栋伴生, 后续 Pass D 会自动 prefix 楼栋号
     "保安亭":   "保安亭",
     "岗亭":     "保安亭",
@@ -92,9 +92,12 @@ FUNCTION_AREA_WHITELIST = {
 # Landmark facility whitelist
 # 只保留真正有导航价值的公共设施; 电井/配电间/消防 之类的机房不建节点
 LANDMARK_FACILITY_WHITELIST = {
-    "电梯":   "电梯口",
-    "elevator": "电梯口",
-    "lift":   "电梯口",
+    "电梯":   "电梯厅",
+    "电梯口": "电梯厅",
+    "电梯厅": "电梯厅",
+    "电梯间": "电梯厅",
+    "elevator": "电梯厅",
+    "lift":   "电梯厅",
     "楼梯":   "楼梯口",
     "stair":  "楼梯口",
     "卫生间": "卫生间",
@@ -391,10 +394,8 @@ class NodeCategoryClassifier:
                 return CategoryDecision(
                     NodeCategory.BUILDING_LANDMARK, bl, bl,
                     reason=f"building_landmark plate='{plate_text}'")
-        # scene_describe 分支: multi-cam 识别到 'C座入口'/'A座入口' 等
-        # BUILDING_LANDMARK 场景 (非 plate) 也作为有效 node name. 救 test1
-        # fidx=34/37 机器人在 C 座入口附近, cam3/cam4 看到 C 座建筑但没门牌,
-        # 之前被 classify 为 reject.
+        # Scene_describe BUILDING_LANDMARK: when 4-cam scene recognition
+        # identifies a building landmark (e.g. 'C座入口') without a plate.
         if scene_describe and scene_verified:
             bl = match_building_landmark(scene_describe)
             if bl:

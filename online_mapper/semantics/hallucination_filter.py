@@ -301,8 +301,9 @@ class MultiFrameVoter:
         n = name.strip()
         return any(kw in n for kw in cls.SINGLE_FRAME_WHITELIST_KEYWORDS)
 
-    # Building-landmark 类 plate 天然距离远 (X 座/X 栋/X 座入口, 户外观测),
-    # area 阈值单独降档. Pattern 本地副本, 避免循环 import node_category.
+    # BUILDING_LANDMARK plates are observed at outdoor distance — bbox area
+    # is naturally smaller than indoor door plates, so threshold is relaxed.
+    # Pattern is a local copy to avoid circular import with node_category.
     _BUILDING_LANDMARK_MIN_AREA = 1200
     _BUILDING_LANDMARK_RE = re.compile(
         r"^([A-Za-z]座(入口|大堂)?|[A-Za-z]栋(入口|大堂)?|\d+号楼|\d+栋)$"
@@ -316,11 +317,9 @@ class MultiFrameVoter:
         vs = self._votes.get(name, [])
         if not vs:
             return False
-        # 任意一票 bbox 面积必须超过下限 — 否则视为远距离 OCR 幻觉
-        # (白名单高置信单帧 fast-pass 不强制此条, 否则会丢 'NEUMANN' 这种
-        # 单镜头近距离品牌牌)
-        # BUILDING_LANDMARK (X座/X栋/X座入口) 远距离户外观测, area 小属正常,
-        # 单独降档到 _BUILDING_LANDMARK_MIN_AREA=1200 (救 'C座入口'/'A座入口' 等).
+        # At least one vote must have bbox area above threshold — otherwise
+        # treated as far-distance OCR hallucination. BUILDING_LANDMARK uses a
+        # relaxed threshold due to outdoor-distance observation.
         max_area = max((v.area or 0.0) for v in vs)
         is_bl = self._is_building_landmark_name(name)
         area_thresh = self._BUILDING_LANDMARK_MIN_AREA if is_bl else self.MIN_MAX_AREA
@@ -335,9 +334,12 @@ class MultiFrameVoter:
             per_frame_cams.setdefault(v.frame_idx, set()).add(v.camera)
         if any(len(cs) >= self.MIN_CAMERAS for cs in per_frame_cams.values()) and meets_area:
             return True
-        # single-frame whitelist fast-pass:
-        # 接受 medium / high 任一 confidence + (含数字 OR 命中白名单)
-        if self.allow_single_frame_whitelist:
+        # Single-frame whitelist fast-pass: accept medium/high confidence +
+        # (contains digits OR matches whitelist). BUILDING_LANDMARK with digits
+        # (X号楼/X栋) is excluded to avoid OCR hallucinations of distant
+        # buildings passing on a single frame; requires distinct_frames>=2
+        # or distinct_cameras>=2.
+        if self.allow_single_frame_whitelist and not is_bl:
             ok_conf = any((v.confidence or "").lower() in ("medium", "high") for v in vs)
             if ok_conf and (self._has_room_number(name) or self._matches_whitelist(name)):
                 return True

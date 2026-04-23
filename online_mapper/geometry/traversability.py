@@ -1,13 +1,11 @@
-"""Traversability map from VGGT point cloud (P3 of baseline-optim).
+"""Traversability map from a camera-frame point cloud.
 
 Input: points_camera (H,W,3) np.float32 in camera frame
        (x right, y down, z forward; meters).
-Output: traversability score map (H,W) 0-1:
-   1.0 = ground plane (可通行地面)
-   0.0 = obstacle (墙/柱/椅/人/高物)
-  ~0.5 = unknown (深度缺失 / 太远)
-
-Used by ConnectionBuilder to validate / replace Qwen point-grounding.
+Output: per-pixel traversability score map (H,W) in [0, 1]:
+   1.0 = ground plane
+   0.0 = obstacle (wall / pillar / chair / person / tall object)
+  ~0.5 = unknown (missing depth or too far)
 """
 from __future__ import annotations
 import logging
@@ -16,11 +14,11 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
-# Thresholds tuned for MemoryNav (1.2-1.5m camera height, indoor+outdoor):
-GROUND_BAND_M = 0.30   # |Δy - y_ground| ≤ GROUND_BAND → traversable
-OBSTACLE_ABOVE_M = 0.25  # y < y_ground - 0.25 (higher than ground by 0.25m) → obstacle
-MAX_DEPTH_M = 12.0     # z > MAX_DEPTH → unknown (reliability drops)
-MIN_DEPTH_M = 0.3      # z < MIN_DEPTH → too close, unreliable
+# Thresholds assume ~1.2-1.5 m camera height (indoor + outdoor mix):
+GROUND_BAND_M = 0.30     # |Δy - y_ground| ≤ GROUND_BAND → traversable
+OBSTACLE_ABOVE_M = 0.25  # y < y_ground - this → obstacle (taller than ground)
+MAX_DEPTH_M = 12.0       # beyond this, depth reliability drops → unknown
+MIN_DEPTH_M = 0.3        # too close, depth unreliable
 
 SCORE_TRAVERSABLE = 1.0
 SCORE_UNKNOWN = 0.4

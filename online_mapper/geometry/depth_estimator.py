@@ -148,12 +148,13 @@ class VGGTDepthEstimator:
             return np.ones((h, w), dtype=np.float32)
 
     def estimate_stateless_with_points(self, bgr_image):
-        """旁路调用, 同时返回 depth 和 camera-frame 点云。
+        """Stateless inference returning both depth and camera-frame point cloud.
 
-        Returns dict:
-          'depth': HxW float32 (原图尺寸, 米)
-          'points_camera': HxWx3 float32 (VGGT 原尺寸 518x..., 相机系 x-right y-down z-forward, 米)
-        或 None 不可用时。
+        Returns dict with:
+          'depth': HxW float32 (original image size, meters)
+          'points_camera': HxWx3 float32 (VGGT native size, camera frame
+            x-right y-down z-forward, meters)
+        Or None if unavailable.
         """
         if not self.available or bgr_image is None:
             return None

@@ -123,6 +123,8 @@ class OnlineMapperCore:
 
         # cached frames for ConnectionBuilder
         self._all_frames_cache: List[Dict] = []
+        from collections import deque as _deque
+        self._recent_scene_winners: _deque = _deque(maxlen=3)
 
         # logs
         self.log_lines: List[Dict] = []
@@ -343,10 +345,8 @@ class OnlineMapperCore:
                 scene_verified = False
                 if self.namer is not None and self.namer._qwen_server:
                     try:
-                        # Multi-cam describe_scene: 扫 4 路 cam 各问一次 Qwen,
-                        # 取最具体的场景名 (匹配 FUNCTION_AREA_WHITELIST /
-                        # LANDMARK_FACILITY_WHITELIST 关键词优先). 修复单 cam
-                        # 看不到打印机/茶水间等 landmark 导致错判为 '办公区'.
+                        # Multi-cam scene recognition: query Qwen on each of
+                        # the 4 cameras, then vote on canonical name.
                         scene_cands = []
                         verify_img_map = {}
                         for cam_id in ('camera_1', 'camera_2', 'camera_3', 'camera_4'):
@@ -367,12 +367,9 @@ class OnlineMapperCore:
                                     verify_img_map[cand] = img
 
                         def _canonicalize(name: str) -> str:
-                            """Normalize to canonical form for voting:
-                              '打印机房'/'打印机'/'打印区' → '打印区'
-                              '电梯口'/'电梯厅' → '电梯口'
-                              'C座入口' BUILDING_LANDMARK → 原样
-                              '大堂'/'广场'/'办公区' 泛化 → 原样.
-                            保证同义 raw name 合并为同一票."""
+                            """Normalize raw scene name to canonical form so
+                            synonyms collapse into one vote (e.g. '打印机房'
+                            and '打印机室' both map to '打印区')."""
                             for kw, cn in FUNCTION_AREA_WHITELIST.items():
                                 if kw in name:
                                     return cn
@@ -397,13 +394,9 @@ class OnlineMapperCore:
                             return 3
 
                         if scene_cands:
-                            # 投票: 每 cam 1 票, canonicalize 后计数.
-                            # 规则 (用户 2026-04-22 指定):
-                            #   - 至少 2 cam 投同一 canonical name → 用该 name
-                            #   - 所有 cam 各不相同 → 无共识, 不创建 node
-                            # tie-break: 多 name 并列最高票时按 specificity
-                            #   rank 取更具体的 (FUNCTION_AREA > BUILDING >
-                            #   LANDMARK > 泛化).
+                            # Each cam votes once on its canonical name.
+                            # Require ≥2 cam consensus; tie-break by
+                            # specificity rank.
                             canonical_cands = [(c, _canonicalize(n)) for c, n in scene_cands]
                             from collections import Counter
                             vote_cnt = Counter(n for _, n in canonical_cands)
@@ -412,16 +405,35 @@ class OnlineMapperCore:
                             if top_count >= 2:
                                 top_names = [n for n, c in top if c == top_count]
                                 top_names.sort(key=_specificity_rank)
-                                scene_describe = top_names[0]
-                                scene_verified = True  # 2+ cam 共识即认为 verified
-                                logger.info(f"[MultiCamScene] fidx={fidx} "
-                                            f"cands={scene_cands} votes={dict(vote_cnt)} "
-                                            f"→ '{scene_describe}' (consensus={top_count}/"
-                                            f"{len(canonical_cands)})")
+                                winner = top_names[0]
+                                # Whitelisted categories (FUNCTION_AREA,
+                                # LANDMARK_FACILITY) bypass temporal check —
+                                # their matched keywords are high-trust signals.
+                                # Other categories (BUILDING_LANDMARK, generic
+                                # names) require a preceding keyframe to have
+                                # voted the same canonical to guard against
+                                # multi-cam joint hallucination.
+                                in_strong_wl = any(kw in winner for kw in FUNCTION_AREA_WHITELIST) \
+                                    or any(kw in winner for kw in LANDMARK_FACILITY_WHITELIST)
+                                if in_strong_wl or winner in self._recent_scene_winners:
+                                    scene_describe = winner
+                                    scene_verified = True
+                                    logger.info(f"[MultiCamScene] fidx={fidx} "
+                                                f"cands={scene_cands} votes={dict(vote_cnt)} "
+                                                f"→ '{scene_describe}' (consensus={top_count}/"
+                                                f"{len(canonical_cands)})")
+                                else:
+                                    scene_describe = None
+                                    scene_verified = False
+                                    logger.info(f"[MultiCamScene] fidx={fidx} "
+                                                f"cands={scene_cands} votes={dict(vote_cnt)} "
+                                                f"→ tentative '{winner}' "
+                                                f"(awaits temporal confirm)")
+                                self._recent_scene_winners.append(winner)
                             else:
-                                # 无共识 (所有 cam 给不同 name), 不创建 node
                                 scene_describe = None
                                 scene_verified = False
+                                self._recent_scene_winners.append(None)
                                 logger.info(f"[MultiCamScene] fidx={fidx} "
                                             f"cands={scene_cands} votes={dict(vote_cnt)} "
                                             f"→ NO CONSENSUS (all cams differ), skip node")
@@ -816,12 +828,10 @@ class OnlineMapperCore:
                 #     trigger 在 1770097836 中段) 被 DEEPROUTE.AI (best frame 1770097843
                 #     = 前台柜台近视) attach 时, relocate 到 DEEPROUTE.AI 帧更合理.
                 target_from_plate = getattr(target, "_from_plate_best", False)
-                # 2026-04-22 修订: 纯 '前台' (无 plate) 的 keyframe-sourced node
-                # 会因 replaced_org=False 自然走入 KEEP 路径 (保留 fidx=15
-                # 十字路口等 trigger 帧). 当 brand attach 实际发生 (replaced_org=
-                # True), RELOCATE 到 brand best-view 对 brand-attached node
-                # (如 '前台·DEEPROUTE.AI', brand best-view area 远大于 keyframe
-                # trigger 帧) 的导航 crop 更有价值 (能看到品牌招牌作 landmark).
+                # When a brand plate is attached to a keyframe-sourced node,
+                # relocate display to the brand best-view frame — its plate
+                # bbox is usually much larger and the crop includes the
+                # brand sign as a navigation landmark.
                 if replaced_org and not target_from_plate:
                     target.timestamp = obs.timestamp
                     target.cameras = dict(obs.cameras)
@@ -934,10 +944,8 @@ class OnlineMapperCore:
                 name_struct=ns.to_dict() if ns is not None else None,
             )
 
-        # 3.9 P3.18: 为每个 node 计算 motion-based body heading
-        # (atan2 of displacement to next/prev keyframe). 这绕开 VGGT pose.theta
-        # 的 yaw 漂移 (4 节点全估 -85°), 给 ConnectionBuilder 的几何先验提供
-        # 可靠的机器人朝向.
+        # Motion-based body heading per node (atan2 of displacement to an
+        # adjacent keyframe). More robust than pose.theta when VO yaw drifts.
         try:
             import math as _math
             ordered = sorted(self.topo.nodes.keys(),
@@ -970,8 +978,8 @@ class OnlineMapperCore:
                 cb = ConnectionBuilder(
                     sim_threshold=self.cfg.connection_sim_threshold,
                     qwen_gpu=self.cfg.qwen_gpu, namer=self.namer,
-                    depth_estimator=self.depth,  # P3 traversability
-                    detector=self.detector)  # P3.8 person penalty
+                    depth_estimator=self.depth,
+                    detector=self.detector)
                 node_dirs = {nid: out_root / nid for nid in self.topo.nodes}
                 for nid, node in self.topo.nodes.items():
                     nbs = [self.topo.nodes[nbid] for nbid in node.neighbors
@@ -1602,9 +1610,8 @@ class OnlineMapperCore:
             if nid in self.pose_graph.nodes:
                 pn = self.pose_graph.nodes[nid]
                 poses[nid] = (pn.x, pn.y)
-        # P3: cross-gap filter — 若两 node timestamp 差 > 60s 且中间无 keyframe
-        # 跨越 (同时 pose 差 > 3m), 拒绝生成 edge (memory_test_data 的 6.2 min
-        # 数据断档会虚构跨段 connection, 如 N7↔N13).
+        # Cross-gap filter: reject edges between nodes whose timestamps differ
+        # by more than CROSS_GAP_MS and have no bridging keyframe between them.
         ts_map: Dict[str, int] = {}
         for nid in ids:
             try:

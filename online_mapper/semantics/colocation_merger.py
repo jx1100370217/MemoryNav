@@ -89,18 +89,18 @@ class ColocationMerger:
 
     @staticmethod
     def _base_cat_name(node) -> str:
-        """Strip brand suffix '·NEUMANN' / '·DEEPROUTE.AI' to get core
-        function_area/landmark name ('前台·DEEPROUTE.AI' → '前台')."""
+        """Strip brand suffix after '·' to get core category name."""
         n = (getattr(node, "position_name", "") or "").strip()
         return n.split("·")[0].strip()
 
     def _category_mismatch(self, node_a, node_b) -> bool:
-        """若两 node 都有明确非 reject 的 category name 且 base 名不同,
-        不该合并 (例: '前台' vs '休息区' 空间近但语义不同)."""
+        """Block merge when both nodes carry distinct non-reject category
+        names — different function areas / landmarks should stay separate
+        even if spatially close."""
         cat_a = getattr(node_a, "category", None) or ""
         cat_b = getattr(node_b, "category", None) or ""
         if cat_a == NodeCategory.REJECT.value or cat_b == NodeCategory.REJECT.value:
-            return False  # reject 类允许合并 (保持旧行为)
+            return False
         if not cat_a or not cat_b:
             return False
         name_a = self._base_cat_name(node_a)
@@ -111,10 +111,6 @@ class ColocationMerger:
 
     def _should_merge(self, node_a, node_b, feats_a, feats_b,
                       pose_a, pose_b) -> Tuple[bool, Optional[str]]:
-        # Category mismatch guard: 不同功能区/地标名 (前台 vs 休息区) 即便
-        # 空间近也不合并, 防止 multi-cam describe_scene 相邻 keyframe 被
-        # 错误吸收 (用户反馈: N5 前台 fidx=15 十字路口帧 被合并到休息区
-        # N3, 导致 N5 拿不到该帧).
         if self._category_mismatch(node_a, node_b):
             return False, None
         # 强信号: VPR 相似度极高 → 合并
@@ -202,10 +198,9 @@ class ColocationMerger:
                     node, other, feats, feats_o, pose, pose_o)
                 if not ok:
                     continue
-                # Determine anchor by rank; tie-break by earlier frame_idx
-                # (preserve "first-discovered" frame's timestamp/cameras —
-                # 用户反馈: '前台' 首次触发帧通常位于十字路口/通道等语义中心,
-                # 比合并进来的后续帧更适合作导航 base frame).
+                # Anchor by rank; tie-break by smaller frame_idx so the
+                # merged node keeps the first-discovered frame's timestamp
+                # and cameras.
                 r_node, r_other = self._rank(node), self._rank(other)
                 if r_node > r_other or (r_node == r_other and
                                          node.frame_idx <= other.frame_idx):
@@ -214,13 +209,9 @@ class ColocationMerger:
                 else:
                     anchor, sub = other, node
                     anchor_id, sub_id = other_id, nid
-                # Combine names on anchor
                 new_cn, new_en = self._combined_name(anchor, sub)
                 anchor.position_name = new_cn
                 anchor.position_name_eng = new_en
-                # 锚 frame_idx / timestamp / cameras 取两者 "earlier" 的
-                # (代表机器人首次到达该位置的时刻), 保证 base frame 是十字路口/
-                # 通道语义中心而非 brand 附近后续帧.
                 try:
                     if sub.frame_idx < anchor.frame_idx:
                         anchor.frame_idx = sub.frame_idx

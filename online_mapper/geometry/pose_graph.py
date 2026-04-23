@@ -12,9 +12,8 @@ class PoseNode:
     x: float = 0.0
     y: float = 0.0
     theta: float = 0.0
-    # P3.18: motion-based body heading (atan2 of position delta to next keyframe).
-    # Preferred over `theta` for cam azimuth matching when available,
-    # because VGGT yaw estimate drifts (all 4 nodes estimated to -85°).
+    # atan2 of position delta to adjacent keyframe; more robust than `theta`
+    # for cam azimuth matching when VO yaw drifts.
     motion_theta: Optional[float] = None
 
 

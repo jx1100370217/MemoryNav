@@ -55,60 +55,25 @@ class AutoSubImageExtractor:
         logger.info("AutoSubImageExtractor v10.1 (parallel cameras + corridor-frame match + Hungarian + Y-fix) initialized")
 
     # ------------------------------------------------------------------
-    # DINOv3 patch 特征 (与 memory_nav.sub_image_matcher.DINOv3Strategy 一致):
-    # 保留 patch token 2D 网格, _cos_sim 改为滑动子图匹配.
-    # is_crop=True 对小尺寸裁图按原图比例缩小 target_size, 复刻 match()
-    # 内部对 crop 的自适应 target 逻辑.
+    # DINOv3 patch 特征 + 滑动匹配 — 直接复用
+    # memory_nav.sub_image_matcher.DINOv3Strategy 的公共 API
+    # (extract_patch_grid / adaptive_crop_target_size / match_grids),
+    # 与记忆导航子图匹配使用同一份实现, 避免重复代码.
     # ------------------------------------------------------------------
-    _PATCH_FRAME_TARGET = 518
-    _PATCH_CROP_TARGET_MAX = 280
-
-    def _extract_patch_grid(self, img, target_size):
-        t, h, w = self._dinov3._prepare_image(img, target_size=target_size)
-        n_ph = h // self._dinov3._patch_size
-        n_pw = w // self._dinov3._patch_size
-        n_patches = n_ph * n_pw
-        with torch.no_grad():
-            feats = self._dinov3._model.forward_features(t)
-        n_prefix = feats.shape[1] - n_patches
-        tokens = feats[:, n_prefix:, :] if n_prefix > 0 else feats
-        grid = tokens[0].reshape(n_ph, n_pw, -1)
-        return torch.nn.functional.normalize(grid, dim=-1)
+    _FRAME_TARGET_SIZE = 518
 
     def _cls_feature(self, img, is_crop=False):
         if is_crop:
-            h, w = img.shape[:2]
-            # crop 的 target_size 按其占原图比例缩小, 与 DINOv3Strategy.match 对齐
-            target = max(self._dinov3._patch_size * 2,
-                         min(self._PATCH_CROP_TARGET_MAX,
-                             int(self._PATCH_FRAME_TARGET * max(h, w) / 1920)))
+            # 假设 crop 来自 1920xN 的 cam 原图; 比例缩放
+            target = self._dinov3.adaptive_crop_target_size(
+                crop_shape=img.shape, frame_shape=(1080, 1920),
+                frame_target=self._FRAME_TARGET_SIZE)
         else:
-            target = self._PATCH_FRAME_TARGET
-        return self._extract_patch_grid(img, target)
+            target = self._FRAME_TARGET_SIZE
+        return self._dinov3.extract_patch_grid(img, target_size=target)
 
     def _cos_sim(self, feat_a, feat_b):
-        # feat_a / feat_b: [h, w, dim] normalized patch grids.
-        # 小 grid 在大 grid 上滑动, 取 window 内 patch cos 均值的最大值.
-        if feat_a.dim() != 3 or feat_b.dim() != 3:
-            fa = feat_a.reshape(-1)
-            fb = feat_b.reshape(-1)
-            return float(torch.nn.functional.cosine_similarity(
-                fa.unsqueeze(0), fb.unsqueeze(0)).item())
-        ha, wa, _ = feat_a.shape
-        hb, wb, _ = feat_b.shape
-        if ha > hb or wa > wb:
-            feat_a, feat_b = feat_b, feat_a
-            ha, wa, _ = feat_a.shape
-            hb, wb, _ = feat_b.shape
-        if ha == hb and wa == wb:
-            return float((feat_a * feat_b).sum(dim=-1).mean().item())
-        b = feat_b.permute(2, 0, 1).unsqueeze(0)
-        windows = b.unfold(2, ha, 1).unfold(3, wa, 1)
-        oh, ow = windows.shape[2], windows.shape[3]
-        windows = windows[0].permute(1, 2, 3, 4, 0).reshape(oh * ow, ha * wa, -1)
-        a_flat = feat_a.reshape(-1, feat_a.shape[-1])
-        sim = (windows * a_flat.unsqueeze(0)).sum(dim=-1).mean(dim=-1)
-        return float(sim.max().item())
+        return self._dinov3.match_grids(feat_a, feat_b)
 
     # ------------------------------------------------------------------
     # Y 坐标修正

@@ -338,6 +338,60 @@ class DINOv3Strategy(BaseSubImageMatchStrategy):
                    f"crop={crop_ph}x{crop_pw})",
         )
 
+    # ------------------------------------------------------------------
+    # Public APIs for callers that need to pre-compute / cache features
+    # across many matches (e.g. online_mapper ConnectionBuilder comparing
+    # 4 cam-crops against N corridor frames — avoids re-extracting patches
+    # for the same corridor frame N times).
+    # Feature semantics identical to .match(): same weights, same prepare,
+    # same patch size, same L2-normalized patch tokens.
+    # ------------------------------------------------------------------
+
+    def extract_patch_grid(self, image: np.ndarray, target_size: int = 518):
+        """Normalized DINOv3 patch grid [n_ph, n_pw, dim]."""
+        self.preload()
+        feats_flat, n_ph, n_pw = self._extract_patch_features(image, target_size)
+        grid = feats_flat.reshape(n_ph, n_pw, -1)
+        return torch.nn.functional.normalize(grid, dim=-1)
+
+    def adaptive_crop_target_size(self, crop_shape, frame_shape,
+                                   frame_target: int = 518,
+                                   crop_target_cap: int = 280) -> int:
+        """Crop target_size adaptive to frame original size, matching .match().
+
+        crop_shape / frame_shape: HxW(xC) shape tuples or (H, W) pairs.
+        """
+        crop_hw = crop_shape[:2]
+        frame_hw = frame_shape[:2]
+        return max(self._patch_size * 2,
+                   min(crop_target_cap,
+                       int(frame_target * max(crop_hw) / max(frame_hw))))
+
+    def match_grids(self, grid_a, grid_b) -> float:
+        """Sliding-window cosine match between two normalized patch grids.
+
+        Smaller grid slides over the larger one; return the best window's
+        mean per-patch cosine in [0, 1]. Same routine as .match()'s core,
+        extracted so callers with pre-computed grids can skip re-extraction.
+        """
+        if grid_a.dim() != 3 or grid_b.dim() != 3:
+            raise ValueError("grids must be [h, w, dim]")
+        ha, wa, _ = grid_a.shape
+        hb, wb, _ = grid_b.shape
+        if ha > hb or wa > wb:
+            grid_a, grid_b = grid_b, grid_a
+            ha, wa, _ = grid_a.shape
+            hb, wb, _ = grid_b.shape
+        if ha == hb and wa == wb:
+            return max(0.0, float((grid_a * grid_b).sum(dim=-1).mean().item()))
+        b4d = grid_b.permute(2, 0, 1).unsqueeze(0)
+        windows = b4d.unfold(2, ha, 1).unfold(3, wa, 1)
+        oh, ow = windows.shape[2], windows.shape[3]
+        windows = windows[0].permute(1, 2, 3, 4, 0).reshape(oh * ow, ha * wa, -1)
+        a_flat = grid_a.reshape(-1, grid_a.shape[-1])
+        sim = (windows * a_flat.unsqueeze(0)).sum(dim=-1).mean(dim=-1)
+        return max(0.0, float(sim.max().item()))
+
 
 # ============================================================================
 # 方案注册表 (仅 DINOv3)

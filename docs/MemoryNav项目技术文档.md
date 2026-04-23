@@ -1484,7 +1484,7 @@ Hungarian 匹配后按 `connection_sim_threshold = 0.40` 过滤，输出 cam ↔
 
 #### 4.3.4 AutoSubImageExtractor (`topology/auto_sub_image_extractor.py`)
 
-`ConnectionBuilder` 的基类，提供 DINOv3 CLS feature + 走廊中间帧 corridor_features 的基础匹配管线。
+`ConnectionBuilder` 的基类，复用 `memory_nav.sub_image_matcher.DINOv3Strategy` 的 patch grid 提取 + 滑动窗口匹配（`extract_patch_grid` / `match_grids`），在此基础上提供 4 相机并行 crop 特征 + 走廊中间帧 corridor_features 的匹配管线。
 
 #### 4.3.5 拓扑重建 (`_rebuild_topology_neighbors_spatial`)
 

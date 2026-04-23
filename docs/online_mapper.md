@@ -24,7 +24,7 @@
 | 节点命名 | 结构化 `NodeName(category, organization, nearby_plates, ...)`, 多帧投票 + 二次验证 + 类别白名单 + 防串扰 |
 | 显示拼接 | `category·organization`, 例如 `外卖柜区·EXHIOH` |
 | scene describe | 4 相机并行 Qwen 描述 + specificity rank 投票 + 时序共识 (temporal consensus) |
-| cam→neighbor 匹配 | 视觉 CLS Hungarian + 几何方向先验 (`cos(robot_ang - cam_ang)`, ALPHA=0.5) + person-occlusion 惩罚 + traversability 校正 |
+| cam→neighbor 匹配 | 视觉 DINOv3 patch 滑动匹配 Hungarian + 几何方向先验 (`cos(robot_ang - cam_ang)`, ALPHA=0.5) + person-occlusion 惩罚 + traversability 校正 |
 | 接入方式 | CLI 一次性跑 (`run_online_map.py`) **或** WebSocket 流式建图模式 (`ws_proxy_with_memory.py` 的 mapping 模式) |
 | 输出 | `merged_labeled_data/` schema + 结构化命名字段 + `scene_graph.json` / `pose_graph.json` / `metrics.json` / `online_mapping_log.jsonl` / `plate_voter_dump.json` + 可视化 PNG |
 
@@ -113,7 +113,7 @@ pretrained/                              所有模型权重 (.gitignore)
 ├── vggt-1b/                             facebook/VGGT-1B (model.safetensors 5.0G)
 ├── depth-anything-v2-small-hf/          备用 depth backend
 ├── grounding-dino-base/                 IDEA-Research/grounding-dino-base
-├── dinov3_vitb16.safetensors            VPR / CLS feature backbone
+├── dinov3_vitb16.safetensors            VPR / sub-image matching backbone
 └── yolov8n.pt                           辅助
 ```
 
@@ -184,7 +184,7 @@ StreamLoader yields frame  (4 cameras + timestamp + frame_idx 0..N)
        其余写 instance_suffix=_N
   6. writer.write_node() → merged_labeled_data/<id>/
   7. ConnectionBuilder.build_for_node(pose_graph=...)
-       视觉 DINOv3 CLS 匹配 + 几何方向先验 + person-occlusion 惩罚 + traversability 校正
+       视觉 DINOv3 patch 滑动匹配 + 几何方向先验 + person-occlusion 惩罚 + traversability 校正
        Hungarian 匹配 → cam ↔ nb 1-to-1
   8. 写 scene_graph.json / pose_graph.json /
      online_mapping_log.jsonl / metrics.json / plate_voter_dump.json
@@ -357,7 +357,7 @@ Qwen 给的原始点 (qx, qy) 过 `compute_traversability_map(points_camera)` + 
 
 ### 5.4 AutoSubImageExtractor (topology/auto_sub_image_extractor.py)
 
-`ConnectionBuilder` 的基类, 提供 DINOv3 CLS feature + 走廊中间帧 corridor_features 基础匹配管线.
+`ConnectionBuilder` 的基类, 复用 memory_nav.sub_image_matcher.DINOv3Strategy 的 patch grid 提取 + 滑动窗口匹配 (extract_patch_grid / match_grids), 在此基础上提供 4 相机并行 crop 特征 + 走廊中间帧 corridor_features 的匹配管线.
 
 ### 5.5 TopoGraph / spatial-KNN 邻接重建
 

@@ -235,7 +235,10 @@ class ThresholdedSubImageExtractor(AutoSubImageExtractor):
             def _wrap(a):
                 return _math.atan2(_math.sin(a), _math.cos(a))
             mx, my, mth = my_pose
-            my_ts = node_info.get("timestamp", 0)
+            def _ts_int(v):
+                try: return int(v)
+                except (TypeError, ValueError): return 0
+            my_ts = _ts_int(node_info.get("timestamp", 0))
             GAP_FUSE_MS = 60_000  # 时间差 > 60s 视为断档, pose 不可信
             geo_bonus = np.zeros_like(sim_matrix)
             gap_mask = np.zeros_like(sim_matrix, dtype=bool)
@@ -245,8 +248,8 @@ class ThresholdedSubImageExtractor(AutoSubImageExtractor):
                     nb_obj = next((n for n in neighbor_nodes if n["position_id"] == nb_id), None)
                     if nb_obj is None:
                         continue
-                    nb_ts = nb_obj.get("timestamp", 0)
-                    gap_ms = abs(my_ts - nb_ts)
+                    nb_ts = _ts_int(nb_obj.get("timestamp", 0))
+                    gap_ms = abs(my_ts - nb_ts) if (my_ts and nb_ts) else 0
                     # 断档熔断: 跨 > 60s 数据断层的 edge, VGGT VO yaw 累积漂移严重,
                     # pose-based 几何先验不可信, 几何贡献清零 + 禁用反向硬惩罚,
                     # 让 visual sim 独立决定 cam 选择.

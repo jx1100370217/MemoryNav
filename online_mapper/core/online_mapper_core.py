@@ -1159,11 +1159,14 @@ class OnlineMapperCore:
             # 同组内的实际 plate 名变体集合 (X座 + X座入口 + X座大堂 ...)
             variants = list({_node_canon(self.topo.nodes[i]) for i in ids})
             best_obs = _best_obs_for_group(base_name, variants)
-            if best_obs is not None:
-                anchor_id = min(ids, key=lambda i: abs(
-                    self.topo.nodes[i].frame_idx - best_obs.frame_idx))
-            else:
-                anchor_id = min(ids, key=lambda i: self.topo.nodes[i].frame_idx)
+            # Anchor = 最晚 frame_idx 的 node. 机器人沿路径走过 landmark 时,
+            # frame_idx 更大的 keyframe 通常离 landmark 更近 (plate bbox 更大,
+            # cam_crop 对 ConnectionBuilder 方向先验和 DINOv3 visual sim 都更准).
+            # 旧逻辑"离 best_obs.frame_idx 最近"会选到早期远看 landmark 的 node
+            # (plate 在远处 OCR 到但机器人还没走近), 例如 C 座 group merge 选
+            # frame_idx=14 的 N9 (还没到 C 座) 而不是 frame_idx=17 的 N5 (站在
+            # 入口处, cam_2 能清晰看到 C 座弧形玻璃).
+            anchor_id = max(ids, key=lambda i: self.topo.nodes[i].frame_idx)
             # 把 anchor 改名成 base name (统一 X座入口/X座大堂 → X座)
             if cat == NodeCategory.BUILDING_LANDMARK.value:
                 target = self.topo.nodes[anchor_id]

@@ -406,29 +406,38 @@ class OnlineMapperCore:
                                 top_names = [n for n, c in top if c == top_count]
                                 top_names.sort(key=_specificity_rank)
                                 winner = top_names[0]
-                                # Whitelisted categories (FUNCTION_AREA,
-                                # LANDMARK_FACILITY) bypass temporal check —
-                                # their matched keywords are high-trust signals.
-                                # Other categories (BUILDING_LANDMARK, generic
-                                # names) require a preceding keyframe to have
-                                # voted the same canonical to guard against
-                                # multi-cam joint hallucination.
-                                in_strong_wl = any(kw in winner for kw in FUNCTION_AREA_WHITELIST) \
-                                    or any(kw in winner for kw in LANDMARK_FACILITY_WHITELIST)
-                                if in_strong_wl or winner in self._recent_scene_winners:
+                                # 严格多帧+多相机确认 (不再对白名单豁免):
+                                #   consensus >= 3/4 → 强信号, 立即 verified
+                                #   consensus == 2/4 → 弱信号, 必须近 3 帧
+                                #                      _recent_scene_winners 里见过
+                                #                      同 winner 才 verified (temporal
+                                #                      confirm); 否则 tentative, 不建
+                                #                      node, 但入队等下次 vote 确认.
+                                # 早先版本对 FUNCTION_AREA / LANDMARK_FACILITY 白名单
+                                # 直接 bypass temporal → multi-cam joint hallucination
+                                # 时 2/4 就创建幻觉 node (N11 电梯厅_2 即此问题).
+                                if top_count >= 3:
                                     scene_describe = winner
                                     scene_verified = True
                                     logger.info(f"[MultiCamScene] fidx={fidx} "
                                                 f"cands={scene_cands} votes={dict(vote_cnt)} "
-                                                f"→ '{scene_describe}' (consensus={top_count}/"
-                                                f"{len(canonical_cands)})")
+                                                f"→ '{scene_describe}' (strong consensus="
+                                                f"{top_count}/{len(canonical_cands)})")
+                                elif winner in self._recent_scene_winners:
+                                    scene_describe = winner
+                                    scene_verified = True
+                                    logger.info(f"[MultiCamScene] fidx={fidx} "
+                                                f"cands={scene_cands} votes={dict(vote_cnt)} "
+                                                f"→ '{scene_describe}' (temporal confirmed, "
+                                                f"consensus={top_count}/{len(canonical_cands)})")
                                 else:
                                     scene_describe = None
                                     scene_verified = False
                                     logger.info(f"[MultiCamScene] fidx={fidx} "
                                                 f"cands={scene_cands} votes={dict(vote_cnt)} "
-                                                f"→ tentative '{winner}' "
-                                                f"(awaits temporal confirm)")
+                                                f"→ tentative '{winner}' (consensus="
+                                                f"{top_count}/{len(canonical_cands)}, "
+                                                f"awaits temporal confirm)")
                                 self._recent_scene_winners.append(winner)
                             else:
                                 scene_describe = None

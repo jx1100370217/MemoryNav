@@ -239,8 +239,15 @@ class ThresholdedSubImageExtractor(AutoSubImageExtractor):
                 try: return int(v)
                 except (TypeError, ValueError): return 0
             my_ts = _ts_int(node_info.get("timestamp", 0))
-            GAP_FUSE_MS = 60_000  # 时间差 > 60s 视为断档, pose 不可信
+            # 阈值 300s: 只捕获真正数据断档 (memory_test_data Part1→Part2 是 533s).
+            # 同 segment 内相邻 keyframe 间隔 30-120s, 不能误判为断档.
+            GAP_FUSE_MS = 300_000
+            # ALPHA 分两档:
+            #   非 FUSED (同 segment, VO 相对可靠): 0.5, 几何先验主导
+            #   FUSED (跨 segment 真断档): 0, geo_bonus 清零让 visual sim 主导
+            ALPHA_NORMAL = 0.5
             geo_bonus = np.zeros_like(sim_matrix)
+            alpha_per = np.full_like(sim_matrix, ALPHA_NORMAL)
             gap_mask = np.zeros_like(sim_matrix, dtype=bool)
             for i, cam_id in enumerate(cam_ids):
                 ca = cam_angles.get(cam_id, 0.0)
@@ -250,11 +257,10 @@ class ThresholdedSubImageExtractor(AutoSubImageExtractor):
                         continue
                     nb_ts = _ts_int(nb_obj.get("timestamp", 0))
                     gap_ms = abs(my_ts - nb_ts) if (my_ts and nb_ts) else 0
-                    # 断档熔断: 跨 > 60s 数据断层的 edge, VGGT VO yaw 累积漂移严重,
-                    # pose-based 几何先验不可信, 几何贡献清零 + 禁用反向硬惩罚,
-                    # 让 visual sim 独立决定 cam 选择.
                     if gap_ms > GAP_FUSE_MS:
+                        # 跨真断档: geo_bonus=0 + alpha=0 + 禁反向硬惩罚
                         gap_mask[i][j] = True
+                        alpha_per[i][j] = 0.0
                         continue
                     nbp = nb_obj.get("pose")
                     if nbp is None:
@@ -264,21 +270,13 @@ class ThresholdedSubImageExtractor(AutoSubImageExtractor):
                     if abs(dx) < 1e-6 and abs(dy) < 1e-6:
                         continue
                     world_ang = _math.atan2(dy, dx)
-                    robot_ang = _wrap(world_ang - mth)  # neighbor 相对机器人朝向的角度
+                    robot_ang = _wrap(world_ang - mth)
                     diff = _wrap(robot_ang - ca)
-                    score = _math.cos(diff)             # ∈ [-1, 1]
+                    score = _math.cos(diff)
                     geo_bonus[i][j] = score
                     if score < -0.3:
-                        # 相机和 neighbor 方向夹角 > ~108°, 强力惩罚
                         sim_matrix[i][j] -= 1.0
-            # 几何融合: visual_sim + α * angular_cos
-            # α 降为 0.2: VO/pose_graph theta 在室内场景 (小转弯/短轨迹/数据断档)
-            # 经常漂移几十度以上. α 过大会让"几何看似对齐但视觉完全对不上"的
-            # 相机胜过"视觉显著最好但几何方向偏"的真正对应相机. 实测 N13→N12
-            # 跨 6min 断档时, α=0.5 让 cam_1 (pose 误指) 压过 cam_3/cam_4
-            # (真实方位), α=0.2 后视觉 sim 有机会翻盘.
-            ALPHA = 0.2
-            sim_matrix = sim_matrix + ALPHA * geo_bonus
+            sim_matrix = sim_matrix + alpha_per * geo_bonus
             for i, cam_id in enumerate(cam_ids):
                 for j, nb_id in enumerate(nb_ids):
                     gap_tag = " [GAP-FUSED]" if gap_mask[i][j] else ""

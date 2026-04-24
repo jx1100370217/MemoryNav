@@ -406,22 +406,31 @@ class OnlineMapperCore:
                                 top_names = [n for n, c in top if c == top_count]
                                 top_names.sort(key=_specificity_rank)
                                 winner = top_names[0]
-                                # 严格多帧+多相机确认 (不再对白名单豁免):
+                                # 多帧+多相机确认:
                                 #   consensus >= 3/4 → 强信号, 立即 verified
-                                #   consensus == 2/4 → 弱信号, 必须近 3 帧
-                                #                      _recent_scene_winners 里见过
-                                #                      同 winner 才 verified (temporal
-                                #                      confirm); 否则 tentative, 不建
-                                #                      node, 但入队等下次 vote 确认.
-                                # 早先版本对 FUNCTION_AREA / LANDMARK_FACILITY 白名单
-                                # 直接 bypass temporal → multi-cam joint hallucination
-                                # 时 2/4 就创建幻觉 node (N11 电梯厅_2 即此问题).
+                                #   consensus == 2/4 且 junction ∈ {CROSS, T_JUNCTION}
+                                #     → 路口豁免 (机器人在路口可能只短暂看到 landmark,
+                                #        temporal 过严会过滤掉真实单次识别, 如大堂
+                                #        十字路口的 '前台'): verified
+                                #   consensus == 2/4 且近 3 帧 _recent_scene_winners
+                                #     见过同 winner → temporal confirmed, verified
+                                #   否则 tentative, 不建 node, 入队等下次 vote 确认.
+                                is_junction = junction_kind in (
+                                    JunctionKind.CROSS, JunctionKind.T_JUNCTION)
                                 if top_count >= 3:
                                     scene_describe = winner
                                     scene_verified = True
                                     logger.info(f"[MultiCamScene] fidx={fidx} "
                                                 f"cands={scene_cands} votes={dict(vote_cnt)} "
                                                 f"→ '{scene_describe}' (strong consensus="
+                                                f"{top_count}/{len(canonical_cands)})")
+                                elif is_junction:
+                                    scene_describe = winner
+                                    scene_verified = True
+                                    logger.info(f"[MultiCamScene] fidx={fidx} "
+                                                f"cands={scene_cands} votes={dict(vote_cnt)} "
+                                                f"→ '{scene_describe}' (junction-"
+                                                f"{junction_kind.value} bypass, consensus="
                                                 f"{top_count}/{len(canonical_cands)})")
                                 elif winner in self._recent_scene_winners:
                                     scene_describe = winner

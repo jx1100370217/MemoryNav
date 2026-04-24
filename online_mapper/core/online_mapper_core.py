@@ -417,6 +417,14 @@ class OnlineMapperCore:
                                 #   否则 tentative, 不建 node, 入队等下次 vote 确认.
                                 is_junction = junction_kind in (
                                     JunctionKind.CROSS, JunctionKind.T_JUNCTION)
+                                # FUNCTION_AREA canonical 值 (前台/打印区/关爱室
+                                # /外卖柜区/保安亭 等) 是 Qwen 低幻觉的具体 landmark,
+                                # 独立于场景也能 2/4 bypass temporal. '大堂' 等
+                                # 泛词不在此 set (被 category_clf reject).
+                                # LANDMARK_FACILITY (含'电梯厅') 不 bypass, 防 N11
+                                # 电梯厅_2 类 multi-cam joint hallucination.
+                                is_func_area_strong = winner in set(
+                                    FUNCTION_AREA_WHITELIST.values())
                                 if top_count >= 3:
                                     scene_describe = winner
                                     scene_verified = True
@@ -424,6 +432,13 @@ class OnlineMapperCore:
                                                 f"cands={scene_cands} votes={dict(vote_cnt)} "
                                                 f"→ '{scene_describe}' (strong consensus="
                                                 f"{top_count}/{len(canonical_cands)})")
+                                elif is_func_area_strong:
+                                    scene_describe = winner
+                                    scene_verified = True
+                                    logger.info(f"[MultiCamScene] fidx={fidx} "
+                                                f"cands={scene_cands} votes={dict(vote_cnt)} "
+                                                f"→ '{scene_describe}' (func_area bypass, "
+                                                f"consensus={top_count}/{len(canonical_cands)})")
                                 elif is_junction:
                                     scene_describe = winner
                                     scene_verified = True

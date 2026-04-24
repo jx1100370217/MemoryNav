@@ -1153,47 +1153,73 @@ class OnlineMapperCore:
                     return obs
             return None
 
+        # 空间距离聚类: 同 canonical name 但物理位置远的 node 不应合并
+        # (例如机器人起点电梯厅 vs H 座旁的电梯都叫 "电梯厅" canonical).
+        SPATIAL_MERGE_DIST_M = 3.0
+        def _spatial_cluster(ids_group):
+            if not self.pose_graph:
+                return [ids_group]
+            clusters = []
+            for i in ids_group:
+                if i not in self.pose_graph.nodes:
+                    clusters.append([i])
+                    continue
+                pi = self.pose_graph.nodes[i]
+                placed = False
+                for c in clusters:
+                    for j in c:
+                        if j not in self.pose_graph.nodes: continue
+                        pj = self.pose_graph.nodes[j]
+                        d = ((pi.x - pj.x) ** 2 + (pi.y - pj.y) ** 2) ** 0.5
+                        if d <= SPATIAL_MERGE_DIST_M:
+                            c.append(i)
+                            placed = True
+                            break
+                    if placed: break
+                if not placed:
+                    clusters.append([i])
+            return clusters
+
         for (cat, base_name), ids in groups.items():
             if len(ids) < 2:
                 continue
             # 同组内的实际 plate 名变体集合 (X座 + X座入口 + X座大堂 ...)
             variants = list({_node_canon(self.topo.nodes[i]) for i in ids})
             best_obs = _best_obs_for_group(base_name, variants)
-            # Anchor = 最晚 frame_idx 的 node. 机器人沿路径走过 landmark 时,
-            # frame_idx 更大的 keyframe 通常离 landmark 更近 (plate bbox 更大,
-            # cam_crop 对 ConnectionBuilder 方向先验和 DINOv3 visual sim 都更准).
-            # 旧逻辑"离 best_obs.frame_idx 最近"会选到早期远看 landmark 的 node
-            # (plate 在远处 OCR 到但机器人还没走近), 例如 C 座 group merge 选
-            # frame_idx=14 的 N9 (还没到 C 座) 而不是 frame_idx=17 的 N5 (站在
-            # 入口处, cam_2 能清晰看到 C 座弧形玻璃).
-            anchor_id = max(ids, key=lambda i: self.topo.nodes[i].frame_idx)
-            # 把 anchor 改名成 base name (统一 X座入口/X座大堂 → X座)
-            if cat == NodeCategory.BUILDING_LANDMARK.value:
-                target = self.topo.nodes[anchor_id]
-                ns = getattr(target, "name_struct", None)
-                if ns is not None:
-                    ns.category = base_name
-                    ns.category_en = base_name
-                target.position_name = base_name
-                target.position_name_eng = base_name
-                target.room = base_name
-            for sid in ids:
-                if sid != anchor_id and sid not in alias:
-                    alias[sid] = anchor_id
-            if best_obs is not None:
-                target = self.topo.nodes[anchor_id]
-                if target.frame_idx != best_obs.frame_idx:
-                    logger.info(f"[SameName-RELOCATE] node {anchor_id} '{base_name}' "
-                                f"frame {target.frame_idx} -> {best_obs.frame_idx} "
-                                f"(plate area={best_obs.area:.0f})")
-                    target.frame_idx = best_obs.frame_idx
-                    target.timestamp = best_obs.timestamp
-                    target.cameras = dict(best_obs.cameras)
-                    if anchor_id in self.node_features:
-                        self.node_features[anchor_id] = self._extract_features(best_obs.cameras)
-                    self.node_frame_idx[anchor_id] = best_obs.frame_idx
-            logger.info(f"[SameName] '{base_name}' [{cat}] variants={variants}: "
-                        f"keep {anchor_id}, absorb {[i for i in ids if i != anchor_id]}")
+            for sub_ids in _spatial_cluster(ids):
+                if len(sub_ids) < 2:
+                    continue
+                # Anchor = 最晚 frame_idx: 机器人沿路径走过 landmark 时
+                # frame_idx 更大的 keyframe 通常离 landmark 更近 (plate bbox
+                # 更大, cam_crop 对方向先验和 DINOv3 视觉 sim 都更准).
+                anchor_id = max(sub_ids, key=lambda i: self.topo.nodes[i].frame_idx)
+                # 把 anchor 改名成 base name (统一 X座入口/X座大堂 → X座)
+                if cat == NodeCategory.BUILDING_LANDMARK.value:
+                    target = self.topo.nodes[anchor_id]
+                    ns = getattr(target, "name_struct", None)
+                    if ns is not None:
+                        ns.category = base_name
+                        ns.category_en = base_name
+                    target.position_name = base_name
+                    target.position_name_eng = base_name
+                    target.room = base_name
+                for sid in sub_ids:
+                    if sid != anchor_id and sid not in alias:
+                        alias[sid] = anchor_id
+                if best_obs is not None:
+                    target = self.topo.nodes[anchor_id]
+                    if target.frame_idx != best_obs.frame_idx:
+                        logger.info(f"[SameName-RELOCATE] node {anchor_id} '{base_name}' "
+                                    f"frame {target.frame_idx} -> {best_obs.frame_idx} "
+                                    f"(plate area={best_obs.area:.0f})")
+                        target.frame_idx = best_obs.frame_idx
+                        target.timestamp = best_obs.timestamp
+                        target.cameras = dict(best_obs.cameras)
+                        if anchor_id in self.node_features:
+                            self.node_features[anchor_id] = self._extract_features(best_obs.cameras)
+                        self.node_frame_idx[anchor_id] = best_obs.frame_idx
+                logger.info(f"[SameName] '{base_name}' [{cat}] cluster={sub_ids}: "
+                            f"keep {anchor_id}, absorb {[i for i in sub_ids if i != anchor_id]}")
 
         # ---- 工具: 直接遍历 voter 找 plate_text 的代表帧 ----
         # 注意: door_tracker 与 plate_voter 用不同 key (前者 text 优先, 后者

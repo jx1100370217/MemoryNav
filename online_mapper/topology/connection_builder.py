@@ -37,9 +37,8 @@ class ThresholdedSubImageExtractor(AutoSubImageExtractor):
     }
 
     def __init__(self, sim_threshold: float = None, depth_estimator=None,
-                 detector=None, pointer_backend: str = "qwen", cfg=None, **kwargs):
-        super().__init__(pointer_backend=pointer_backend, cfg=cfg,
-                         depth_estimator=depth_estimator, **kwargs)
+                 detector=None, **kwargs):
+        super().__init__(**kwargs)
         if sim_threshold is not None:
             self.SIM_THRESHOLD = sim_threshold
         self._depth_estimator = depth_estimator
@@ -236,12 +235,25 @@ class ThresholdedSubImageExtractor(AutoSubImageExtractor):
             def _wrap(a):
                 return _math.atan2(_math.sin(a), _math.cos(a))
             mx, my, mth = my_pose
+            my_ts = node_info.get("timestamp", 0)
+            GAP_FUSE_MS = 60_000  # 时间差 > 60s 视为断档, pose 不可信
             geo_bonus = np.zeros_like(sim_matrix)
+            gap_mask = np.zeros_like(sim_matrix, dtype=bool)
             for i, cam_id in enumerate(cam_ids):
                 ca = cam_angles.get(cam_id, 0.0)
                 for j, nb_id in enumerate(nb_ids):
                     nb_obj = next((n for n in neighbor_nodes if n["position_id"] == nb_id), None)
-                    nbp = nb_obj.get("pose") if nb_obj else None
+                    if nb_obj is None:
+                        continue
+                    nb_ts = nb_obj.get("timestamp", 0)
+                    gap_ms = abs(my_ts - nb_ts)
+                    # 断档熔断: 跨 > 60s 数据断层的 edge, VGGT VO yaw 累积漂移严重,
+                    # pose-based 几何先验不可信, 几何贡献清零 + 禁用反向硬惩罚,
+                    # 让 visual sim 独立决定 cam 选择.
+                    if gap_ms > GAP_FUSE_MS:
+                        gap_mask[i][j] = True
+                        continue
+                    nbp = nb_obj.get("pose")
                     if nbp is None:
                         continue
                     nx, ny, _ = nbp
@@ -254,21 +266,21 @@ class ThresholdedSubImageExtractor(AutoSubImageExtractor):
                     score = _math.cos(diff)             # ∈ [-1, 1]
                     geo_bonus[i][j] = score
                     if score < -0.3:
-                        # 相机和 neighbor 方向夹角 > ~108°, 几乎不可能看到, 强力惩罚
+                        # 相机和 neighbor 方向夹角 > ~108°, 强力惩罚
                         sim_matrix[i][j] -= 1.0
             # 几何融合: visual_sim + α * angular_cos
-            # α 不能太大: VO/pose_graph 的 theta 在室内场景 (小转弯, 短轨迹) 经常漂移
-            # 几百度, 如果 α 过大会让"几何看似对齐但视觉完全对不上"的相机胜过
-            # "视觉显著最好但几何方向偏"的真正对应相机.
-            # 实测: α=0.6 时, 前台→关爱室被误判成 camera_1 (pose 说正对, 但图像
-            # 是前台柜台); α=0.2 时正确落到 camera_2 (走廊视角, 视觉相似度 0.82).
-            # cos<-0.3 的 -1 硬惩罚保留, 防止背向相机混进匹配.
-            ALPHA = 0.5
+            # α 降为 0.2: VO/pose_graph theta 在室内场景 (小转弯/短轨迹/数据断档)
+            # 经常漂移几十度以上. α 过大会让"几何看似对齐但视觉完全对不上"的
+            # 相机胜过"视觉显著最好但几何方向偏"的真正对应相机. 实测 N13→N12
+            # 跨 6min 断档时, α=0.5 让 cam_1 (pose 误指) 压过 cam_3/cam_4
+            # (真实方位), α=0.2 后视觉 sim 有机会翻盘.
+            ALPHA = 0.2
             sim_matrix = sim_matrix + ALPHA * geo_bonus
             for i, cam_id in enumerate(cam_ids):
                 for j, nb_id in enumerate(nb_ids):
+                    gap_tag = " [GAP-FUSED]" if gap_mask[i][j] else ""
                     logger.info(f"  geo[{cam_id}->{nb_id}] cos={geo_bonus[i][j]:+.2f} "
-                                f"final_sim={sim_matrix[i][j]:+.3f}")
+                                f"final_sim={sim_matrix[i][j]:+.3f}{gap_tag}")
 
         # Person-occlusion penalty: if persons occupy >15% of the central
         # 40%x40% region of a cam image, reduce that cam's sim_matrix row.
@@ -423,15 +435,13 @@ class ConnectionBuilder:
 
     def __init__(self, sim_threshold: float = 0.40, device: str = "cuda:0",
                  qwen_gpu: str = "1", namer=None, depth_estimator=None,
-                 detector=None, pointer_backend: str = "qwen", cfg=None):
+                 detector=None, **kwargs):
         self.sim_threshold = sim_threshold
         self._device = device
         self._qwen_gpu = qwen_gpu
         self._namer = namer
         self._depth_estimator = depth_estimator
         self._detector = detector
-        self._pointer_backend = pointer_backend
-        self._cfg = cfg
         self._extractor: Optional[ThresholdedSubImageExtractor] = None
 
     def _ensure(self):
@@ -440,9 +450,7 @@ class ConnectionBuilder:
                 sim_threshold=self.sim_threshold,
                 device=self._device, qwen_gpu=self._qwen_gpu,
                 depth_estimator=self._depth_estimator,
-                detector=self._detector,
-                pointer_backend=self._pointer_backend,
-                cfg=self._cfg)
+                detector=self._detector)
 
     @staticmethod
     def topo_node_to_dict(node, node_dir: Path, pose_graph=None) -> Dict:

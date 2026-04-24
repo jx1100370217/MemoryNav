@@ -1,0 +1,986 @@
+{
+  "电梯": [
+    {
+      "frame_idx": 9,
+      "camera": "camera_3",
+      "area": 15438.0,
+      "confidence": "high"
+    }
+  ],
+  "LEED": [
+    {
+      "frame_idx": 27,
+      "camera": "camera_3",
+      "area": 5589.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 27,
+      "camera": "camera_4",
+      "area": 7452.0,
+      "confidence": "high"
+    }
+  ],
+  "C座": [
+    {
+      "frame_idx": 30,
+      "camera": "camera_3",
+      "area": 3550.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 30,
+      "camera": "camera_3",
+      "area": 3240.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 30,
+      "camera": "camera_3",
+      "area": 1435.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 33,
+      "camera": "camera_3",
+      "area": 6077.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 33,
+      "camera": "camera_3",
+      "area": 1978.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 33,
+      "camera": "camera_4",
+      "area": 2016.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 34,
+      "camera": "camera_4",
+      "area": 1720.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 36,
+      "camera": "camera_3",
+      "area": 1496.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 36,
+      "camera": "camera_3",
+      "area": 3901.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 37,
+      "camera": "camera_3",
+      "area": 1404.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 37,
+      "camera": "camera_3",
+      "area": 1394.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 37,
+      "camera": "camera_4",
+      "area": 2590.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 39,
+      "camera": "camera_4",
+      "area": 3440.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 40,
+      "camera": "camera_2",
+      "area": 1722.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 40,
+      "camera": "camera_3",
+      "area": 2698.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 42,
+      "camera": "camera_1",
+      "area": 1575.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 42,
+      "camera": "camera_2",
+      "area": 2240.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 43,
+      "camera": "camera_2",
+      "area": 1260.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 43,
+      "camera": "camera_2",
+      "area": 3432.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 43,
+      "camera": "camera_3",
+      "area": 1292.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 43,
+      "camera": "camera_3",
+      "area": 3280.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 45,
+      "camera": "camera_2",
+      "area": 3588.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 45,
+      "camera": "camera_2",
+      "area": 1394.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 48,
+      "camera": "camera_2",
+      "area": 3420.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 48,
+      "camera": "camera_3",
+      "area": 2600.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 51,
+      "camera": "camera_3",
+      "area": 2014.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 52,
+      "camera": "camera_3",
+      "area": 1976.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 54,
+      "camera": "camera_3",
+      "area": 1178.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 54,
+      "camera": "camera_4",
+      "area": 21320.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 56,
+      "camera": "camera_3",
+      "area": 1728.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 60,
+      "camera": "camera_4",
+      "area": 24219.0,
+      "confidence": "high"
+    }
+  ],
+  "C座入口": [
+    {
+      "frame_idx": 30,
+      "camera": "camera_4",
+      "area": 2806.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 30,
+      "camera": "camera_4",
+      "area": 2255.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 30,
+      "camera": "camera_4",
+      "area": 1872.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 34,
+      "camera": "camera_3",
+      "area": 1518.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 34,
+      "camera": "camera_3",
+      "area": 4128.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 34,
+      "camera": "camera_4",
+      "area": 1800.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 36,
+      "camera": "camera_3",
+      "area": 1560.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 36,
+      "camera": "camera_4",
+      "area": 1221.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 39,
+      "camera": "camera_3",
+      "area": 2442.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 39,
+      "camera": "camera_3",
+      "area": 961.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 39,
+      "camera": "camera_3",
+      "area": 960.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 45,
+      "camera": "camera_3",
+      "area": 2516.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 52,
+      "camera": "camera_2",
+      "area": 2914.0,
+      "confidence": "high"
+    }
+  ],
+  "店铺招牌": [
+    {
+      "frame_idx": 69,
+      "camera": "camera_4",
+      "area": 1645.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 72,
+      "camera": "camera_4",
+      "area": 1645.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 252,
+      "camera": "camera_4",
+      "area": 19206.0,
+      "confidence": "medium"
+    }
+  ],
+  "品牌标识": [
+    {
+      "frame_idx": 74,
+      "camera": "camera_2",
+      "area": 1440.0,
+      "confidence": "high"
+    }
+  ],
+  "H座": [
+    {
+      "frame_idx": 102,
+      "camera": "camera_4",
+      "area": 990.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 105,
+      "camera": "camera_1",
+      "area": 682.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 105,
+      "camera": "camera_1",
+      "area": 9660.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 105,
+      "camera": "camera_4",
+      "area": 936.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 105,
+      "camera": "camera_4",
+      "area": 19422.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 108,
+      "camera": "camera_1",
+      "area": 840.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 108,
+      "camera": "camera_1",
+      "area": 12236.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 108,
+      "camera": "camera_4",
+      "area": 936.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 108,
+      "camera": "camera_4",
+      "area": 23493.0,
+      "confidence": "high"
+    }
+  ],
+  "日座": [
+    {
+      "frame_idx": 111,
+      "camera": "camera_1",
+      "area": 805.0,
+      "confidence": "high"
+    }
+  ],
+  "楼层标识": [
+    {
+      "frame_idx": 114,
+      "camera": "camera_4",
+      "area": 19600.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 114,
+      "camera": "camera_4",
+      "area": 16400.0,
+      "confidence": "high"
+    }
+  ],
+  "A座": [
+    {
+      "frame_idx": 117,
+      "camera": "camera_1",
+      "area": 910.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 117,
+      "camera": "camera_1",
+      "area": 1147.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 120,
+      "camera": "camera_2",
+      "area": 1764.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 120,
+      "camera": "camera_3",
+      "area": 3200.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 123,
+      "camera": "camera_2",
+      "area": 2337.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 123,
+      "camera": "camera_3",
+      "area": 1369.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 126,
+      "camera": "camera_2",
+      "area": 2068.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 126,
+      "camera": "camera_2",
+      "area": 3036.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 126,
+      "camera": "camera_3",
+      "area": 2652.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 129,
+      "camera": "camera_2",
+      "area": 2772.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 129,
+      "camera": "camera_2",
+      "area": 1248.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 129,
+      "camera": "camera_2",
+      "area": 1444.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 132,
+      "camera": "camera_2",
+      "area": 2451.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 138,
+      "camera": "camera_4",
+      "area": 25875.0,
+      "confidence": "high"
+    }
+  ],
+  "1号楼": [
+    {
+      "frame_idx": 117,
+      "camera": "camera_3",
+      "area": 667.0,
+      "confidence": "high"
+    }
+  ],
+  "A座入口": [
+    {
+      "frame_idx": 120,
+      "camera": "camera_2",
+      "area": 756.0,
+      "confidence": "high"
+    }
+  ],
+  "AJ座": [
+    {
+      "frame_idx": 135,
+      "camera": "camera_3",
+      "area": 960.0,
+      "confidence": "high"
+    }
+  ],
+  "楼栋标识": [
+    {
+      "frame_idx": 141,
+      "camera": "camera_4",
+      "area": 20502.0,
+      "confidence": "medium"
+    },
+    {
+      "frame_idx": 186,
+      "camera": "camera_2",
+      "area": 1435.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 186,
+      "camera": "camera_2",
+      "area": 3500.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 186,
+      "camera": "camera_2",
+      "area": 10032.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 189,
+      "camera": "camera_1",
+      "area": 3266.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 189,
+      "camera": "camera_2",
+      "area": 8556.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 189,
+      "camera": "camera_2",
+      "area": 1260.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 191,
+      "camera": "camera_2",
+      "area": 2090.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 192,
+      "camera": "camera_2",
+      "area": 1944.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 195,
+      "camera": "camera_2",
+      "area": 2944.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 201,
+      "camera": "camera_2",
+      "area": 5808.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 237,
+      "camera": "camera_2",
+      "area": 2337.0,
+      "confidence": "high"
+    }
+  ],
+  "房间号": [
+    {
+      "frame_idx": 144,
+      "camera": "camera_4",
+      "area": 19998.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 144,
+      "camera": "camera_4",
+      "area": 1056.0,
+      "confidence": "high"
+    }
+  ],
+  "入口标识": [
+    {
+      "frame_idx": 180,
+      "camera": "camera_4",
+      "area": 29120.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 191,
+      "camera": "camera_3",
+      "area": 4620.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 195,
+      "camera": "camera_3",
+      "area": 6468.0,
+      "confidence": "high"
+    }
+  ],
+  "区域标识": [
+    {
+      "frame_idx": 186,
+      "camera": "camera_1",
+      "area": 2772.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 192,
+      "camera": "camera_1",
+      "area": 5643.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 219,
+      "camera": "camera_4",
+      "area": 22127.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 219,
+      "camera": "camera_4",
+      "area": 2300.0,
+      "confidence": "high"
+    }
+  ],
+  "B区入口": [
+    {
+      "frame_idx": 198,
+      "camera": "camera_2",
+      "area": 972.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 198,
+      "camera": "camera_2",
+      "area": 3640.0,
+      "confidence": "high"
+    }
+  ],
+  "B座": [
+    {
+      "frame_idx": 198,
+      "camera": "camera_3",
+      "area": 6693.0,
+      "confidence": "high"
+    }
+  ],
+  "酒店": [
+    {
+      "frame_idx": 201,
+      "camera": "camera_1",
+      "area": 16500.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 206,
+      "camera": "camera_2",
+      "area": 2205.0,
+      "confidence": "high"
+    }
+  ],
+  "B座入口": [
+    {
+      "frame_idx": 201,
+      "camera": "camera_3",
+      "area": 5330.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 204,
+      "camera": "camera_2",
+      "area": 2322.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 204,
+      "camera": "camera_2",
+      "area": 957.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 204,
+      "camera": "camera_3",
+      "area": 1144.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 207,
+      "camera": "camera_3",
+      "area": 1392.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 210,
+      "camera": "camera_2",
+      "area": 1610.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 211,
+      "camera": "camera_2",
+      "area": 3404.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 211,
+      "camera": "camera_2",
+      "area": 1247.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 216,
+      "camera": "camera_4",
+      "area": 899.0,
+      "confidence": "high"
+    }
+  ],
+  "建筑标识": [
+    {
+      "frame_idx": 207,
+      "camera": "camera_2",
+      "area": 10680.0,
+      "confidence": "high"
+    }
+  ],
+  "河套国际产业与标准组织聚集区": [
+    {
+      "frame_idx": 216,
+      "camera": "camera_3",
+      "area": 43310.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 219,
+      "camera": "camera_2",
+      "area": 57672.0,
+      "confidence": "high"
+    }
+  ],
+  "河套国际产业与标准创新示范区": [
+    {
+      "frame_idx": 219,
+      "camera": "camera_3",
+      "area": 35462.0,
+      "confidence": "high"
+    }
+  ],
+  "HIGH": [
+    {
+      "frame_idx": 225,
+      "camera": "camera_3",
+      "area": 7540.0,
+      "confidence": "high"
+    }
+  ],
+  "HIOF": [
+    {
+      "frame_idx": 231,
+      "camera": "camera_2",
+      "area": 1026.0,
+      "confidence": "high"
+    }
+  ],
+  "D座": [
+    {
+      "frame_idx": 237,
+      "camera": "camera_1",
+      "area": 1728.0,
+      "confidence": "high"
+    }
+  ],
+  "D栋": [
+    {
+      "frame_idx": 240,
+      "camera": "camera_1",
+      "area": 9880.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 240,
+      "camera": "camera_1",
+      "area": 2784.0,
+      "confidence": "high"
+    }
+  ],
+  "XXHIO": [
+    {
+      "frame_idx": 255,
+      "camera": "camera_4",
+      "area": 27880.0,
+      "confidence": "medium"
+    }
+  ],
+  "KHIOH": [
+    {
+      "frame_idx": 264,
+      "camera": "camera_3",
+      "area": 2652.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 204,
+      "camera": "camera_1",
+      "area": 27528.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 206,
+      "camera": "camera_1",
+      "area": 35457.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 207,
+      "camera": "camera_1",
+      "area": 38354.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 207,
+      "camera": "camera_1",
+      "area": 5661.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 213,
+      "camera": "camera_2",
+      "area": 30987.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 213,
+      "camera": "camera_2",
+      "area": 1344.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 216,
+      "camera": "camera_2",
+      "area": 70590.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 225,
+      "camera": "camera_4",
+      "area": 17533.0,
+      "confidence": "high"
+    }
+  ],
+  "储物柜": [
+    {
+      "frame_idx": 270,
+      "camera": "camera_1",
+      "area": 2992.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 270,
+      "camera": "camera_4",
+      "area": 2967.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 270,
+      "camera": "camera_4",
+      "area": 3654.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 273,
+      "camera": "camera_1",
+      "area": 4125.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 274,
+      "camera": "camera_3",
+      "area": 4347.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 277,
+      "camera": "camera_3",
+      "area": 3572.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 279,
+      "camera": "camera_1",
+      "area": 555938.0,
+      "confidence": "high"
+    }
+  ],
+  "外卖柜": [
+    {
+      "frame_idx": 271,
+      "camera": "camera_1",
+      "area": 503757.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 276,
+      "camera": "camera_1",
+      "area": 9126.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 276,
+      "camera": "camera_1",
+      "area": 4800.0,
+      "confidence": "high"
+    }
+  ],
+  "快递柜": [
+    {
+      "frame_idx": 276,
+      "camera": "camera_3",
+      "area": 3036.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 276,
+      "camera": "camera_3",
+      "area": 3136.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 276,
+      "camera": "camera_3",
+      "area": 5382.0,
+      "confidence": "high"
+    }
+  ],
+  "外卖寄存柜": [
+    {
+      "frame_idx": 276,
+      "camera": "camera_4",
+      "area": 4880.0,
+      "confidence": "medium"
+    }
+  ],
+  "智能取餐柜": [
+    {
+      "frame_idx": 277,
+      "camera": "camera_1",
+      "area": 17700.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 279,
+      "camera": "camera_3",
+      "area": 9450.0,
+      "confidence": "high"
+    },
+    {
+      "frame_idx": 279,
+      "camera": "camera_3",
+      "area": 8064.0,
+      "confidence": "high"
+    }
+  ],
+  "2号柜": [
+    {
+      "frame_idx": 279,
+      "camera": "camera_2",
+      "area": 673498.0,
+      "confidence": "high"
+    }
+  ]
+}

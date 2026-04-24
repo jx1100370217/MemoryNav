@@ -41,38 +41,20 @@ class AutoSubImageExtractor:
     MAX_CORRIDOR_FRAMES = 30   # 超过此数量的中间帧则 fallback (可能不是直接走廊)
     CORRIDOR_SAMPLE_COUNT = 3  # 采样中间帧数量
 
-    def __init__(self, device="cuda:0", qwen_gpu="1",
-                 pointer_backend: str = "qwen", cfg=None,
-                 depth_estimator=None, **kwargs):
-        # **kwargs 吸收 namer 等上层传入但本类不使用的参数 (向后兼容).
+    def __init__(self, device="cuda:0", qwen_gpu="1", **kwargs):
+        # **kwargs 吸收 namer / cfg / depth_estimator / pointer_backend 等上层
+        # 传入但本类不使用的参数 (向后兼容, 历史上曾支持多 pointer 可选).
         self.device = device
         self.qwen_gpu = qwen_gpu
-        self._pointer_backend = pointer_backend
 
-        if pointer_backend == "gdino":
-            from online_mapper.semantics.gdino_pointer import GDinoPointer
-            self._grounder = GDinoPointer(cfg=cfg)
-        elif pointer_backend == "qwen":
-            self._grounder = Qwen35PointGrounder(gpu=qwen_gpu)
-        elif pointer_backend == "geom":
-            from online_mapper.semantics.geometric_pointer import GeometricPointer
-            self._grounder = GeometricPointer(depth_estimator=depth_estimator)
-        elif pointer_backend == "molmo":
-            from online_mapper.semantics.molmo_pointer import MolmoPointer
-            self._grounder = MolmoPointer(device=device)
-        elif pointer_backend == "gsam2":
-            from online_mapper.semantics.gsam2_pointer import GSAM2Pointer
-            self._grounder = GSAM2Pointer(cfg=cfg, device=device)
-        else:
-            raise ValueError(f"unknown pointer_backend: {pointer_backend}")
+        self._grounder = Qwen35PointGrounder(gpu=qwen_gpu)
         self._grounder.start()
 
         from memory_nav.sub_image_matcher import DINOv3Strategy
         self._dinov3 = DINOv3Strategy(device=device)
         self._dinov3.preload()
 
-        logger.info(f"AutoSubImageExtractor initialized "
-                    f"(pointer_backend={pointer_backend})")
+        logger.info("AutoSubImageExtractor initialized (pointer=qwen)")
 
     # ------------------------------------------------------------------
     # DINOv3 patch 特征 + 滑动匹配 — 直接复用

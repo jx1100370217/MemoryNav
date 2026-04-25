@@ -9,6 +9,7 @@ Output: per-pixel traversability score map (H,W) in [0, 1]:
 """
 from __future__ import annotations
 import logging
+from typing import List, Tuple
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -149,46 +150,71 @@ def resolve_crop_point(trav_map: np.ndarray,
                        max_cx_offset_frac: float = 0.30,
                        points_camera: np.ndarray | None = None,
                        y_ground: float | None = None) -> tuple[int, int] | None:
-    """Pointer-preserve crop point resolver.
+    """Crop point resolver — Qwen cx 选通道, segment center 决定精确位置.
 
-    与 find_best_traversable_point 不同, 此函数优先保留 pointer 的 cx 信号,
-    TRAV 只做:
-      1. cy 强制固定到 target_y_frac 行 (地面带)
-      2. cx 仅在落边缘或柱子列时 veto, 找最近可通行列替代
-      3. 所有候选列都不通时返回 None
+    设计:
+      1. cy 固定到 target_y_frac 行 (地面带)
+      2. 计算 walkable column mask (target row ± 10 px, 排除边缘 +
+         vertical obstacle 列)
+      3. 提取连续 walkable segments
+      4. preferred_cx 选 segment: 先找包含 cx 的 segment, 否则取最近 segment
+      5. cx 推到 segment 中心 (在 max_cx_offset 约束内)
 
-    目的: 让不同 pointer (qwen/gdino/geom/molmo/gsam2) 的 cx 差异真正体现在最终
-    crop, 避免 find_best_traversable_point 的"widest segment center"把所有 pointer
-    结果拉到同样几个热点列 (上一轮对比发现三方 cx 被离散到 577/664/730/1378 等).
+    为什么不"保留 Qwen cx": Qwen 给点常落在 obstacle 边缘 (绿植墙右沿 / 闸机
+    左沿), 单点 walkable 但 crop 半径 (~259 px) 内有 obstacle, 视觉中心在墙上.
+    "推到 walkable segment 中心" 让 crop 真正落在通道中央.
     """
     H, W = trav_map.shape[:2]
     row = int(H * target_y_frac)
     edge_px = int(W * edge_margin_frac)
     max_cx_offset = int(W * max_cx_offset_frac)
-    col_obstacle = None
+
+    search = trav_map[max(0, row - 10):min(H, row + 11), :]
+    if search.size == 0:
+        return None
+    col_score = search.max(axis=0).copy()
+    if edge_px > 0:
+        col_score[:edge_px] = SCORE_OBSTACLE
+        col_score[W - edge_px:] = SCORE_OBSTACLE
     if points_camera is not None:
         col_obstacle = detect_vertical_obstacle_columns(points_camera, y_ground)
-        if col_obstacle is not None and col_obstacle.shape[0] != W:
-            col_obstacle = None
+        if col_obstacle is not None and col_obstacle.shape[0] == W:
+            col_score[col_obstacle] = SCORE_OBSTACLE
 
-    def _cx_usable(cx: int) -> bool:
-        if cx < edge_px or cx >= W - edge_px:
-            return False
-        if col_obstacle is not None and col_obstacle[cx]:
-            return False
-        return True
-
-    if _cx_usable(preferred_cx):
-        return preferred_cx, row
-
-    # veto triggered: search nearest usable cx within max_cx_offset
-    lo = max(edge_px, preferred_cx - max_cx_offset)
-    hi = min(W - edge_px, preferred_cx + max_cx_offset + 1)
-    candidates = [cx for cx in range(lo, hi) if _cx_usable(cx)]
-    if not candidates:
+    walkable_mask = col_score >= SCORE_TRAVERSABLE - 1e-3
+    walkable_idx = np.where(walkable_mask)[0]
+    if walkable_idx.size == 0:
         return None
-    best_cx = min(candidates, key=lambda c: abs(c - preferred_cx))
-    return best_cx, row
+
+    # 提取连续 walkable segments (允许 ≤5 px 间隙合并)
+    segments: List[Tuple[int, int]] = []
+    seg_lo = int(walkable_idx[0])
+    prev = seg_lo
+    for x in walkable_idx[1:]:
+        x = int(x)
+        if x - prev > 5:
+            segments.append((seg_lo, prev))
+            seg_lo = x
+        prev = x
+    segments.append((seg_lo, prev))
+
+    # 1) 包含 preferred_cx 的 segment (最自然, Qwen 给的方向已选好)
+    target = next((s for s in segments if s[0] <= preferred_cx <= s[1]), None)
+    # 2) 否则选 segment 中心最接近 preferred_cx 的
+    if target is None:
+        target = min(segments, key=lambda s: abs((s[0] + s[1]) // 2 - preferred_cx))
+
+    seg_lo, seg_hi = target
+    seg_center = (seg_lo + seg_hi) // 2
+
+    # max_cx_offset 约束: 避免推到很远的 segment
+    if abs(seg_center - preferred_cx) > max_cx_offset:
+        # segment 中心太远, 取 segment 内最接近 (preferred_cx ± offset) 的端点
+        if seg_center > preferred_cx:
+            seg_center = max(seg_lo, min(seg_hi, preferred_cx + max_cx_offset))
+        else:
+            seg_center = max(seg_lo, min(seg_hi, preferred_cx - max_cx_offset))
+    return int(seg_center), row
 
 
 def find_best_traversable_point(trav_map: np.ndarray,

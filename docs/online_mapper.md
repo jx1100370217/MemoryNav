@@ -24,7 +24,7 @@
 | 节点命名 | 结构化 `NodeName(category, organization, nearby_plates, ...)`, 多帧投票 + 二次验证 + 类别白名单 + 防串扰 |
 | 显示拼接 | `category·organization`, 例如 `外卖柜区·EXHIOH` |
 | scene describe | 4 相机并行 Qwen 描述 + specificity rank 投票 + 时序共识 (temporal consensus) |
-| cam→neighbor 匹配 | 视觉 DINOv3 patch 滑动匹配 Hungarian + 几何方向先验 (`cos(robot_ang - cam_ang)`, ALPHA=0.5) + person-occlusion 惩罚 + traversability 校正 |
+| cam→neighbor 匹配 | 视觉 DINOv3 patch 滑动匹配 Hungarian + 几何方向先验 (`cos(robot_ang - cam_ang)`, 同 segment ALPHA=0.5 / 跨 300s 断档 ALPHA=0) + person-occlusion 惩罚 + traversability 通道修正 (`resolve_crop_point` 推到 walkable segment 中心) |
 | 接入方式 | CLI 一次性跑 (`run_online_map.py`) **或** WebSocket 流式建图模式 (`ws_proxy_with_memory.py` 的 mapping 模式) |
 | 输出 | `merged_labeled_data/` schema + 结构化命名字段 + `scene_graph.json` / `pose_graph.json` / `metrics.json` / `online_mapping_log.jsonl` / `plate_voter_dump.json` + 可视化 PNG |
 
@@ -150,11 +150,18 @@ StreamLoader yields frame  (4 cameras + timestamp + frame_idx 0..N)
            ≥2 cam 一致 → 采纳 winner; 4 cam 全不同 → skip 节点
            winner 走 canonical 归一 (电梯厅 / 外卖柜区 ...)
        8d. ⭐ temporal consensus (连续帧确认):
-           白名单命中 (FUNCTION_AREA / LANDMARK_FACILITY) → 直接 verified
-           非白名单 → 查近 3 帧 `_recent_scene_winners` deque:
-             已出现 → verified
-             未出现 → tentative (scene_describe=None, 本帧不建 node,
-                                 winner 仍入队等后续确认)
+           consensus ≥ 3/4 → 强信号, 立即 verified
+           consensus == 2/4 + winner ∈ FUNCTION_AREA canonical 值 (前台 / 打印区
+             / 关爱室 / 外卖柜区 / 保安亭 等) → func_area bypass, 立即 verified
+             (FUNCTION_AREA 是 Qwen 低幻觉的具体 landmark, 独立场景也可信)
+           consensus == 2/4 + junction ∈ {CROSS, T_JUNCTION} → 路口豁免, 立即
+             verified (机器人在路口短暂瞥见 landmark 也是真实信号)
+           consensus == 2/4 + winner 出现在近 3 帧 `_recent_scene_winners` deque
+             → temporal confirmed, verified
+           其余 → tentative (scene_describe=None, 本帧不建 node, winner 仍入队
+             等后续确认)
+           ⚠ LANDMARK_FACILITY (含 '电梯厅') 不参与 bypass — 防 N11 电梯厅_2
+             类多相机联合幻觉
        8e. category_clf.classify(plate, scene, junction, gd_lm)
        8f. hallucination_filter.is_confirmed (含 BL 专用门槛)
        8g. 若 ACCEPTED:
@@ -171,22 +178,31 @@ StreamLoader yields frame  (4 cameras + timestamp + frame_idx 0..N)
                   - target 由 keyframe trigger 创建 → relocate 到 brand best-view
                   - target 由 plate best-view 创建 (_from_plate_best) → keep
                   - brand 在别处副标 (brand.pos ≠ target.pos) → keep
-  2. ColocationMerger.merge()
+  2. _merge_by_canonical_name()  同 base building / 同 canonical name 强制合并
+       ⭐ BUILDING_LANDMARK 取 base ('C座入口' / 'C座大堂' → 'C座'),
+          LANDMARK_FACILITY 取 canonical
+       ⭐ 空间聚类守卫 (3 m): 同 canonical name 但物理位置距离 > 3 m 不合并
+          (例: 起点电梯厅 vs H 座旁电梯都叫 '电梯厅' canonical)
+       ⭐ anchor 改为 latest frame_idx: 沿路径走过 landmark 时, frame_idx 更大的
+          keyframe 一般离 landmark 更近 (plate bbox 更大, cam crop 方向先验和 DINOv3
+          视觉 sim 都更稳)
+       ⭐ Pass B/C: 复合 plate (H座电梯 / 2号外卖柜 / 11层电梯) 优先重命名 anchor
+  3. ColocationMerger.merge()
        ⭐ category mismatch guard: 不跨类合并
        ⭐ anchor tie-break: 取 frame_idx 更小的为 anchor
        NodeName.merge_names 融合 category / organization / plates / landmarks
-  3. _rebuild_topology_neighbors_spatial(k_spatial=1, k_temporal=1)
+  4. _rebuild_topology_neighbors_spatial(k_spatial=1, k_temporal=1)
        spatial KNN ∪ temporal KNN 重建邻接, 清空 keyframe/plate 临时边
        ⭐ cross-gap filter: 相邻 keyframe ts > 60s 且无 bridging keyframe → 拒该时间边
-  4. _generate_names() 优先用 name_struct.display_cn()
-  5. NameDeduplicator.resolve()
+  5. _generate_names() 优先用 name_struct.display_cn()
+  6. NameDeduplicator.resolve()
        按 dedup_key=(category, organization) 分组, VPR 高相似合并 (alias),
        其余写 instance_suffix=_N
-  6. writer.write_node() → merged_labeled_data/<id>/
-  7. ConnectionBuilder.build_for_node(pose_graph=...)
+  7. writer.write_node() → merged_labeled_data/<id>/
+  8. ConnectionBuilder.build_for_node(pose_graph=...)
        视觉 DINOv3 patch 滑动匹配 + 几何方向先验 + person-occlusion 惩罚 + traversability 校正
        Hungarian 匹配 → cam ↔ nb 1-to-1
-  8. 写 scene_graph.json / pose_graph.json /
+  9. 写 scene_graph.json / pose_graph.json /
      online_mapping_log.jsonl / metrics.json / plate_voter_dump.json
 ```
 
@@ -279,7 +295,7 @@ motion_theta_i = atan2(y_i - y_{i-1}, x_i - x_{i-1})
 
 ### 4.6 Traversability (geometry/traversability.py)
 
-从 VGGT camera-frame 点云 (`last_points_camera`) 估计像素级可通行度, 给 `ConnectionBuilder` 在做 next_position crop 时把 Qwen 指的点修正到可走地面上.
+从 VGGT camera-frame 点云 (`last_points_camera`) 估计像素级可通行度, 给 `ConnectionBuilder` 在做 next_position crop 时把 Qwen 指的点修正到通道中央.
 
 **接口**:
 
@@ -296,10 +312,27 @@ motion_theta_i = atan2(y_i - y_{i-1}, x_i - x_{i-1})
 - `validate_point(trav_map, cx, cy, radius)`
   半径窗口内 traversable ≥ 55% **且** obstacle ≤ 25% 才通过.
 
-- `find_best_traversable_point(trav_map, preferred_cx, target_y_frac=0.48, edge_margin_frac=0.10, max_offset_frac=0.30) → (cx, row) | None`
-  - 在 target 行带内找可通行列; 相对 preferred_cx 偏移 ≤ 30% 画面宽度
-  - 硬屏蔽边缘 10% 列 (绕开 VGGT 全景拼接边缘的 "traversable 假阳")
-  - 返回 None 时 caller 保留 Qwen 给的原点
+- `detect_vertical_obstacle_columns(points_camera, min_col_coverage=0.15, bottom_frac=0.5) → bool[W]`
+  柱子 / 墙 / 椅背等竖向 obstacle 的逐列 mask. 关键: **只扫底部 50% 画面**, 因为
+  室内天花板 (2.5m 以上) 会撑满每列上半画面的 above-ground 像素, 全列扫会把
+  所有列误判为 obstacle. 柱子 / 墙 / 椅背的根部都伸到底半画面, 仍能被覆盖.
+
+- ⭐ `resolve_crop_point(trav_map, preferred_cx, target_y_frac=0.48, edge_margin_frac=0.10, max_cx_offset_frac=0.30, points_camera=None) → (cx, row) | None`
+  Qwen cx 选通道, walkable segment center 决定精确位置:
+  1. cy 固定到 target row (默认 48% 高度, 地面带)
+  2. 计算 walkable column mask (target row ± 10 px ∪ 排除边缘 10% ∪ 排除
+     `detect_vertical_obstacle_columns` 标定的柱子列)
+  3. 提取连续 walkable segment (≤5 px 间隙合并)
+  4. 选包含 preferred_cx 的 segment, 否则选 segment 中心最接近 preferred_cx 的
+  5. cx 推到 segment 中心 (受 30% 画面宽偏移上限约束)
+
+  设计动机: Qwen 给的点常落在 obstacle 边缘 (绿植墙右沿 / 闸机左沿), 单点
+  walkable 但 crop 半径 (~259 px) 内有 obstacle, 视觉中心其实在墙上. 推到
+  walkable segment 中心可以让 crop 真正落在通道中央.
+
+- `find_best_traversable_point(trav_map, preferred_cx=None, ...) → (cx, row) | None`
+  无 preferred_cx 时 (Qwen 全失败兜底) 取最宽 walkable segment 中心. 同样应用
+  柱子列 mask 与边缘 10% 屏蔽.
 
 ---
 
@@ -322,30 +355,47 @@ motion_theta_i = atan2(y_i - y_{i-1}, x_i - x_{i-1})
 
 ### 5.3 ConnectionBuilder (topology/connection_builder.py)
 
-子类化 `AutoSubImageExtractor`, 在视觉 Hungarian 匹配后增加 (1) 阈值过滤 (2) 几何方向先验 (3) person-occlusion 惩罚 (4) traversability 校正 (5) cx 硬约束.
+子类化 `AutoSubImageExtractor`, 在视觉 Hungarian 匹配后增加 (1) 阈值过滤 (默认 0.40) (2) 几何方向先验 (同 segment ALPHA=0.5 / 跨 300 s 断档 ALPHA=0) (3) person-occlusion 惩罚 (4) traversability 推到 walkable segment 中心 (5) cx ∈ [15% W, 85% W] 硬约束.
 
 #### 5.3.1 几何方向先验
 
-修复纯视觉匹配在线性走廊场景下的 cam↔neighbor 错配:
+修复纯视觉匹配在线性走廊场景下的 cam↔neighbor 错配. 使用权威 camera azimuth (`memory_nav/coord_transform.py:_DEFAULT_AZIMUTHS`, 由 `cam/params.yaml` T_ic 推算, 逆时针正, y 轴向左):
 
 ```python
-cam_angles = {camera_1: 0, camera_2: -π/2, camera_3: π, camera_4: π/2}
+cam_angles = {
+    camera_1: +39.42°,  camera_2: -35.84°,
+    camera_3: -142.04°, camera_4: +143.52°,
+}
 for (cam_id, nb_id):
+    # 时间断档判定: 同 segment vs 跨真断档
+    gap_ms = abs(my.timestamp - nb.timestamp)
+    if gap_ms > GAP_FUSE_MS:        # 300_000 ms (300s)
+        # 跨真断档 (memory_test_data Part1→Part2 间隔 533s) 时 VO 朝向已不可信
+        gap_mask[i][j] = True
+        alpha[i][j] = 0.0           # 完全靠 visual sim
+        continue                     # geo_bonus 不算
     nb_pose = neighbor's (x, y, theta)
     dx, dy = nb.x - my.x, nb.y - my.y
     world_ang = atan2(dy, dx)
-    # ⭐ 优先用 motion_theta (基于相邻 keyframe 位移的 heading),
-    #    fallback my.theta (VGGT pose 朝向)
+    # 优先用 motion_theta (基于相邻 keyframe 位移的 heading),
+    # fallback my.theta (VGGT pose 朝向)
     heading = my.motion_theta if my.motion_theta is not None else my.theta
     robot_ang = wrap(world_ang - heading)
     diff = wrap(robot_ang - cam_angles[cam_id])
-    score = cos(diff)    # 1.0 = 完美对齐, -1 = 反向
+    score = cos(diff)               # 1.0 = 完美对齐, -1 = 反向
+    geo_bonus[i][j] = score
+    if score < -0.3: sim -= 1.0     # 反向相机硬惩罚 (仅同 segment)
 
-final_sim_matrix = visual_sim + ALPHA * angular_score   # ALPHA = 0.5
-if angular_score < -0.3: sim -= 1.0                     # 反向相机硬惩罚
+final_sim_matrix = visual_sim + alpha * geo_bonus
+# 同 segment alpha = ALPHA_NORMAL = 0.5  (几何先验主导)
+# 跨断档 alpha = 0                       (geo_bonus 清零, visual sim 主导)
 ```
 
-要求: `pose_graph` 通过 `build_for_node(..., pose_graph=...)` 传入, 每个 node 携带 `(x, y, theta, motion_theta)`.
+为什么不用单一 ALPHA: 同 segment 内相邻 keyframe 间隔 30~120 s, VO 朝向相对可靠, 几何先验救得住 cam 错配; 跨真断档时机器人位置/朝向都被 VO 漂移污染, 强行加几何先验反而会让方向倒过来扣分.
+
+阈值 300 s 的依据: 真实数据断档 (memory_test_data Part1→Part2 间隔 533 s) 远高于同 segment 间隔, 把阈值放在中间能精准捕获.
+
+要求: `pose_graph` 通过 `build_for_node(..., pose_graph=...)` 传入, 每个 node 携带 `(x, y, theta, motion_theta, timestamp)`.
 
 #### 5.3.2 Person-occlusion 惩罚
 
@@ -353,11 +403,19 @@ if angular_score < -0.3: sim -= 1.0                     # 反向相机硬惩罚
 
 #### 5.3.3 Traversability 校正 + cx 硬约束
 
-Qwen 给的原始点 (qx, qy) 过 `compute_traversability_map(points_camera)` + `find_best_traversable_point(..., preferred_cx=qx)`: 若返回点相对 qx 偏移 ≤ 30% 画面宽度, 用返回点替换; 否则保留 Qwen 原点. 之后所有 next_position 候选再过一次 cx ∈ [15% W, 85% W] 硬约束 — 画面最外 15% 列在 VGGT 多视图拼接下常出现"伪可通行"像素, 硬屏蔽掉避免边缘噪声污染 crop.
+Qwen 给的原始点 (qx, qy) 过 `compute_traversability_map(points_camera)` + `resolve_crop_point(..., preferred_cx=qx)` (推到 walkable segment 中心模式): 若返回点 cx ∈ [15% W, 85% W] 则用返回点替换; 否则保留 Qwen 原点. 画面最外 15% 列在 VGGT 多视图拼接下常出现"伪可通行"像素, 硬屏蔽掉避免边缘噪声污染 crop.
+
+**Qwen 全失败 fallback**: 4 路 cam 全部失锚时, 改用 `find_best_traversable_point(...)` (无 preferred_cx) 取最宽 walkable segment 中心; 它再失败就退到画面正中.
+
+**几何投影也走 traversability 校验** (Round 7): 当 Qwen `cx ≈ 0.500` 触发居中 fallback 时, 走 `_project_target_to_camera(self_pose, target_pose, cam_id)` 用 pose graph 算 target 在画面里的预期 cx, 然后**同样**走 `resolve_crop_point` 校验通道, 让几何投影点也只挑通道中央; 当走廊上有立柱投影到 target cx 时不至于直接落在柱子上.
 
 ### 5.4 AutoSubImageExtractor (topology/auto_sub_image_extractor.py)
 
-`ConnectionBuilder` 的基类, 复用 memory_nav.sub_image_matcher.DINOv3Strategy 的 patch grid 提取 + 滑动窗口匹配 (extract_patch_grid / match_grids), 在此基础上提供 4 相机并行 crop 特征 + 走廊中间帧 corridor_features 的匹配管线.
+`ConnectionBuilder` 的基类, **直接复用** `memory_nav.sub_image_matcher.DINOv3Strategy` 的 `extract_patch_grid` / `adaptive_crop_target_size` / `match_grids` 公共 API, 与记忆导航子图匹配使用同一份实现, 避免重复代码 (commit `be8643c`). 在此基础上提供 4 相机并行 crop 特征 + 走廊中间帧 corridor_features 的匹配管线.
+
+**POINT_PROMPT**: `"前方通道最远处的地面中心点"` (`Qwen35PointGrounder` query)
+
+**pointer backend**: 历史上曾尝试 `qwen / gdino / molmo / gsam2` 多 pointer 切换, 实测下 Qwen 单 pointer + traversability 推中央的组合最稳, 已**只保留 qwen** (`refactor(crop): 只保留 qwen pointer + P0 优化`, `34aa578`). `__init__` 仍接 `**kwargs` 吸收上层传入的 `namer` / `cfg` / `pointer_backend` 参数, 保持向后兼容.
 
 ### 5.5 TopoGraph / spatial-KNN 邻接重建
 
@@ -476,17 +534,31 @@ class NodeName:
 - VPR 高相似 → 合并 (alias)
 - 否则写 `instance_suffix = _2 / _3 / ...`, `display_cn()` 自动渲染
 
-### 6.6 ColocationMerger (semantics/colocation_merger.py)
+### 6.6 _merge_by_canonical_name (core/online_mapper_core.py)
+
+finalize 阶段在 ColocationMerger 之前先做的"同 base 强制合并". 不依赖 VPR / 帧距, 仅按命名 canonical:
+
+- BUILDING_LANDMARK (X 座 / X 栋 / X 号楼) 取裸 base name 收纳, 自动吃掉 `X 座入口` / `X 座大堂` / `X 座电梯` 等 variant
+- LANDMARK_FACILITY 用原 canonical 收纳 (例: 同 canonical `电梯厅` 的多个节点)
+
+**关键守卫**:
+
+- ⭐ **空间聚类** (`SPATIAL_MERGE_DIST_M = 3.0`, `91fdc4f`): 同 canonical 但欧氏距离 > 3 m 不合并. 例如机器人起点电梯厅 vs H 座旁边的电梯都被 canonical 化成"电梯厅", 但物理位置远, 应当保留两个独立 node.
+- ⭐ **anchor 选 latest frame_idx** (`ca28d7b`): 沿路径走过 landmark 时, 后到的 keyframe 一般离 landmark 更近 (plate bbox 更大, cam crop 方向先验和 DINOv3 视觉相似度都更稳). 旧版本用最早帧, 容易锁在远视角.
+- **复合 plate 优先 (Pass B)**: 如同时有 `H 座` 和 `H 座电梯` 节点, anchor 重命名成更具体的 `H 座电梯`. specificity 排序: `X 座电梯 / X 座楼梯` > `X 号楼电梯` > `X 层电梯`.
+- **数字 plate 命名 (Pass C)**: `<N>号柜 + 储物柜区` → `<N>号储物柜`, `<N>号柜 + 外卖柜区` → `<N>号外卖柜`.
+
+### 6.7 ColocationMerger (semantics/colocation_merger.py)
 
 `VPR_SIM_THRESHOLD = 0.85` 强信号单独触发合并; `frame + spatial` 弱信号组合触发 (帧距 + 欧氏距离).
 
 **关键规则**:
 
 - ⭐ **`_category_mismatch` guard**: 不同 category 禁止合并. 这是为了防止 BUILDING_LANDMARK 错吸 SHOP, 或 FUNCTION_AREA 吞 LANDMARK_FACILITY.
-- ⭐ **anchor tie-break**: 两节点合并时取 `frame_idx` 更小的为 anchor, 把另一方的 ts / cameras / next_positions / name 合并进来. 早帧 anchor 能把功能中心的 "第一次看到" 作为 display 帧, 避免被后续副标拖走.
+- ⭐ **anchor tie-break**: 两节点合并时取 `frame_idx` 更小的为 anchor, 把另一方的 ts / cameras / next_positions / name 合并进来. 早帧 anchor 能把功能中心的 "第一次看到" 作为 display 帧, 避免被后续副标拖走. (注意与 `_merge_by_canonical_name` 的 latest-anchor 不同, 二者目的不同: 该函数走帧距 + spatial, anchor 早一些可以让"第一次看到"作锚; canonical-name merge 走命名归一, 后到帧 plate 更大更值得作锚.)
 - `_combined_name` 调用 `NodeName.merge_names`.
 
-### 6.7 门牌两阶段归属 (core/online_mapper_core.py:_create_door_plate_nodes)
+### 6.8 门牌两阶段归属 (core/online_mapper_core.py:_create_door_plate_nodes)
 
 **第一遍**: functional / landmark plate (例如 `打印区`, `关爱室`) 创建独立 `door-plate node`, 打标 `node._from_plate_best = True`. 需满足:
 
@@ -510,7 +582,7 @@ class NodeName:
 
 这样 display 层会显示 brand 的近视角抓图, 而拓扑层仍然锚在 keyframe 起点, coloc/连接都不受影响.
 
-### 6.8 SceneGraph (semantics/scene_graph.py)
+### 6.9 SceneGraph (semantics/scene_graph.py)
 
 层次化 floor → room → object_id 结构, finalize 末尾按最终 node room 重建 floors 索引.
 
@@ -756,7 +828,7 @@ A. `NodeName.display_cn()` 用中点防止 CJK + Latin 粘连, 例如 `外卖柜
 
 ### Q. cam ↔ neighbor 方向匹配错乱 (如下一节点该在 camera_3 却被标到 camera_2)?
 
-A. 检查 `build_for_node` 是否通过 `pose_graph=...` 传进去. 几何方向先验默认开启, ALPHA=0.5, 反向硬惩罚 -1.0; 没有 pose_graph 时 prior 全部退化成视觉相似度, 线性走廊场景下会错配.
+A. 检查 `build_for_node` 是否通过 `pose_graph=...` 传进去. 几何方向先验默认开启, 同 segment ALPHA=0.5, 反向硬惩罚 -1.0; 没有 pose_graph 时 prior 全部退化成视觉相似度, 线性走廊场景下会错配. 若 self/neighbor timestamp 差距 > 300 s 自动判跨段, 几何先验置零让纯视觉决策, 防 VO 漂移污染先验.
 
 ### Q. `D座` / `13号楼` 等 BUILDING_LANDMARK 幻觉怎么被挡掉?
 
@@ -769,6 +841,10 @@ A. 这是 brand attach 的 RELOCATE-DISPLAY 行为: brand 是在相近帧抓到�
 ### Q. 多栋楼相同功能区怎么区分?
 
 A. `NameDeduplicator` 按 `dedup_key = (category, organization)` 分组. 不同楼会产生不同 organization (不同品牌/门牌主名) → 不同 key, 不会触发重名. 真发生重名时 VPR 高相似合并, 否则写 `instance_suffix = _2 / _3 / ...` 由 `display_cn()` 渲染.
+
+### Q. 起点电梯厅和 H 座旁电梯都被合并成一个 node 怎么办?
+
+A. `_merge_by_canonical_name` 已加空间聚类守卫 (`SPATIAL_MERGE_DIST_M = 3.0`): 同 canonical name 但物理欧氏距离 > 3 m 的节点不再合并, 即使命名 canonical 一致也保留为独立 node, 各自走 `instance_suffix` 后缀去重.
 
 ### Q. cross-gap filter 触发条件是什么?
 

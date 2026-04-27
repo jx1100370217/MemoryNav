@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-2.5.1-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.5.1)
+[![Version](https://img.shields.io/badge/Version-2.6.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.6.0)
 
 基于视觉位置识别（VPR）和拓扑地图的机器人记忆导航系统
 
@@ -28,7 +28,7 @@ MemoryNav 是一个面向移动机器人的视觉记忆导航系统。系统通�
 - **🧭 要求指路**：收到"请问前往 X 怎么走"类指令时，VPR 起点 + `find_destination` 终点 + 最短路径规划，再用 Qwen3.5-0.8B 将路径润色成自然中文指路回答
 - **🗺️ 自然语言触发在线建图**：收到"开始建图""启动扫图""停止建图""完成扫图"等指令时自动创建/结束 `MappingSession`；硬编码 `task="mapping"` / `"stop_mapping"` 仍向后兼容
 - **🔁 打断后恢复导航**：询问位置 / 要求指路分支**不修改** `nav_state.plan` / `last_task`，客户端下帧 `task=None` 延用上次导航任务继续推进
-- **🛰️ 在线主动建图** (`online_mapper/`)：三层架构（Geometry+Topology+Semantics）流式在线建图。**VGGT-1B 几何前端**（depth + VO + 占据栅格 dense 点云 单次推理同时供给）、**Traversability 地面平面可通行度**辅助 crop 点修正、**结构化节点命名** `NodeName(category, organization, nearby_plates, ...)` 显示 `category·organization`、门牌**两阶段归属** + `RELOCATE-DISPLAY` 规则、ConnectionBuilder **几何方向先验**（motion-heading 优先 + 反向硬惩罚 + 行人遮挡惩罚 + cx 边缘硬约束）、多 cam `describe_scene` 投票 + 连续 3 帧 temporal consensus、`BUILDING_LANDMARK` 需 votes ≥ 4 挡 OCR 字母幻觉、canonical 归一（电梯口/电梯间→电梯厅、快递柜/外卖柜/储物柜→外卖柜区）、`ColocationMerger` 跨类合并守卫 + anchor tie-break、闭环几何验证、双语命名、空间 KNN 邻接重建 + cross-gap filter；输出 `merged_labeled_data/` schema 含 `category/organization/nearby_plates/nearby_landmarks` 字段。完整设计见 [`docs/online_mapper.md`](docs/online_mapper.md)
+- **🛰️ 在线主动建图** (`online_mapper/`)：三层架构（Geometry+Topology+Semantics）流式在线建图。**VGGT-1B 几何前端**（depth + VO + 占据栅格 dense 点云 单次推理同时供给）、**Traversability 通道修正**（`resolve_crop_point` 把 crop 中心推到 walkable segment 中心，叠加柱子列 mask 与画面边缘屏蔽）、**结构化节点命名** `NodeName(category, organization, nearby_plates, ...)` 显示 `category·organization`、门牌**两阶段归属** + `RELOCATE-DISPLAY` 规则、ConnectionBuilder **几何方向先验**（同 segment ALPHA=0.5 / 跨 300 s 断档 ALPHA=0 + motion-heading 优先 + 反向硬惩罚 + 行人遮挡惩罚 + cx 边缘硬约束）、多 cam `describe_scene` 投票 + temporal consensus（FUNCTION_AREA canonical / CROSS / T_JUNCTION 单帧豁免 + 近 3 帧 deque 时序确认）、`BUILDING_LANDMARK` 需 votes ≥ 4 挡 OCR 字母幻觉、canonical 归一（电梯口/电梯间→电梯厅、快递柜/外卖柜/储物柜→外卖柜区）、**`_merge_by_canonical_name` 同 base 强制合并 + 3 m 空间聚类守卫 + latest-anchor**、`ColocationMerger` 跨类合并守卫 + 早 anchor tie-break、闭环几何验证、双语命名、空间 KNN 邻接重建 + cross-gap filter；DINOv3 子图匹配直接复用 `memory_nav.sub_image_matcher.DINOv3Strategy`；输出 `merged_labeled_data/` schema 含 `category/organization/nearby_plates/nearby_landmarks` 字段。完整设计见 [`docs/online_mapper.md`](docs/online_mapper.md)
 - **🔍 多方案 VPR 定位**：支持 4 种 SOTA 视觉位置识别方案，统一配置文件一键切换
 - **🗺️ 拓扑记忆图**：自动从标注数据构建节点-边拓扑图，支持最短路径规划
 - **🔄 循环移位匹配**：4 相机循环移位算法，支持任意朝向下的定位与偏转角估计
@@ -37,6 +37,7 @@ MemoryNav 是一个面向移动机器人的视觉记忆导航系统。系统通�
 - **🔭 Lookahead 双重确认**：步骤切换时同时验证 VPR 定位和下一步子图匹配，避免过早 advance
 - **📤 统一输出格式**：记忆模式开关两种状态下输出格式一致，始终提供 `pixel_target`
 - **🚧 YOLOv8n 遮挡检测**：子图匹配失败时自动检测注意力相机画面是否被遮挡（行人、物体等），遮挡时原地等待，消除后继续导航
+- **🚦 红绿灯检测** (**v2.6.0**)：路口区段（from/to 节点都含「路口」）期间用 YOLO11n + HSV 两段式颜色判别 + 时序平滑识别人行横道红绿灯；红灯时机器人原地等待（最高优先级，先于子图/Qwen 决策），绿灯/无灯则正常导航；离开路口区段自动清状态
 - **🤖 Qwen3.5 兜底打点**：子图匹配失败且未遮挡时自动切换 Qwen3.5-9B 视觉语言模型打点定位，统一使用"通道正中间位置+景深"找路策略，避免找不到参照物时瞎指方向
 - **📷 鱼眼去畸变**：自动从 `cam/params.yaml` 加载相机内参，对输入图像做柱面投影去畸变，提升 VPR 及子图匹配精度
 - **🧭 像素→机器人坐标转换**：将 `pixel_target` 归一化坐标经柱面角度、相机方位角、俯仰角估距完整管线，转换为机器人运动坐标 `[x_forward, y_lateral, 0.0]`
@@ -56,8 +57,9 @@ MemoryNav/
 │   ├── memory_graph.py             # 拓扑图 (BFS/Dijkstra 路径规划)
 │   ├── memory_vpr.py               # VPR 匹配引擎 (循环移位 + 无序匹配)
 │   ├── memory_builder.py           # 记忆构建器 (从标注数据构建拓扑图)
-│   ├── sub_image_matcher.py        # 子图匹配器 (DINOv3 密集特征匹配)
+│   ├── sub_image_matcher.py        # 子图匹配器 (DINOv3 密集特征匹配, online_mapper 也复用)
 │   ├── occlusion_detector.py       # YOLOv8n 遮挡检测器
+│   ├── traffic_light_detector.py   # YOLO11n 红绿灯检测 (路口区段启用)
 │   ├── fisheye_undistort.py        # 鱼眼去畸变 (柱面投影)
 │   ├── coord_transform.py          # 像素→机器人坐标转换
 │   ├── qwen35_point_grounder.py    # Qwen3.5 打点封装 (兜底模型)
@@ -93,14 +95,15 @@ MemoryNav/
 │   │   ├── visual_odometry.py      #   MonoVO + VGGTVisualOdometry + 工厂
 │   │   ├── pose_graph.py           #   scipy LM pose graph
 │   │   ├── junction_detector.py    #   4-camera depth 路口判定 (stateless)
+│   │   ├── traversability.py       # ⭐ VGGT 点云 → 像素级可通行度 (resolve_crop_point)
 │   │   └── occupancy.py            #   1D ray-cast + dense 点云直填
 │   ├── topology/                   # Topology 层
 │   │   ├── graph.py                #   TopoGraph / TopoNode
 │   │   ├── keyframe_selector.py    #   多触发关键帧选择
 │   │   ├── loop_closure.py         #   auto-tune + ORB 几何验证闭环
 │   │   ├── frontier_nbv.py         #   frontier / NBV 候选推荐
-│   │   ├── connection_builder.py   #   ⭐ next_positions: 几何方向先验
-│   │   └── auto_sub_image_extractor.py  # 打点裁剪 + 走廊中间帧匹配
+│   │   ├── connection_builder.py   #   ⭐ next_positions: 几何先验 + traversability + person 惩罚
+│   │   └── auto_sub_image_extractor.py  # 打点裁剪 (复用 memory_nav DINOv3Strategy)
 │   ├── semantics/                  # Semantics 层
 │   │   ├── open_set_detector.py    #   Grounding-DINO 封装
 │   │   ├── scene_graph.py          #   层次场景图
@@ -121,7 +124,9 @@ MemoryNav/
 │   ├── vggt-1b/                    #   facebook/VGGT-1B
 │   ├── depth-anything-v2-small-hf/ #   备用 depth backend
 │   ├── grounding-dino-base/        #   IDEA-Research/grounding-dino-base
-│   └── dinov3_vitb16.safetensors   #   VPR backbone
+│   ├── dinov3_vitb16.safetensors   #   VPR backbone
+│   ├── yolov8n.pt                  #   遮挡检测
+│   └── yolo11n.pt                  #   红绿灯检测 (人行横道)
 ├── tests/                          # 测试
 │   └── test_memory_ws.py           # WebSocket 集成测试
 └── docs/                           # 文档
@@ -262,6 +267,11 @@ edge:
 每帧处理:
   ├─ 子图匹配 (全4相机 × 3级cascade)
   ├─ Lookahead 下一步子图匹配
+  │
+  ├─ 红绿灯检测 (仅"路口→路口"步骤启用, camera_1+camera_2):
+  │   └─ 红灯 → action=[0,0,0] 原地等待 (最高优先级, 直接 return)
+  │      绿灯/none → 继续后续判断
+  │      非路口步骤 → reset_state, 跳过
   │
   ├─ 子图匹配失败时:
   │   ├─ YOLOv8n 遮挡检测 (对子图匹配得分最高的 camera)
@@ -707,6 +717,31 @@ python tests/test_memory_ws.py --mode mapping
 ---
 
 ## 📋 更新日志
+
+### v2.6.0
+
+- **🚦 人行横道红绿灯检测**: 新增 `memory_nav/traffic_light_detector.py`，YOLO11n 检测 + HSV 两段式颜色判别（上红下绿）+ 时序状态机
+  - 仅在 from/to 节点都含「路口」的步骤启用（camera_1 + camera_2 前向）
+  - 红灯立即 `action=[0,0,0]` 原地等待，最高优先级（先于子图/Qwen 决策）
+  - 离开路口区段自动 `reset_state`，避免颜色残留
+  - 角度过滤（|global_angle| ≤ 30°）+ bbox 高度过滤（≤ 120 px）防侧后方/近处灯误触
+  - 响应新增顶层 `traffic_light` 字段；`memory_info.phase = "red_light"` 标记停车帧
+- **🛰️ online_mapper crop pipeline 重构**:
+  - 新增 `online_mapper/geometry/traversability.py:resolve_crop_point` 把 Qwen 给的 crop 中心**推到 walkable segment 中心**而非保留原 cx，修绿植墙/闸机栏杆等"obstacle 边缘单点 walkable 但 crop 半径内有 obstacle"的 case
+  - 新增 `detect_vertical_obstacle_columns(bottom_frac=0.5)` 柱子列检测，**只扫底半画面**避免天花板被误判为 obstacle
+  - 几何投影 fallback 也走 traversability 校验（不只挑通道中央，遇到柱子时退回到 Qwen 原点）
+  - ConnectionBuilder 几何先验 ALPHA 分两档：同 segment `0.5`（原 0.2，几何先验主导），跨 300 s 真断档 `0`（geo_bonus 清零，纯靠 visual sim 防 VO 漂移污染）
+  - DINOv3 子图匹配直接复用 `memory_nav.sub_image_matcher.DINOv3Strategy` 公共 API，消除代码重复
+- **🛰️ online_mapper 节点合并改进**:
+  - `_merge_by_canonical_name` 加 3 m 空间聚类守卫：同 canonical name 但欧氏距离 > 3 m 不合并（修起点电梯厅 vs H 座旁电梯都叫"电梯厅"被错合并的 case）
+  - anchor 改为 latest frame_idx（沿路径走过 landmark 时后到的 keyframe 一般离 landmark 更近，plate 更大）
+- **🛰️ online_mapper temporal consensus 严格化**:
+  - 删除 LANDMARK_FACILITY 单帧白名单 fast-pass，防 N11 电梯厅\_2 类多相机联合幻觉
+  - 路口场景（CROSS / T_JUNCTION）2/4 consensus 直接豁免 temporal（救回单帧识别的前台/关爱室类 landmark）
+  - FUNCTION_AREA canonical winner 2/4 consensus 直接豁免 temporal（FUNCTION_AREA 是 Qwen 低幻觉的具体 landmark）
+- **🛰️ online_mapper plate 投票**:
+  - BUILDING_LANDMARK plate 要求 votes ≥ 4 才 confirmed，挡 Qwen OCR 字母幻觉（`13号楼` / `1号楼` / `D座` 等 votes ≤ 3 的幻觉，真实最小 `B座` = 4）
+  - BUILDING_LANDMARK 禁用单帧白名单 fast-pass
 
 ### v2.5.1
 

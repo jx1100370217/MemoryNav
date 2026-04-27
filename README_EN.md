@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-2.5.1-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.5.1)
+[![Version](https://img.shields.io/badge/Version-2.6.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.6.0)
 
 A robot memory navigation system based on Visual Place Recognition (VPR) and topological maps
 
@@ -28,7 +28,7 @@ MemoryNav is a visual memory navigation system for mobile robots. It collects im
 - **🧭 Ask Direction**: On "how do I get to X" queries, derives the start via VPR + goal via `find_destination` + shortest path planning, then asks Qwen3.5-0.8B to narrate the route as a natural Chinese reply
 - **🗺️ Natural-language Mapping Trigger**: Natural utterances like "开始建图" / "启动扫图" / "停止建图" / "完成扫图" start or finalize a `MappingSession` automatically; hardcoded `task="mapping"` / `"stop_mapping"` remain backward-compatible (no LLM call)
 - **🔁 Resumable Interrupts**: Ask-location and ask-direction branches **do not** mutate `nav_state.plan` / `last_task`; the client can send `task=None` the next frame and the server will continue the original navigation from the preserved state
-- **🛰️ Online active mapping** (`online_mapper/`): Three-layer architecture (Geometry + Topology + Semantics) for streaming online mapping, with category whitelist, multi-frame hallucination voting, co-location merging, real VO, loop closure verification, bilingual naming, and spatial-KNN neighbour rebuild. Produces `merged_labeled_data/` schema. See [`docs/online_mapper.md`](docs/online_mapper.md) for the full design.
+- **🛰️ Online active mapping** (`online_mapper/`): Three-layer architecture (Geometry + Topology + Semantics) for streaming online mapping. **VGGT-1B geometric front-end** (depth + VO + occupancy dense point cloud from a single inference), **Traversability corridor correction** (`resolve_crop_point` pushes the crop center to the walkable-segment center, with vertical-obstacle column mask + edge-margin shielding), **structured naming** `NodeName(category, organization, nearby_plates, ...)` rendered as `category·organization`, two-stage door-plate attribution + `RELOCATE-DISPLAY` rule, ConnectionBuilder **geometric direction prior** (intra-segment ALPHA=0.5 / cross-300s gap ALPHA=0 + motion-heading priority + reverse hard penalty + person-occlusion penalty + cx edge constraint), multi-cam `describe_scene` voting + temporal consensus (FUNCTION_AREA canonical / CROSS / T_JUNCTION single-frame bypass + recent-3-frame deque), `BUILDING_LANDMARK` requiring votes ≥ 4 to block OCR letter hallucinations, canonical normalization (elevator hall variants → 电梯厅, locker variants → 外卖柜区), **`_merge_by_canonical_name` same-base merge with 3 m spatial-cluster guard + latest-anchor**, `ColocationMerger` cross-category guard + early-anchor tie-break, loop-closure geometric verification, bilingual naming, spatial-KNN neighbor rebuild + cross-gap filter; the DINOv3 sub-image matcher reuses `memory_nav.sub_image_matcher.DINOv3Strategy`. Produces `merged_labeled_data/` schema with `category/organization/nearby_plates/nearby_landmarks` fields. See [`docs/online_mapper.md`](docs/online_mapper.md) for the full design.
 - **🔍 Multi-scheme VPR Localization**: Supports 4 SOTA VPR methods, switchable via a single config file
 - **🗺️ Topological Memory Graph**: Automatically builds a node-edge topology from annotated data; supports shortest-path planning (BFS/Dijkstra)
 - **🔄 Cyclic-shift Matching**: 4-camera cyclic-shift algorithm for orientation-agnostic localization and heading estimation
@@ -37,6 +37,7 @@ MemoryNav is a visual memory navigation system for mobile robots. It collects im
 - **🔭 Lookahead Dual Confirmation**: Validates both VPR localization and next-step sub-image matching before advancing steps
 - **📤 Unified Output Format**: Consistent response schema regardless of memory mode — always provides `pixel_target`
 - **🚧 YOLOv8n Occlusion Detection**: Automatically detects camera occlusion (pedestrians, objects) when sub-image matching fails; stops in place when occluded, resumes after clearance
+- **🚦 Traffic-light Detection** (**v2.6.0**): During crosswalk steps (where both `from_node` and `to_node` names contain "路口"), runs YOLO11n + two-band HSV color classification + temporal smoothing on camera_1/camera_2; red light triggers `action=[0,0,0]` in-place wait at top priority (before sub-image / Qwen decisions); green/none lets navigation proceed; state auto-resets on leaving the crosswalk
 - **🤖 Qwen3.5 Fallback Grounding**: Two-step inference (existence check + conditional grounding) with Qwen3.5-9B VLM when not occluded but sub-image matching fails
 - **📷 Fisheye Undistortion**: Loads camera intrinsics from `cam/params.yaml` at startup; applies cylindrical-projection undistortion before VPR and sub-image matching
 - **🧭 Pixel→Robot Coordinate Transform**: Converts normalized `pixel_target` to robot motion coordinates `[x_forward, y_lateral, 0.0]` via cylindrical-angle + camera-azimuth + depression-angle pipeline
@@ -56,8 +57,9 @@ MemoryNav/
 │   ├── memory_graph.py             # Topology graph (BFS/Dijkstra)
 │   ├── memory_vpr.py               # VPR matching engine (cyclic-shift + order-invariant)
 │   ├── memory_builder.py           # Memory builder (topology from annotated data)
-│   ├── sub_image_matcher.py        # Sub-image matcher (DINOv3 dense features)
+│   ├── sub_image_matcher.py        # Sub-image matcher (DINOv3 dense features, also reused by online_mapper)
 │   ├── occlusion_detector.py       # YOLOv8n occlusion detector
+│   ├── traffic_light_detector.py   # YOLO11n traffic-light detector (crosswalk only)
 │   ├── fisheye_undistort.py        # Fisheye undistortion (cylindrical projection)
 │   ├── coord_transform.py          # Pixel→robot coordinate transform
 │   ├── qwen35_point_grounder.py    # Qwen3.5 grounding wrapper (fallback model)
@@ -93,12 +95,13 @@ MemoryNav/
 │   │   ├── visual_odometry.py      #   MonoVO + VGGTVisualOdometry + factory
 │   │   ├── pose_graph.py           #   scipy LM pose graph
 │   │   ├── junction_detector.py    #   4-camera depth junction (stateless)
+│   │   ├── traversability.py       # ⭐ VGGT pointcloud → per-pixel traversability (resolve_crop_point)
 │   │   └── occupancy.py            #   1D ray-cast + dense point cloud filling
 │   ├── topology/                   # Topology layer
 │   │   ├── keyframe_selector.py    #   Multi-trigger keyframe selection
 │   │   ├── loop_closure.py         #   auto-tune + ORB geometric verification
-│   │   ├── connection_builder.py   #   ⭐ next_positions: geo prior
-│   │   ├── auto_sub_image_extractor.py  # Grounding crop + corridor frame matching (migrated)
+│   │   ├── connection_builder.py   #   ⭐ next_positions: geo prior + traversability + person penalty
+│   │   ├── auto_sub_image_extractor.py  # Grounding crop (reuses memory_nav DINOv3Strategy)
 │   │   └── graph.py                #   TopoGraph / TopoNode
 │   ├── semantics/                  # Semantics layer
 │   │   ├── open_set_detector.py    #   Grounding-DINO wrapper
@@ -120,7 +123,9 @@ MemoryNav/
 │   ├── vggt-1b/                    #   facebook/VGGT-1B
 │   ├── depth-anything-v2-small-hf/ #   backup depth backend
 │   ├── grounding-dino-base/        #   IDEA-Research/grounding-dino-base
-│   └── dinov3_vitb16.safetensors   #   VPR backbone
+│   ├── dinov3_vitb16.safetensors   #   VPR backbone
+│   ├── yolov8n.pt                  #   occlusion detection
+│   └── yolo11n.pt                  #   traffic-light detection (crosswalk)
 ├── tests/
 │   └── test_memory_ws.py           # WebSocket integration tests
 └── docs/
@@ -233,6 +238,11 @@ When sub-image matching fails (regardless of VPR result), the system automatical
 Per-frame processing:
   ├─ Sub-image matching (all 4 cameras × 3-scale cascade)
   ├─ Lookahead next-step sub-image matching
+  │
+  ├─ Traffic-light detection (only when both step nodes contain "路口", camera_1+camera_2):
+  │   └─ Red light → action=[0,0,0] wait in place (top priority, returns immediately)
+  │      Green / none → fall through to subsequent checks
+  │      Non-crosswalk step → reset_state, skip
   │
   ├─ When sub-image matching fails:
   │   ├─ YOLOv8n occlusion detection (on highest-scoring camera)
@@ -583,6 +593,31 @@ python tests/test_memory_ws.py --mode mapping
 ---
 
 ## 📋 Changelog
+
+### v2.6.0
+
+- **🚦 Crosswalk traffic-light detection**: New `memory_nav/traffic_light_detector.py` — YOLO11n detection + two-band HSV color (red top / green bottom) + temporal state machine
+  - Activates only on steps where both `from_node` and `to_node` names contain "路口" (camera_1 + camera_2 forward-facing)
+  - Red light immediately returns `action=[0,0,0]` (in-place wait), at top priority over sub-image / Qwen decisions
+  - Auto `reset_state` on leaving the crosswalk segment to avoid color residual
+  - Angle filter (|global_angle| ≤ 30°) + bbox-height filter (≤ 120 px) to reject side/rear / near-field lights
+  - Response gains a top-level `traffic_light` field; `memory_info.phase = "red_light"` marks stop frames
+- **🛰️ online_mapper crop pipeline refactor**:
+  - New `online_mapper/geometry/traversability.py:resolve_crop_point` **pushes the Qwen crop center to the walkable-segment center** rather than preserving the original cx, fixing the "single-point walkable on obstacle edge but obstacle inside the crop radius" case (greenery wall edge / turnstile pillar etc.)
+  - New `detect_vertical_obstacle_columns(bottom_frac=0.5)` pillar-column detector — **only scans the bottom half** of the image so a 2.5 m ceiling does not misclassify every column as obstacle
+  - Geometric-projection fallback also runs through traversability (only takes corridor-center points, falling back to Qwen if a pillar lies on the projected cx)
+  - ConnectionBuilder geometric-prior ALPHA tiered: intra-segment `0.5` (was 0.2; geo prior dominates), cross-300s real gap `0` (geo_bonus zeroed, pure visual sim to avoid VO drift contamination)
+  - DINOv3 sub-image matching directly reuses `memory_nav.sub_image_matcher.DINOv3Strategy`, removing duplicated code
+- **🛰️ online_mapper merge improvements**:
+  - `_merge_by_canonical_name` adds a 3 m spatial-cluster guard: same-canonical nodes farther than 3 m apart are no longer merged (fixes "starting elevator hall vs H-block elevator both canonicalized to '电梯厅' and erroneously merged")
+  - Anchor switched to latest `frame_idx` (the keyframe reached after walking past the landmark is usually closer to it, with larger plate bbox)
+- **🛰️ online_mapper temporal consensus tightened**:
+  - LANDMARK_FACILITY single-frame whitelist fast-pass removed, blocking N11-elevator-hall-style multi-camera joint hallucinations
+  - CROSS / T_JUNCTION 2/4 consensus bypasses temporal (rescues single-frame recognitions of front-desk / care-room style landmarks)
+  - FUNCTION_AREA canonical winner 2/4 consensus bypasses temporal (FUNCTION_AREA is a low-hallucination Qwen output)
+- **🛰️ online_mapper plate voting**:
+  - BUILDING_LANDMARK plates require votes ≥ 4 to confirm, blocking Qwen OCR letter hallucinations (`13号楼` / `D座` etc. usually have ≤ 3 votes; the smallest real `B座` has 4)
+  - Single-frame whitelist fast-pass disabled for BUILDING_LANDMARK
 
 ### v2.5.1
 

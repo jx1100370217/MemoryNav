@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-2.5.1-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.5.1)
+[![Version](https://img.shields.io/badge/Version-2.6.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.6.0)
 
 VPR（視覚的場所認識）とトポロジカルマップに基づくロボット記憶ナビゲーションシステム
 
@@ -37,6 +37,7 @@ MemoryNavは移動ロボット向けの視覚記憶ナビゲーションシス�
 - **🔭 Lookahead二重確認**：ステップ切替時にVPR定位と次ステップのサブ画像マッチングを同時検証し、早期advanceを防止
 - **📤 統一出力フォーマット**：記憶モードのオン/オフに関わらず一貫したレスポンス形式、常に`pixel_target`を提供
 - **🚧 YOLOv8n遮蔽検出**：サブ画像マッチング失敗時にカメラ画面の遮蔽を自動検出（VPR結果とは独立）、遮蔽時はその場で待機し解消後にナビゲーション再開
+- **🚦 横断歩道信号機検出** (**v2.6.0**)：from/to ノード名がいずれも「路口」を含むステップ区間で、camera_1/camera_2 に対し YOLO11n + 上下二段 HSV 色判別 + 時系列スムージングで横断歩道信号機を検出。赤信号時はロボットがその場で待機（最優先、サブ画像/Qwen 判断より先に return）、緑信号/無信号は通常ナビゲーション継続。区間を離れると状態を自動クリア
 - **🤖 Qwen3.5フォールバック**：2段階推論（存在確認＋条件付きグラウンディング）によるQwen3.5-9B VLMフォールバック
 - **📷 魚眼歪み補正**：起動時に`cam/params.yaml`からカメラ内部パラメータを読み込み、円筒投影歪み補正を適用
 - **🧭 ピクセル→ロボット座標変換**：正規化された`pixel_target`を完全物理パイプラインでロボット運動座標に変換
@@ -56,8 +57,9 @@ MemoryNav/
 │   ├── memory_graph.py             # トポロジーグラフ (BFS/Dijkstra)
 │   ├── memory_vpr.py               # VPRマッチングエンジン (循環シフト + 順序不変)
 │   ├── memory_builder.py           # 記憶構築器
-│   ├── sub_image_matcher.py        # サブ画像マッチャー (DINOv3高密度特徴量)
+│   ├── sub_image_matcher.py        # サブ画像マッチャー (DINOv3高密度特徴量、online_mapper も再利用)
 │   ├── occlusion_detector.py       # YOLOv8n遮蔽検出器
+│   ├── traffic_light_detector.py   # YOLO11n 信号機検出 (横断歩道区間で起動)
 │   ├── fisheye_undistort.py        # 魚眼歪み補正 (円筒投影)
 │   ├── coord_transform.py          # ピクセル→ロボット座標変換
 │   ├── qwen35_point_grounder.py    # Qwen3.5グラウンディング (フォールバック)
@@ -89,13 +91,14 @@ MemoryNav/
 │   │   ├── visual_odometry.py      #   MonoVO + VGGTVisualOdometry + ファクトリ
 │   │   ├── pose_graph.py           #   scipy LM ポーズグラフ
 │   │   ├── junction_detector.py    #   4 カメラ深度による交差点判定 (stateless)
+│   │   ├── traversability.py       # ⭐ VGGT 点群 → ピクセル単位通行可能度 (resolve_crop_point)
 │   │   └── occupancy.py            #   1D ray-cast + dense 点群直接充填
 │   ├── topology/                   # Topology 層
 │   │   ├── keyframe_selector.py    #   多トリガー キーフレーム選択
 │   │   ├── loop_closure.py         #   自動閾値 + ORB 幾何検証ループクロージャ
-│   │   ├── connection_builder.py   #   ⭐ next_positions: 幾何方向先験
+│   │   ├── connection_builder.py   #   ⭐ next_positions: 幾何先験 + traversability + 人物ペナルティ
 │   │   ├── graph.py                #   TopoGraph / TopoNode
-│   │   └── auto_sub_image_extractor.py  # グラウンディングcrop + 廊下フレームマッチング
+│   │   └── auto_sub_image_extractor.py  # グラウンディングcrop (memory_nav DINOv3Strategy 再利用)
 │   ├── semantics/                  # Semantics 層
 │   │   ├── open_set_detector.py    #   Grounding-DINO ラッパー
 │   │   ├── door_plate_tracker.py   #   ドアプレート代表フレーム選択
@@ -116,7 +119,9 @@ MemoryNav/
 │   ├── vggt-1b/                    #   facebook/VGGT-1B
 │   ├── depth-anything-v2-small-hf/ #   バックアップ depth backend
 │   ├── grounding-dino-base/        #   IDEA-Research/grounding-dino-base
-│   └── dinov3_vitb16.safetensors   #   VPR バックボーン
+│   ├── dinov3_vitb16.safetensors   #   VPR バックボーン
+│   ├── yolov8n.pt                  #   遮蔽検出
+│   └── yolo11n.pt                  #   横断歩道信号機検出
 ├── tests/
 │   └── test_memory_ws.py           # WebSocket統合テスト
 └── docs/
@@ -185,6 +190,11 @@ camera_3またはcamera_4（後方向き）がマッチングに成功した場�
 フレームごと:
   ├─ サブ画像マッチング (全4カメラ × 3段階cascade)
   ├─ Lookahead 次ステップサブ画像マッチング
+  │
+  ├─ 信号機検出 ("路口→路口" ステップでのみ起動, camera_1+camera_2):
+  │   └─ 赤信号 → action=[0,0,0] その場で待機 (最優先, 即 return)
+  │      緑信号/none → 後続判断へ
+  │      非横断歩道ステップ → reset_state, スキップ
   │
   ├─ サブ画像マッチング失敗時:
   │   ├─ YOLOv8n遮蔽検出 (最高スコアcameraで)
@@ -306,9 +316,9 @@ ask_location / ask_direction ハンドラーは `nav_state.plan` / `current_step
 
 `online_mapper/` は MemoryNav のストリーミング オンライン能動建図モジュールです。VGGT-1B の単一推論で depth / pose / dense 点群を同時取得し、`OnlineMapperCore` が幾何 / トポロジー / 語義の 3 層を編成して高品質なセマンティック トポグラフを生成します。
 
-- **⚙️ 幾何フロントエンド**: VGGT-1B スライディング ウィンドウ 4 フレーム bf16 シングルトン; `VisualOdometry` は VGGT の extrinsics を再利用し追加推論ゼロ; `OccupancyGrid` は dense 点群から直接充填; `Traversability` は点群から地面平面の可通行度を推定し、crop 中心点の補正に使用
-- **🕸️ トポロジー**: 複数トリガー キーフレーム (VPR + 並進 + 回転 + 情報ゲイン + 交差点 + セマンティック ホワイトリスト); 毎フレーム 全域 VPR + ORB 幾何検証ループ閉じ; `ConnectionBuilder` は `next_positions` に幾何方向事前分布 (motion-heading を `pose.theta` より優先, `ALPHA=0.5`, 逆向きはハード ペナルティ) + traversability 地面補正 + GroundingDINO 人物遮蔽ペナルティ + `cx` エッジ ハード制約を付与; finalize では spatial / temporal KNN で隣接を再構築、cross-gap filter (> 60s かつ bridging keyframe なし → 時間エッジを拒否) 付き
-- **🧠 語義**: マルチカム `describe_scene` 投票 (≥2 cam 一致でノード作成、4 cam 全不一致なら skip) + 連続 3 フレーム temporal consensus (ホワイトリスト外 winner は近 3 フレームの `_recent_scene_winners` に出現していれば verified); 門牌は STRICT prompt + Qwen 二次検証 + `MultiFrameVoter`, `BUILDING_LANDMARK` は votes ≥ 4 必須 (文字 OCR 幻覚を遮断) かつ数字幻覚の単一フレーム fast-pass は無効化; canonical 正規化 (電梯口 / 電梯間 → 電梯厅; 快递柜 / 外卖柜 / 储物柜 / 智能取餐柜 → 外卖柜区); `NodeName` が構造化命名 `category · organization` を出力; `ColocationMerger` はカテゴリ不一致ガード + anchor tie-break; 門牌の 2 段階帰属 (functional を先に作成、brand は後 attach、`RELOCATE-DISPLAY` ルールはターゲット ノードの由来に基づき display フレームを再配置するか判断)
+- **⚙️ 幾何フロントエンド**: VGGT-1B スライディング ウィンドウ 4 フレーム bf16 シングルトン; `VisualOdometry` は VGGT の extrinsics を再利用し追加推論ゼロ; `OccupancyGrid` は dense 点群から直接充填; `Traversability` は点群から地面平面の可通行度を推定し、`resolve_crop_point` で crop 中心を walkable segment 中央に押し付ける (`detect_vertical_obstacle_columns` で柱列マスクを重畳、画面下半分のみスキャンして天井誤判定を回避)
+- **🕸️ トポロジー**: 複数トリガー キーフレーム (VPR + 並進 + 回転 + 情報ゲイン + 交差点 + セマンティック ホワイトリスト); 毎フレーム 全域 VPR + ORB 幾何検証ループ閉じ; `ConnectionBuilder` は `next_positions` に幾何方向事前分布 (同 segment ALPHA=0.5 / 300 s 真断絶 ALPHA=0、motion-heading を `pose.theta` より優先, 逆向きはハード ペナルティ) + traversability コリドー補正 + GroundingDINO 人物遮蔽ペナルティ + `cx` エッジ ハード制約を付与; finalize では spatial / temporal KNN で隣接を再構築、cross-gap filter (> 60s かつ bridging keyframe なし → 時間エッジを拒否) 付き; DINOv3 サブ画像マッチングは `memory_nav.sub_image_matcher.DINOv3Strategy` を直接再利用
+- **🧠 語義**: マルチカム `describe_scene` 投票 (≥2 cam 一致でノード作成、4 cam 全不一致なら skip) + temporal consensus (FUNCTION_AREA canonical / CROSS / T_JUNCTION は 2/4 で単フレーム免除、それ以外は近 3 フレーム `_recent_scene_winners` に出現していれば verified、LANDMARK_FACILITY は bypass しない); 門牌は STRICT prompt + Qwen 二次検証 + `MultiFrameVoter`, `BUILDING_LANDMARK` は votes ≥ 4 必須 (文字 OCR 幻覚を遮断) かつ数字幻覚の単一フレーム fast-pass は無効化; canonical 正規化 (電梯口 / 電梯間 → 電梯厅; 快递柜 / 外卖柜 / 储物柜 / 智能取餐柜 → 外卖柜区); `_merge_by_canonical_name` で同 base 強制マージ + 3 m 空間クラスタ守衛 + latest-anchor; `NodeName` が構造化命名 `category · organization` を出力; `ColocationMerger` はカテゴリ不一致ガード + 早期 anchor tie-break; 門牌の 2 段階帰属 (functional を先に作成、brand は後 attach、`RELOCATE-DISPLAY` ルールはターゲット ノードの由来に基づき display フレームを再配置するか判断)
 - **🎯 出力**: `merged_labeled_data/<id>/node_position_info.json` (構造化 `self_position` + `next_positions` + crops), `scene_graph.json`, `pose_graph.json`, `metrics.json`, `online_mapping_log.jsonl`, `plate_voter_dump.json`
 - **🔁 リファレンス実行**: `memory_test_data` 園区巡回 281 フレーム → 8 ノード連鎖 `電梯厅 → 前台 → C座 → H座電梯 → A座 → B座入口 → 外卖柜区·EXHIOH → 2号外卖柜`
 
@@ -439,6 +449,31 @@ python tests/test_memory_ws.py --mode mapping
 ---
 
 ## 📋 更新履歴
+
+### v2.6.0
+
+- **🚦 横断歩道信号機検出**: 新規 `memory_nav/traffic_light_detector.py` — YOLO11n 検出 + 上下二段 HSV 色判別 (上赤下緑) + 時系列状態機
+  - `from_node` と `to_node` の名称がいずれも「路口」を含むステップでのみ起動 (camera_1 + camera_2 前向き)
+  - 赤信号は即座に `action=[0,0,0]` (その場待機) を返却、サブ画像 / Qwen 判断より優先
+  - 区間を離れたら `reset_state` で色残留を防止
+  - 角度フィルタ (|global_angle| ≤ 30°) + bbox 高フィルタ (≤ 120 px) で側後方/近距離信号を除外
+  - レスポンスにトップレベル `traffic_light` フィールドを追加; `memory_info.phase = "red_light"` で停車フレームをマーク
+- **🛰️ online_mapper crop パイプライン リファクタ**:
+  - 新規 `online_mapper/geometry/traversability.py:resolve_crop_point` で Qwen の crop 中心を**保持せず walkable segment の中心へ押し付け**、obstacle 端で単点 walkable だが crop 半径内に obstacle がある (緑植壁 / 自動改札柵柱) ケースを修正
+  - 新規 `detect_vertical_obstacle_columns(bottom_frac=0.5)` の柱列検出は**画面下半分のみ走査**し、2.5 m 天井がすべての列を obstacle と誤判するのを回避
+  - 幾何投影フォールバックも traversability で検証 (柱が target cx に投影された場合は Qwen 原点に戻す)
+  - ConnectionBuilder 幾何先験 ALPHA を二段階化: 同 segment `0.5` (旧 0.2、幾何先験主導)、300 s 跨ぎ真断絶 `0` (geo_bonus ゼロクリア、純粋に visual sim で判断、VO ドリフト汚染を防止)
+  - DINOv3 サブ画像マッチングは `memory_nav.sub_image_matcher.DINOv3Strategy` を直接再利用、コード重複を解消
+- **🛰️ online_mapper ノードマージ改善**:
+  - `_merge_by_canonical_name` に 3 m 空間クラスタ守衛を追加: 同 canonical 名でも欧氏距離 > 3 m なら非マージ (起点エレベーターホール vs H 棟横エレベーターが両方「電梯厅」になり誤マージされる問題を修正)
+  - anchor を最新 `frame_idx` に変更 (経路上で landmark を通過した後の keyframe ほど landmark に近く plate bbox も大きい)
+- **🛰️ online_mapper temporal consensus 厳格化**:
+  - LANDMARK_FACILITY の単フレーム ホワイトリスト fast-pass を削除、N11 電梯厅\_2 タイプの多カメラ共同幻覚を遮断
+  - CROSS / T_JUNCTION 場面は 2/4 consensus で temporal を免除 (前台/関爱室類 landmark の単フレーム認識を救済)
+  - FUNCTION_AREA canonical winner は 2/4 consensus で temporal を免除 (FUNCTION_AREA は Qwen 低幻覚の具体 landmark)
+- **🛰️ online_mapper plate 投票**:
+  - BUILDING_LANDMARK plate は votes ≥ 4 で confirm、Qwen OCR 字母幻覚を遮断 (`13号楼` / `D座` 等の幻覚は通常 votes ≤ 3、最小実例 `B座` = 4)
+  - BUILDING_LANDMARK の単フレーム ホワイトリスト fast-pass を無効化
 
 ### v2.5.1
 

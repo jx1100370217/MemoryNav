@@ -78,19 +78,20 @@ MemoryNav 是一套**纯视觉记忆导航系统**，让机器人能够：
 
 ```
 MemoryNav/
-├── memory_nav/                       # 核心导航库 (v3.0.0, 19 个 Python 文件)
+├── memory_nav/                       # 核心导航库
 │   ├── __init__.py                   # 版本号 + 统一导出
 │   ├── memory_models.py              # 数据模型
 │   ├── memory_graph.py               # 拓扑图 + 路径规划
 │   ├── memory_vpr.py                 # VPR 定位 (FAISS + 循环移位)
 │   ├── memory_builder.py             # 记忆构建器
 │   ├── memory_navigator.py           # 导航器主类
-│   ├── sub_image_matcher.py          # DINOv3 子图匹配
+│   ├── sub_image_matcher.py          # DINOv3 子图匹配 (online_mapper 也复用)
 │   ├── qwen35_point_grounder.py      # Qwen3.5 打点 (双后端)
 │   ├── qwen35_grounding_server.py    # Qwen3.5 子进程服务端
 │   ├── coord_transform.py            # 柱面像素 → 机器人坐标
 │   ├── fisheye_undistort.py          # 鱼眼去畸变 (柱面投影)
 │   ├── occlusion_detector.py         # YOLOv8n 遮挡检测
+│   ├── traffic_light_detector.py     # YOLO11n 红绿灯检测 (路口区段启用)
 │   ├── vpr_factory.py                # VPR 提取器工厂
 │   ├── vpr_config_loader.py          # VPR 配置加载
 │   ├── selavpr_extractor.py          # SelaVPR++ 提取器
@@ -121,12 +122,13 @@ MemoryNav/
 │   │   ├── visual_odometry.py        # 视觉里程计 (VGGT / ORB)
 │   │   ├── occupancy.py              # 占据栅格
 │   │   ├── pose_graph.py             # 位姿图优化
-│   │   └── junction_detector.py      # 路口检测
+│   │   ├── junction_detector.py      # 路口检测
+│   │   └── traversability.py         # VGGT 点云 → 像素级可通行度图 (resolve_crop_point)
 │   ├── topology/
 │   │   ├── keyframe_selector.py      # 多触发关键帧选择
 │   │   ├── loop_closure.py           # 闭环检测 (auto-tune)
-│   │   ├── connection_builder.py     # 邻接构建 (几何先验 α=0.2)
-│   │   ├── auto_sub_image_extractor.py  # 子图提取 (被 connection_builder 继承)
+│   │   ├── connection_builder.py     # 邻接构建 (几何先验 同段 α=0.5 / 跨段 α=0)
+│   │   ├── auto_sub_image_extractor.py  # 子图提取 (被 connection_builder 继承, 复用 memory_nav DINOv3Strategy)
 │   │   └── graph.py                  # TopoGraph / TopoNode
 │   ├── semantics/
 │   │   ├── open_set_detector.py      # Grounding-DINO 封装
@@ -150,6 +152,7 @@ MemoryNav/
 │   ├── grounding-dino-base/          # Grounding-DINO
 │   ├── dinov3_vitb16.safetensors     # DINOv3 子图匹配骨干
 │   ├── yolov8n.pt                    # 遮挡检测
+│   ├── yolo11n.pt                    # 红绿灯检测 (人行横道)
 │   └── depth-anything-v2-small-hf/   # 备用深度后端
 ├── cam/
 │   └── params.yaml                   # 鱼眼内参 + 畸变系数 + T_ic 外参
@@ -729,6 +732,48 @@ class OcclusionResult:
 - 清除子图匹配缓存
 - `nav_state.consecutive_occlusions += 1`
 
+### 3.9.1 红绿灯检测（人行横道）
+
+`memory_nav/traffic_light_detector.py` 中的 `TrafficLightDetector`。
+
+**功能定位**：在「路口 → 路口」型导航步骤（from/to 节点名都包含「路口」）期间，对 `camera_1`/`camera_2` 前向画面跑红绿灯检测，红灯时让机器人原地等待。其它步骤不启用。
+
+**管线**：
+
+```
+1. YOLO11n 推理 (pretrained/yolo11n.pt, confidence_threshold=0.25)
+   类目过滤: COCO class 9 = traffic light
+2. 角度 + 尺寸过滤:
+   - global_angle_deg = camera_azimuth + (0.5 - cx_norm) * 180°
+   - 弃掉 |angle| > 30° (侧后方无关灯)
+   - 弃掉 bbox 高度 > 120 px (近处灯, 误判风险高)
+3. HSV 两段式颜色判别 (人行横道灯典型上红下绿):
+   - 上半 ROI 红色高亮像素率 ≥ 5% 且 > 绿色 → red
+   - 下半 ROI 绿色高亮像素率 ≥ 5% 且 > 红色 → green
+4. 时序状态机 (update_state):
+   - 红灯立即生效 (last_color = "red")
+   - 绿灯立即生效 (last_color = "green")
+   - color="none" + 有 bbox → 保持上一次颜色
+   - 无 bbox 连续 5 帧 → 清状态为 "none"
+```
+
+**TrafficLightResult 字段**：`detected / color / confidence / bbox / camera_name / global_angle_deg / elapsed_ms`。
+
+**集成点 (`deploy/ws_proxy_with_memory.py`)**：每帧导航主循环中：
+
+```python
+_in_crossing = (step.from_node 与 step.to_node 名字都含 "路口")
+if _in_crossing:
+    raw = traffic_light_detector.detect_multi(camera_images, ['camera_1', 'camera_2'])
+    color = traffic_light_detector.update_state(raw)
+    if color == "red":
+        return action [0, 0, 0]   # 原地停车，最高优先级
+else:
+    traffic_light_detector.reset_state()  # 离开路口区域清状态
+```
+
+红灯触发的响应在 `memory_info.phase = "red_light"` 标记，并在响应顶层 `traffic_light` 字段透出当前颜色。
+
 ### 3.10 Qwen3.5 兜底打点
 
 `memory_nav/qwen35_point_grounder.py` 中的 `Qwen35PointGrounder`。
@@ -910,6 +955,9 @@ class MemoryNavState:
     # 遮挡
     consecutive_occlusions: int = 0
 
+    # 红绿灯（路口区段）
+    traffic_light_color: str = "none"   # "red" / "green" / "none"
+
     # Qwen3.5 兜底
     fallback_action: List = None
     fallback_pixel_target: List = None
@@ -959,14 +1007,19 @@ process_inference_with_memory():
     3b. 帧间缓存判断
     3c. Lookahead 下一步子图匹配
 
-    3d. 遮挡检测 (子图失败时):
+    3d. 红绿灯检测 (仅"路口→路口"步骤启用, camera_1+camera_2):
+        红灯 → action=[0,0,0], 原地等待 (最高优先级, 直接 return)
+        绿灯/none → 继续后续判断
+        非路口步骤 → reset_state, 跳过
+
+    3e. 遮挡检测 (子图失败时):
         遮挡 → action=[0,0,0], 等待
 
-    3e. Qwen3.5 判断 (未遮挡时):
+    3f. Qwen3.5 判断 (未遮挡时):
         VPR已到目标 + (最后一步 or lookahead成功) → 跳过Qwen, 直接advance
         否则 → Qwen3.5 打点 ("通道正中间位置+景深")
 
-    3f. 导航决策:
+    3g. 导航决策:
         Case A: VPR matched target + sim >= 0.70
                 + (最后一步 or lookahead conf >= 0.60)
                 → ADVANCE (切换到下一步)
@@ -1367,7 +1420,7 @@ VGGT 点云直填流程：
 
 #### 4.2.7 可通行度 (`geometry/traversability.py`)
 
-从 VGGT camera-frame 点云估计像素级可通行度，用于 `ConnectionBuilder` 将 crop 中心修正到可走地面。
+从 VGGT camera-frame 点云估计像素级可通行度，用于 `ConnectionBuilder` 把 next_position 的 crop 中心推到通道中央。
 
 ```python
 estimate_ground_y(points_camera, image_bottom_frac=0.33)
@@ -1382,13 +1435,27 @@ compute_traversability_map(points_camera, y_ground=None) -> HxW float32
 validate_point(trav_map, cx, cy, radius)
   # 半径窗口内 traversable ≥ 55% 且 obstacle ≤ 25% 才通过
 
-find_best_traversable_point(trav_map, preferred_cx,
-                            target_y_frac=0.48,
-                            edge_margin_frac=0.10,
-                            max_offset_frac=0.30)
-  # 在 target 行带内找可通行列，相对 preferred_cx 偏移 ≤ 30% 画面宽度
-  # 硬屏蔽边缘 10% 列 (绕开 VGGT 全景边缘的 traversable 假阳)
-  # 返回 (cx, row) 或 None
+detect_vertical_obstacle_columns(points_camera, min_col_coverage=0.15,
+                                  bottom_frac=0.5) -> bool[W]
+  # 柱子 / 墙 / 椅背等竖向 obstacle 的逐列 mask
+  # 关键: 只扫底部 50% 画面 (避免天花板被误判: 室内 2.5m 天花板会撑满每列上半画面)
+
+resolve_crop_point(trav_map, preferred_cx,
+                   target_y_frac=0.48,
+                   edge_margin_frac=0.10,
+                   max_cx_offset_frac=0.30,
+                   points_camera=None) -> (cx, row) | None
+  # Qwen cx 选通道, walkable segment center 决定精确位置:
+  # 1) cy 固定到 target row (地面带)
+  # 2) target row ±10 px 计算列级 walkable mask, 叠加 vertical obstacle column mask
+  # 3) 提取连续 walkable segment (≤5 px 间隙合并)
+  # 4) 选包含 preferred_cx 的 segment, 否则选中心最近的
+  # 5) cx 推到 segment 中心 (受 30% 画面宽偏移上限约束)
+  # 设计动机: Qwen 给的点常落在 obstacle 边缘 (绿植墙右沿/闸机左沿), 单点 walkable
+  #          但 ~259 px 半径 crop 内有 obstacle, 视觉中心其实在墙上.
+
+find_best_traversable_point(trav_map, preferred_cx=None, ...)
+  # Qwen 全失败兜底; 取最宽 walkable segment 中心. 同样应用柱子列 mask 与边缘屏蔽.
 ```
 
 ### 4.3 拓扑层
@@ -1437,12 +1504,24 @@ def _cyclic_similarity(self, feat_a, feat_b):
 
 `ConnectionBuilder` 继承自 `AutoSubImageExtractor`，在 DINOv3 Hungarian 匹配的基础上增加：阈值过滤、几何方向先验、traversability 校正、person-occlusion 惩罚、cx 硬约束。
 
-**几何方向先验**（使用 `motion_theta` 作为主 heading，避开 VGGT yaw 漂移）：
+**几何方向先验**（使用 `motion_theta` 作为主 heading，避开 VGGT yaw 漂移；camera azimuth 来自 `memory_nav/coord_transform.py:_DEFAULT_AZIMUTHS`，由 `cam/params.yaml` T_ic 推算，逆时针正）：
 
 ```python
-cam_angles = {camera_1: 0, camera_2: -π/2, camera_3: π, camera_4: π/2}
+cam_angles = {
+    camera_1: +39.42°,  camera_2: -35.84°,
+    camera_3: -142.04°, camera_4: +143.52°,
+}
+
+GAP_FUSE_MS = 300_000      # 300 s, 真断档判定
+ALPHA_NORMAL = 0.5         # 同 segment 几何先验权重
 
 for (cam_id, nb_id):
+    gap_ms = abs(my.timestamp - nb.timestamp)
+    if gap_ms > GAP_FUSE_MS:
+        # 跨真断档（如 memory_test_data Part1→Part2 间隔 533 s）：VO 朝向已不可信
+        gap_mask[i][j] = True
+        alpha[i][j] = 0.0   # geo_bonus 清零，纯靠 visual sim
+        continue
     dx, dy = nb.x - my.x, nb.y - my.y
     world_ang = atan2(dy, dx)
     # 优先用 motion_theta（基于位置增量），fallback pose.theta
@@ -1450,10 +1529,14 @@ for (cam_id, nb_id):
     robot_ang = wrap(world_ang - heading)
     diff = wrap(robot_ang - cam_angles[cam_id])
     score = cos(diff)
+    if score < -0.3: sim -= 1.0   # 反向硬惩罚（仅同 segment）
 
-final_sim_matrix = visual_sim + ALPHA * angular_score        # ALPHA = 0.5
-if angular_score < -0.3: sim -= 1.0                          # 反向硬惩罚
+final_sim_matrix = visual_sim + alpha * geo_bonus
+# 同 segment alpha = 0.5（几何先验主导）
+# 跨断档 alpha = 0    （geo_bonus 清零，避免 VO 漂移污染）
 ```
+
+**为什么不用单一 ALPHA**：同 segment 内相邻 keyframe 间隔 30~120 s，VO 朝向相对可靠；跨真断档时位置 / 朝向都被漂移污染，强加几何先验反而会让方向倒过来扣分。300 s 阈值在真实数据 segment 内最长间隔（~120 s）和断档（~500 s）之间，能精准捕获。
 
 **Person-occlusion 惩罚**（避免误选走廊上挡路的人作为"下一节点方向"）：
 
@@ -1467,18 +1550,26 @@ for cam in cams:
         sim_matrix[:, cam_idx] -= 0.30
 ```
 
-**Traversability 校正 + cx 硬约束**（把 Qwen 给的 crop 中心修正到可走地面；屏蔽画面边缘噪声）：
+**Traversability 校正 + cx 硬约束**（把 Qwen 给的 crop 中心推到通道中央；屏蔽画面边缘和柱子列）：
 
 ```python
-# Qwen 给的原始点 (qx, qy) 走 find_best_traversable_point
+# Qwen 给的原始点 (qx, qy) 走 resolve_crop_point: 推到 walkable segment 中心
 trav_map = compute_traversability_map(points_camera)
-best = find_best_traversable_point(trav_map, preferred_cx=qx, ...)
-if best is not None and |best.cx - qx| ≤ 30% * W:
-    cx, cy = best         # 点修正到可走地面
+resolved = resolve_crop_point(trav_map,
+                              preferred_cx=qx,
+                              target_y_frac=0.48,
+                              max_cx_offset_frac=0.30,
+                              points_camera=points_camera)  # 启用柱子列 mask
+if resolved is not None and 15%W ≤ resolved.cx ≤ 85%W:
+    cx, cy = resolved      # 点推到通道中央，避开柱子列与画面边缘
 else:
     keep qwen (qx, qy)
-# 画面宽度硬约束: cx 必须在 [15%W, 85%W] 内 (edge noise 防御)
+# 几何投影 fallback (Qwen cx ≈ 0.500 时) 也走 resolve_crop_point 校验
 ```
+
+**`resolve_crop_point` 内部逻辑**：(1) cy 固定到 target row（地面带）；(2) 取 target row ± 10 px 计算列级 walkable mask，叠加 `detect_vertical_obstacle_columns(bottom_frac=0.5)` 排除柱子列（只扫底半画面，避免天花板被误判为 obstacle）；(3) 提取连续 walkable segment（≤ 5 px 间隙合并）；(4) 选包含 `preferred_cx` 的 segment，否则选中心最接近 `preferred_cx` 的；(5) cx 推到 segment 中心（受 30% 画面宽偏移上限约束）。设计动机：Qwen 给的点常落在 obstacle 边缘（绿植墙右沿 / 闸机左沿），单点 walkable 但 ~259 px 半径 crop 内有 obstacle，视觉中心其实在墙上。
+
+**Qwen 全失败 fallback**：4 路 cam 全部失锚时，改用 `find_best_traversable_point(...)` 取最宽 walkable segment 中心；它再失败就退到画面正中。
 
 Hungarian 匹配后按 `connection_sim_threshold = 0.40` 过滤，输出 cam ↔ neighbor 1-to-1 最优配对，并为每个匹配对保存 big/mid/small 三级子图。
 
@@ -1536,8 +1627,12 @@ sofa, table, monitor
 - **并行 describe_scene**：4 路相机并行调用 Qwen `describe_scene`，候选按 specificity rank 排序：`FUNCTION_AREA (0) > LANDMARK_FACILITY (1) > BUILDING_LANDMARK (2) > generic (3)`。
 - **多相机投票**：≥ 2 cam 一致 → 采纳 winner；4 cam 全不同 → skip（不建 node）。
 - **Temporal consensus**：
-  - winner 命中白名单（FUNCTION_AREA 或 LANDMARK_FACILITY）→ 直接 verified；
-  - 非白名单 → 检查近 3 帧 `_recent_scene_winners` deque：已出现 → verified；未出现 → tentative（`scene_describe = None`，不建 node，但 winner 仍入队等待后续帧确认）。
+  - consensus ≥ 3/4 → 强信号，立即 verified；
+  - consensus == 2/4 + winner ∈ FUNCTION_AREA canonical 值（前台 / 打印区 / 关爱室 / 外卖柜区 / 保安亭 等）→ **func_area bypass**，立即 verified（FUNCTION_AREA 是 Qwen 低幻觉的具体 landmark，独立场景也可信）；
+  - consensus == 2/4 + junction ∈ {CROSS, T_JUNCTION} → **路口豁免**，立即 verified（机器人在路口短暂瞥见 landmark 也是真实信号）；
+  - consensus == 2/4 + winner 出现在近 3 帧 `_recent_scene_winners` deque → temporal confirmed，verified；
+  - 其余 → tentative（`scene_describe = None`，不建 node，但 winner 仍入队等待后续帧确认）。
+  - ⚠ **LANDMARK_FACILITY（含 "电梯厅"）不参与 bypass**，防 N11 电梯厅\_2 类多相机联合幻觉。
 
 上述投票 + 时序确认的 winner 连同 confirmed plate、junction、GD landmarks 一起交给 `NodeCategoryClassifier`。
 
@@ -1593,18 +1688,32 @@ class NodeName:
 - `select_organization(plate_obs, category)` 打分：brand-like Latin +100；camera_1 +30；bbox 面积 +0..20；投票数 +0..20。
 - `merge_names(anchor, other)`：category 取 `_SEMANTIC_RANK` 更高的一方；organization 优先 brand-like；plates / landmarks 取并集。
 
-#### 4.4.7 同位置节点合并 (`semantics/colocation_merger.py`)
+#### 4.4.7 同 canonical name 强制合并 (`core/online_mapper_core.py:_merge_by_canonical_name`)
+
+ColocationMerger 之前先做的"同 base 强制合并"——不依赖 VPR / 帧距，仅按命名 canonical：
+
+- BUILDING_LANDMARK（X 座 / X 栋 / X 号楼）取裸 base name 收纳，自动吃掉 `X 座入口` / `X 座大堂` / `X 座电梯` 等 variant；
+- LANDMARK_FACILITY 用原 canonical 收纳（例：同 canonical `电梯厅` 的多个节点）。
+
+**关键守卫**：
+
+- ⭐ **空间聚类** (`SPATIAL_MERGE_DIST_M = 3.0`)：同 canonical 但欧氏距离 > 3 m 不合并。例如机器人起点电梯厅 vs H 座旁的电梯都被 canonical 化成"电梯厅"，但物理位置远，应当保留两个独立 node 各自走 `instance_suffix`。
+- ⭐ **anchor 选 latest frame_idx**：沿路径走过 landmark 时，后到的 keyframe 一般离 landmark 更近（plate bbox 更大，cam crop 方向先验和 DINOv3 视觉相似度都更稳）。
+- **复合 plate 优先 (Pass B)**：`H 座` 与 `H 座电梯` 同时存在时，anchor 重命名为更具体的 `H 座电梯`。specificity 排序：`X 座电梯 / X 座楼梯` > `X 号楼电梯` > `X 层电梯`。
+- **数字 plate 命名 (Pass C)**：`<N> 号柜 + 储物柜区` → `<N> 号储物柜`；`<N> 号柜 + 外卖柜区` → `<N> 号外卖柜`。
+
+#### 4.4.8 同位置节点合并 (`semantics/colocation_merger.py`)
 
 - `VPR_SIM_THRESHOLD = 0.85` 强信号单独触发合并；`frame + spatial` 弱信号组合触发。
 - **`_category_mismatch` guard**：不同 category 的节点禁止合并（防止 BUILDING_LANDMARK 误吸 SHOP）。
-- **Anchor tie-break on frame_idx smaller**：合并时取 `frame_idx` 更小的节点作为 anchor，把另一方的 ts / cameras / next_positions transfer 过来。
+- **Anchor tie-break on frame_idx smaller**：合并时取 `frame_idx` 更小的节点作为 anchor，把另一方的 ts / cameras / next_positions transfer 过来。注意与 `_merge_by_canonical_name` 的 latest-anchor 不同：该函数走帧距 + spatial，anchor 早一些可以让"第一次看到"作锚；canonical-name merge 走命名归一，后到帧 plate 更大更值得作锚。
 - `_combined_name` 调用 `NodeName.merge_names` 融合命名。
 
-#### 4.4.8 全局唯一性 (`NameDeduplicator`)
+#### 4.4.9 全局唯一性 (`NameDeduplicator`)
 
 按 `dedup_key = (category, organization)` 分组：VPR 高相似组内合并为 alias；其余按顺序追加 `instance_suffix = _2 / _3 / ...`，最终由 `display_cn()` 统一渲染。
 
-#### 4.4.9 门牌两阶段归属 (`core/online_mapper_core.py:_create_door_plate_nodes`)
+#### 4.4.10 门牌两阶段归属 (`core/online_mapper_core.py:_create_door_plate_nodes`)
 
 **第一遍**：functional / landmark plate 创建独立 `door-plate node`（`node._from_plate_best = True`），需满足：
 
@@ -2103,6 +2212,7 @@ WebSocket 建图模式由 `deploy/ws_proxy_with_memory.py` 承载，通过四类
   "landmark_name": "电梯门",
   "landmark_name_eng": "elevator door",
   "position_name_eng": "C8 front desk",
+  "traffic_light": "none",
   "crop_image_paths": {"big": "...", "mid": "...", "small": "..."},
   "crop_image_path": "path/to/big.jpg",
   "sub_image_match": {
@@ -2143,6 +2253,7 @@ WebSocket 建图模式由 `deploy/ws_proxy_with_memory.py` 承载，通过四类
     "consecutive_misses": 0,
     "consecutive_occlusions": 0,
     "occlusion": null,
+    "traffic_light": "none",
     "lookahead_conf": 0.68,
     "lookahead_found": true,
     "coord_transform": {

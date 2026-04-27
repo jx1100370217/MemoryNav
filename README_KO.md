@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-2.5.1-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.5.1)
+[![Version](https://img.shields.io/badge/Version-2.6.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.6.0)
 
 VPR(시각적 장소 인식)과 위상 지도 기반 로봇 기억 내비게이션 시스템
 
@@ -37,6 +37,7 @@ MemoryNav는 이동 로봇을 위한 시각적 기억 내비게이션 시스템�
 - **🔭 Lookahead 이중 확인**: 단계 전환 시 VPR 위치 확인과 다음 단계 서브이미지 매칭을 동시 검증하여 조기 advance 방지
 - **📤 통합 출력 형식**：기억 모드 온/오프에 관계없이 일관된 응답 형식, 항상 `pixel_target` 제공
 - **🚧 YOLOv8n 차폐 감지**：서브 이미지 매칭 실패 시 카메라 화면의 차폐를 자동 감지(VPR 결과와 독립), 차폐 시 정지 대기 후 해소되면 내비게이션 재개
+- **🚦 횡단보도 신호등 감지** (**v2.6.0**)：from/to 노드 이름이 모두 "路口"를 포함하는 단계 구간에서 camera_1 / camera_2 에 대해 YOLO11n + 상하 2단 HSV 색상 판별 + 시계열 평활화로 횡단보도 신호등을 감지. 빨간불 시 로봇이 제자리 대기(최우선, 서브 이미지 / Qwen 결정보다 먼저 return), 초록/없음이면 일반 내비게이션 수행. 구간을 벗어나면 상태 자동 초기화
 - **🤖 Qwen3.5 폴백 그라운딩**：2단계 추론(존재 확인 + 조건부 그라운딩)으로 Qwen3.5-9B VLM 폴백
 - **📷 어안 왜곡 보정**：시작 시 `cam/params.yaml`에서 카메라 내부 파라미터 로드, 원통형 투영 왜곡 보정 적용
 - **🧭 픽셀→로봇 좌표 변환**：정규화된 `pixel_target`을 완전 물리 파이프라인으로 로봇 운동 좌표로 변환
@@ -56,8 +57,9 @@ MemoryNav/
 │   ├── memory_graph.py             # 토폴로지 그래프 (BFS/Dijkstra)
 │   ├── memory_vpr.py               # VPR 매칭 엔진 (순환 시프트 + 순서 불변)
 │   ├── memory_builder.py           # 메모리 빌더
-│   ├── sub_image_matcher.py        # 서브 이미지 매처 (DINOv3 밀집 특징)
+│   ├── sub_image_matcher.py        # 서브 이미지 매처 (DINOv3 밀집 특징, online_mapper 도 재사용)
 │   ├── occlusion_detector.py       # YOLOv8n 차폐 검출기
+│   ├── traffic_light_detector.py   # YOLO11n 신호등 검출 (횡단보도 구간 활성화)
 │   ├── fisheye_undistort.py        # 어안 왜곡 보정 (원통형 투영)
 │   ├── coord_transform.py          # 픽셀→로봇 좌표 변환
 │   ├── qwen35_point_grounder.py    # Qwen3.5 그라운딩 (폴백)
@@ -89,12 +91,13 @@ MemoryNav/
 │   │   ├── visual_odometry.py      #   MonoVO + VGGTVisualOdometry + 팩토리
 │   │   ├── pose_graph.py           #   scipy LM 포즈 그래프
 │   │   ├── junction_detector.py    #   4 카메라 깊이 교차로 (stateless)
+│   │   ├── traversability.py       # ⭐ VGGT 점군 → 픽셀 단위 통행가능도 (resolve_crop_point)
 │   │   └── occupancy.py            #   1D ray-cast + dense 점군 직접 채움
 │   ├── topology/                   # Topology 계층
 │   │   ├── keyframe_selector.py    #   다중 트리거 키프레임 선택
 │   │   ├── loop_closure.py         #   자동 임계값 + ORB 기하 검증
-│   │   ├── connection_builder.py   #   ⭐ next_positions: 기하 방향 사전
-│   │   ├── auto_sub_image_extractor.py  # 그라운딩 crop + 복도 프레임 매칭
+│   │   ├── connection_builder.py   #   ⭐ next_positions: 기하 사전 + traversability + person 페널티
+│   │   ├── auto_sub_image_extractor.py  # 그라운딩 crop (memory_nav DINOv3Strategy 재사용)
 │   │   └── graph.py                #   TopoGraph / TopoNode
 │   ├── semantics/                  # Semantics 계층
 │   │   ├── open_set_detector.py    #   Grounding-DINO 래퍼
@@ -116,7 +119,9 @@ MemoryNav/
 │   ├── vggt-1b/                    #   facebook/VGGT-1B
 │   ├── depth-anything-v2-small-hf/ #   백업 depth backend
 │   ├── grounding-dino-base/        #   IDEA-Research/grounding-dino-base
-│   └── dinov3_vitb16.safetensors   #   VPR 백본
+│   ├── dinov3_vitb16.safetensors   #   VPR 백본
+│   ├── yolov8n.pt                  #   차폐 감지
+│   └── yolo11n.pt                  #   횡단보도 신호등 감지
 ├── tests/
 │   └── test_memory_ws.py           # WebSocket 통합 테스트
 └── docs/
@@ -185,6 +190,11 @@ camera_3 또는 camera_4(후방 향)가 매칭에 성공한 경우, 전진 동�
 프레임당:
   ├─ 서브 이미지 매칭 (전체 4카메라 × 3단계 cascade)
   ├─ Lookahead 다음 스텝 서브 이미지 매칭
+  │
+  ├─ 신호등 감지 ("路口→路口" 스텝에서만 활성화, camera_1+camera_2):
+  │   └─ 빨간불 → action=[0,0,0] 제자리 대기 (최우선, 즉시 return)
+  │      초록/none → 후속 판단으로
+  │      비횡단보도 스텝 → reset_state, 건너뜀
   │
   ├─ 서브 이미지 매칭 실패 시:
   │   ├─ YOLOv8n 차폐 감지 (최고 점수 camera에서)
@@ -306,9 +316,9 @@ ask_location 과 ask_direction 핸들러는 `nav_state.plan` / `current_step_idx
 
 `online_mapper/` 는 MemoryNav 의 스트리밍 온라인 능동 맵 생성 모듈입니다. VGGT-1B 단일 추론으로 depth / pose / dense 포인트 클라우드를 동시에 얻고, `OnlineMapperCore` 가 기하 / 토폴로지 / 시맨틱 세 계층을 조율해 고품질 시맨틱 토폴로지 그래프를 생성합니다.
 
-- **⚙️ 기하 프런트엔드**: VGGT-1B 슬라이딩 윈도우 4 프레임 bf16 싱글톤; `VisualOdometry` 는 VGGT extrinsics 를 재사용하여 추가 추론 없음; `OccupancyGrid` 는 dense 포인트 클라우드로 직접 채움; `Traversability` 는 포인트 클라우드에서 지면 평면 주행 가능도를 추정하여 crop 앵커 보정에 사용
-- **🕸️ 토폴로지**: 다중 트리거 키프레임 (VPR + 병진 + 회전 + 정보 이득 + 교차점 + 시맨틱 화이트리스트); 매 프레임 전역 VPR + ORB 기하 검증 루프 클로저; `ConnectionBuilder` 가 `next_positions` 에 기하 방향 사전 (motion-heading 을 `pose.theta` 보다 우선, `ALPHA=0.5`, 역방향 하드 페널티) + traversability 지면 보정 + GroundingDINO 인물 차폐 페널티 + `cx` 가장자리 하드 제약을 결합; finalize 시 spatial / temporal KNN 로 이웃을 재구축하며 cross-gap filter (> 60s 간격이고 bridging keyframe 없으면 시간 엣지 거부) 포함
-- **🧠 시맨틱**: 멀티 카메라 `describe_scene` 투표 (≥2 cam 일치 시 노드 생성, 4 cam 전원 불일치면 skip) + 연속 3 프레임 temporal consensus (화이트리스트 외 winner 는 최근 3 프레임의 `_recent_scene_winners` 에 나타나야 verified); 문패는 STRICT prompt + Qwen 2 차 검증 + `MultiFrameVoter`, `BUILDING_LANDMARK` 는 votes ≥ 4 필수 (글자 OCR 환각 차단) 이며 숫자 환각 단일 프레임 fast-pass 비활성; canonical 정규화 (电梯口 / 电梯间 → 电梯厅; 快递柜 / 外卖柜 / 储物柜 / 智能取餐柜 → 外卖柜区); `NodeName` 가 구조화 `category · organization` 이름 생성; `ColocationMerger` 는 카테고리 불일치 가드 + anchor tie-break; 문패 2 단계 귀속 (functional 을 먼저 생성, brand 는 나중에 attach, `RELOCATE-DISPLAY` 규칙이 타깃 노드의 출처에 따라 display 프레임 재배치 여부 결정)
+- **⚙️ 기하 프런트엔드**: VGGT-1B 슬라이딩 윈도우 4 프레임 bf16 싱글톤; `VisualOdometry` 는 VGGT extrinsics 를 재사용하여 추가 추론 없음; `OccupancyGrid` 는 dense 포인트 클라우드로 직접 채움; `Traversability` 는 포인트 클라우드에서 지면 평면 주행 가능도를 추정하고 `resolve_crop_point` 로 crop 중심을 walkable segment 중앙으로 밀어냄 (`detect_vertical_obstacle_columns` 으로 기둥 열 마스크 적용, 화면 하단 절반만 스캔하여 천장 오판 방지)
+- **🕸️ 토폴로지**: 다중 트리거 키프레임 (VPR + 병진 + 회전 + 정보 이득 + 교차점 + 시맨틱 화이트리스트); 매 프레임 전역 VPR + ORB 기하 검증 루프 클로저; `ConnectionBuilder` 가 `next_positions` 에 기하 방향 사전 (동일 segment ALPHA=0.5 / 300 s 진짜 단절 ALPHA=0, motion-heading 을 `pose.theta` 보다 우선, 역방향 하드 페널티) + traversability 통로 보정 + GroundingDINO 인물 차폐 페널티 + `cx` 가장자리 하드 제약을 결합; finalize 시 spatial / temporal KNN 로 이웃을 재구축하며 cross-gap filter (> 60s 간격이고 bridging keyframe 없으면 시간 엣지 거부) 포함; DINOv3 서브 이미지 매칭은 `memory_nav.sub_image_matcher.DINOv3Strategy` 를 직접 재사용
+- **🧠 시맨틱**: 멀티 카메라 `describe_scene` 투표 (≥2 cam 일치 시 노드 생성, 4 cam 전원 불일치면 skip) + temporal consensus (FUNCTION_AREA canonical / CROSS / T_JUNCTION 은 2/4 에서 단일 프레임 면제, 그 외에는 최근 3 프레임 `_recent_scene_winners` 에 나타나야 verified, LANDMARK_FACILITY 는 bypass 안함); 문패는 STRICT prompt + Qwen 2 차 검증 + `MultiFrameVoter`, `BUILDING_LANDMARK` 는 votes ≥ 4 필수 (글자 OCR 환각 차단) 이며 숫자 환각 단일 프레임 fast-pass 비활성; canonical 정규화 (电梯口 / 电梯间 → 电梯厅; 快递柜 / 外卖柜 / 储物柜 / 智能取餐柜 → 外卖柜区); `_merge_by_canonical_name` 으로 동일 base 강제 머지 + 3 m 공간 클러스터 가드 + latest-anchor; `NodeName` 가 구조화 `category · organization` 이름 생성; `ColocationMerger` 는 카테고리 불일치 가드 + 이른 anchor tie-break; 문패 2 단계 귀속 (functional 을 먼저 생성, brand 는 나중에 attach, `RELOCATE-DISPLAY` 규칙이 타깃 노드의 출처에 따라 display 프레임 재배치 여부 결정)
 - **🎯 출력**: `merged_labeled_data/<id>/node_position_info.json` (구조화 `self_position` + `next_positions` + crops), `scene_graph.json`, `pose_graph.json`, `metrics.json`, `online_mapping_log.jsonl`, `plate_voter_dump.json`
 - **🔁 레퍼런스 실행**: `memory_test_data` 캠퍼스 주행 281 프레임 → 8 노드 체인 `电梯厅 → 前台 → C座 → H座电梯 → A座 → B座入口 → 外卖柜区·EXHIOH → 2号外卖柜`
 
@@ -436,6 +446,31 @@ python tests/test_memory_ws.py --mode mapping
 ---
 
 ## 📋 업데이트 로그
+
+### v2.6.0
+
+- **🚦 횡단보도 신호등 감지**: 신규 `memory_nav/traffic_light_detector.py` — YOLO11n 검출 + 상하 2단 HSV 색상 판별(상단 빨강 / 하단 초록) + 시계열 상태 머신
+  - `from_node` 와 `to_node` 이름이 모두 "路口" 를 포함하는 단계에서만 활성화 (camera_1 + camera_2 전방)
+  - 빨간불 시 즉시 `action=[0,0,0]` (제자리 대기) 반환, 서브 이미지 / Qwen 결정보다 최우선
+  - 구간을 벗어나면 `reset_state` 자동 호출하여 색상 잔류 방지
+  - 각도 필터(|global_angle| ≤ 30°) + bbox 높이 필터(≤ 120 px) 로 측후방/근거리 신호등 오감지 차단
+  - 응답에 최상위 `traffic_light` 필드 추가; `memory_info.phase = "red_light"` 으로 정지 프레임 표시
+- **🛰️ online_mapper crop 파이프라인 리팩터**:
+  - 신규 `online_mapper/geometry/traversability.py:resolve_crop_point` 가 Qwen crop 중심을 **유지하지 않고 walkable segment 중앙으로 밀어냄**, obstacle 가장자리에서 단일 점은 walkable 이지만 crop 반경 안에 obstacle 이 있는 케이스(녹지벽 / 개찰구 기둥)를 수정
+  - 신규 `detect_vertical_obstacle_columns(bottom_frac=0.5)` 기둥 열 검출은 **화면 하단 절반만 스캔**하여 2.5 m 천장이 모든 열을 obstacle 로 오판하는 문제 회피
+  - 기하 투영 fallback 도 traversability 검증 통과 (target cx 에 기둥이 투영되면 Qwen 원점으로 복귀)
+  - ConnectionBuilder 기하 사전 ALPHA 2 단 분할: 동일 segment `0.5` (구버전 0.2, 기하 사전 주도), 300 s 진짜 단절 `0` (geo_bonus 0 으로 클리어, 순수 visual sim 으로 판단하여 VO 드리프트 오염 방지)
+  - DINOv3 서브 이미지 매칭은 `memory_nav.sub_image_matcher.DINOv3Strategy` 를 직접 재사용, 코드 중복 제거
+- **🛰️ online_mapper 노드 머지 개선**:
+  - `_merge_by_canonical_name` 에 3 m 공간 클러스터 가드 추가: 동일 canonical 이름이라도 유클리드 거리 > 3 m 이면 머지 안함 (시작 엘리베이터홀 vs H 동 옆 엘리베이터가 모두 "电梯厅" 으로 정규화되어 잘못 머지되던 문제 수정)
+  - anchor 를 latest `frame_idx` 로 변경 (경로상 landmark 통과 후 도달한 keyframe 이 일반적으로 landmark 에 더 가깝고 plate bbox 도 더 큼)
+- **🛰️ online_mapper temporal consensus 강화**:
+  - LANDMARK_FACILITY 단일 프레임 화이트리스트 fast-pass 제거, N11 电梯厅\_2 형 멀티 카메라 공동 환각 차단
+  - CROSS / T_JUNCTION 장면은 2/4 consensus 로 temporal 면제 (前台/关爱室류 landmark 의 단일 프레임 인식 구제)
+  - FUNCTION_AREA canonical winner 는 2/4 consensus 로 temporal 면제 (FUNCTION_AREA 는 Qwen 저환각 구체 landmark)
+- **🛰️ online_mapper plate 투표**:
+  - BUILDING_LANDMARK plate 는 votes ≥ 4 일 때 confirm, Qwen OCR 글자 환각 차단 (`13号楼` / `D座` 등 환각은 보통 votes ≤ 3, 최소 실제 `B座` = 4)
+  - BUILDING_LANDMARK 단일 프레임 화이트리스트 fast-pass 비활성화
 
 ### v2.5.1
 

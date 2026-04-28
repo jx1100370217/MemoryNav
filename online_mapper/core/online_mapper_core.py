@@ -1055,7 +1055,10 @@ class OnlineMapperCore:
         n_pg_edges_before = len(self.pose_graph.edges)
         n_loop_edges = sum(1 for e in self.pose_graph.edges if e.kind == "loop")
         if n_pg_edges_before >= 1 and len(self.pose_graph.nodes) >= 2:
-            self.pose_graph.optimize(iters=30)
+            # WARN: 已禁用 — loop edges 用 dx=dy=dth=0 的假约束把节点拉到一起,
+            # 导致 ConnectionBuilder 几何先验 cam 选择错误 (vs dcacbd1 baseline).
+            # 等 LoopCloser.geometric_verify 输出真实 R/t 后再开启.
+            # self.pose_graph.optimize(iters=30)
             self.metrics["pose_graph_optimized"] = {
                 "n_nodes": len(self.pose_graph.nodes),
                 "n_edges": n_pg_edges_before,

@@ -1,0 +1,793 @@
+{
+  "metrics_stable": {
+    "n_nodes": 4,
+    "n_edges": 3,
+    "n_loop_closures": 0,
+    "n_semantic_merges": 0,
+    "n_frames": 48,
+    "n_keyframes_triggered": 8,
+    "n_door_plates": 32,
+    "n_connections": 6,
+    "n_named_landmarks": 6,
+    "vo_mode": "real",
+    "kf_accepted_by_category": {
+      "function_area": 4
+    },
+    "kf_rejected_by_category": 4,
+    "n_loop_self_skipped": 4,
+    "plate_drops_verify": 4,
+    "plate_voter": {
+      "total_names_seen": 11,
+      "confirmed": 5,
+      "rejected": 5,
+      "rejected_names": [
+        "文化墙",
+        "工程师文化原则",
+        "网络出口",
+        "房间标识",
+        "房间号"
+      ],
+      "confirmed_names": [
+        "文化墙标语",
+        "DEEPROUTE.AI",
+        "强电井",
+        "NEUMANN",
+        "关爱室"
+      ],
+      "min_frames": 2,
+      "min_cameras": 2
+    },
+    "plate_drops_unconfirmed": 6,
+    "plate_drops_category": 4,
+    "plate_attached_to_keyframe": 2,
+    "pose_graph_optimized": {
+      "n_nodes": 5,
+      "n_edges": 3,
+      "n_loop_edges": 0,
+      "runtime_s": 0.0
+    },
+    "coloc_merge": {
+      "pairs_examined": 7,
+      "merges": 1,
+      "by_reason": {
+        "frame+spatial": 1,
+        "vpr": 0
+      },
+      "aliases": {
+        "2": "1"
+      }
+    },
+    "topology_rebuild": {
+      "k_spatial": 1,
+      "k_temporal": 1,
+      "spatial_edges": 2,
+      "temporal_edges": 1,
+      "total_edges": 3
+    },
+    "name_dedup": {
+      "groups_processed": 0,
+      "merges": 0,
+      "suffixed": 0,
+      "aliases": {}
+    },
+    "loop_threshold_used": 0.6798593067827995,
+    "visualizations": [
+      "pose_graph",
+      "occupancy",
+      "keyframe_timeline",
+      "scene_overview"
+    ]
+  },
+  "scene_graph": {
+    "floors": {
+      "F1": {
+        "打印区": [
+          "1"
+        ],
+        "前台": [
+          "3",
+          "4"
+        ],
+        "关爱室": [
+          "5"
+        ]
+      }
+    },
+    "nodes": {
+      "1": {
+        "room": "打印区",
+        "objects": [
+          {
+            "label": "white chair",
+            "bbox": [
+              922.8804321289062,
+              647.7650756835938,
+              1125.410888671875,
+              907.1336059570312
+            ],
+            "score": 0.466947078704834,
+            "camera": "camera_1",
+            "plate_text": ""
+          },
+          {
+            "label": "table",
+            "bbox": [
+              217.10025024414062,
+              692.9156494140625,
+              689.9889526367188,
+              1180.8992919921875
+            ],
+            "score": 0.3641832768917084,
+            "camera": "camera_1",
+            "plate_text": ""
+          },
+          {
+            "label": "table",
+            "bbox": [
+              879.6726684570312,
+              636.8237915039062,
+              1363.5311279296875,
+              884.0318603515625
+            ],
+            "score": 0.37597399950027466,
+            "camera": "camera_1",
+            "plate_text": ""
+          },
+          {
+            "label": "white chair",
+            "bbox": [
+              644.0641479492188,
+              606.1491088867188,
+              863.1245727539062,
+              1006.0292358398438
+            ],
+            "score": 0.3799569606781006,
+            "camera": "camera_1",
+            "plate_text": ""
+          },
+          {
+            "label": "table",
+            "bbox": [
+              47.05404281616211,
+              684.8179931640625,
+              694.2310180664062,
+              1185.217529296875
+            ],
+            "score": 0.323331356048584,
+            "camera": "camera_1",
+            "plate_text": ""
+          },
+          {
+            "label": "table",
+            "bbox": [
+              1003.1529541015625,
+              653.2197875976562,
+              1349.5147705078125,
+              883.68017578125
+            ],
+            "score": 0.31485944986343384,
+            "camera": "camera_1",
+            "plate_text": ""
+          },
+          {
+            "label": "white chair",
+            "bbox": [
+              176.54405212402344,
+              756.1495361328125,
+              506.6506652832031,
+              1046.006591796875
+            ],
+            "score": 0.4784982204437256,
+            "camera": "camera_2",
+            "plate_text": ""
+          },
+          {
+            "label": "table",
+            "bbox": [
+              221.5608673095703,
+              673.582763671875,
+              684.4806518554688,
+              889.5595092773438
+            ],
+            "score": 0.5228519439697266,
+            "camera": "camera_2",
+            "plate_text": ""
+          },
+          {
+            "label": "white chair",
+            "bbox": [
+              2.0408105850219727,
+              715.583740234375,
+              155.5243682861328,
+              1029.5374755859375
+            ],
+            "score": 0.37206709384918213,
+            "camera": "camera_2",
+            "plate_text": ""
+          },
+          {
+            "label": "white chair",
+            "bbox": [
+              1.5670251846313477,
+              851.2842407226562,
+              286.82366943359375,
+              1326.442138671875
+            ],
+            "score": 0.4073033630847931,
+            "camera": "camera_2",
+            "plate_text": ""
+          },
+          {
+            "label": "white chair",
+            "bbox": [
+              82.68008422851562,
+              725.8970336914062,
+              198.00033569335938,
+              880.9046630859375
+            ],
+            "score": 0.3238650858402252,
+            "camera": "camera_2",
+            "plate_text": ""
+          },
+          {
+            "label": "white chair",
+            "bbox": [
+              1656.828125,
+              766.778564453125,
+              1808.7410888671875,
+              1023.3938598632812
+            ],
+            "score": 0.5023266077041626,
+            "camera": "camera_3",
+            "plate_text": ""
+          },
+          {
+            "label": "table",
+            "bbox": [
+              981.1156005859375,
+              883.0523071289062,
+              1740.33837890625,
+              1377.76806640625
+            ],
+            "score": 0.4526714086532593,
+            "camera": "camera_3",
+            "plate_text": ""
+          },
+          {
+            "label": "vending machine",
+            "bbox": [
+              888.318603515625,
+              643.408935546875,
+              1039.640625,
+              866.7799072265625
+            ],
+            "score": 0.33633485436439514,
+            "camera": "camera_3",
+            "plate_text": ""
+          },
+          {
+            "label": "table",
+            "bbox": [
+              976.6666259765625,
+              697.479248046875,
+              1163.7841796875,
+              949.5286865234375
+            ],
+            "score": 0.3010406196117401,
+            "camera": "camera_3",
+            "plate_text": ""
+          },
+          {
+            "label": "white chair",
+            "bbox": [
+              1734.6229248046875,
+              716.941162109375,
+              1801.6669921875,
+              787.6792602539062
+            ],
+            "score": 0.3607925474643707,
+            "camera": "camera_3",
+            "plate_text": ""
+          },
+          {
+            "label": "table",
+            "bbox": [
+              1234.318115234375,
+              681.4783935546875,
+              1704.1466064453125,
+              1227.05224609375
+            ],
+            "score": 0.4452303349971771,
+            "camera": "camera_4",
+            "plate_text": ""
+          },
+          {
+            "label": "white chair",
+            "bbox": [
+              1473.588623046875,
+              770.5133056640625,
+              1900.091796875,
+              1265.92529296875
+            ],
+            "score": 0.4299291968345642,
+            "camera": "camera_4",
+            "plate_text": ""
+          },
+          {
+            "label": "white chair",
+            "bbox": [
+              972.9039306640625,
+              660.7633056640625,
+              1075.2646484375,
+              799.1214599609375
+            ],
+            "score": 0.4291782081127167,
+            "camera": "camera_4",
+            "plate_text": ""
+          },
+          {
+            "label": "table",
+            "bbox": [
+              916.5494384765625,
+              659.9411010742188,
+              1084.550537109375,
+              773.5848388671875
+            ],
+            "score": 0.4125005602836609,
+            "camera": "camera_4",
+            "plate_text": ""
+          },
+          {
+            "label": "table",
+            "bbox": [
+              1091.6295166015625,
+              678.4578857421875,
+              1702.810302734375,
+              1205.916015625
+            ],
+            "score": 0.3243362009525299,
+            "camera": "camera_4",
+            "plate_text": ""
+          },
+          {
+            "label": "table",
+            "bbox": [
+              1052.2105712890625,
+              693.1383056640625,
+              1224.7108154296875,
+              897.8187255859375
+            ],
+            "score": 0.3192537724971771,
+            "camera": "camera_4",
+            "plate_text": ""
+          }
+        ]
+      },
+      "3": {
+        "room": "前台",
+        "objects": [
+          {
+            "label": "white chair",
+            "bbox": [
+              317.8564453125,
+              694.2314453125,
+              537.5697021484375,
+              982.716552734375
+            ],
+            "score": 0.5440385341644287,
+            "camera": "camera_1",
+            "plate_text": ""
+          },
+          {
+            "label": "white chair",
+            "bbox": [
+              1043.96923828125,
+              657.948486328125,
+              1185.5294189453125,
+              876.6725463867188
+            ],
+            "score": 0.3569464385509491,
+            "camera": "camera_1",
+            "plate_text": ""
+          },
+          {
+            "label": "white chair",
+            "bbox": [
+              1.5160274505615234,
+              895.6915283203125,
+              459.441650390625,
+              1352.588134765625
+            ],
+            "score": 0.30695873498916626,
+            "camera": "camera_1",
+            "plate_text": ""
+          },
+          {
+            "label": "white chair",
+            "bbox": [
+              1098.7784423828125,
+              655.030517578125,
+              1227.884521484375,
+              829.663818359375
+            ],
+            "score": 0.3071095049381256,
+            "camera": "camera_1",
+            "plate_text": ""
+          },
+          {
+            "label": "table",
+            "bbox": [
+              362.5677185058594,
+              686.569091796875,
+              545.1267700195312,
+              950.20361328125
+            ],
+            "score": 0.36716967821121216,
+            "camera": "camera_2",
+            "plate_text": ""
+          },
+          {
+            "label": "table",
+            "bbox": [
+              440.57000732421875,
+              675.0065307617188,
+              572.4371948242188,
+              883.2393798828125
+            ],
+            "score": 0.303719699382782,
+            "camera": "camera_2",
+            "plate_text": ""
+          },
+          {
+            "label": "table",
+            "bbox": [
+              1539.3304443359375,
+              732.6405639648438,
+              1868.4566650390625,
+              1114.283935546875
+            ],
+            "score": 0.39898481965065,
+            "camera": "camera_3",
+            "plate_text": ""
+          },
+          {
+            "label": "table",
+            "bbox": [
+              947.3129272460938,
+              713.6783447265625,
+              1134.1390380859375,
+              895.1134033203125
+            ],
+            "score": 0.3143443167209625,
+            "camera": "camera_3",
+            "plate_text": ""
+          },
+          {
+            "label": "white chair",
+            "bbox": [
+              1367.124755859375,
+              728.4812622070312,
+              1562.101318359375,
+              987.8120727539062
+            ],
+            "score": 0.34625479578971863,
+            "camera": "camera_3",
+            "plate_text": ""
+          },
+          {
+            "label": "table",
+            "bbox": [
+              775.571533203125,
+              675.69873046875,
+              868.4503173828125,
+              726.9325561523438
+            ],
+            "score": 0.3465422987937927,
+            "camera": "camera_3",
+            "plate_text": ""
+          },
+          {
+            "label": "table",
+            "bbox": [
+              839.4813232421875,
+              737.372314453125,
+              953.4007568359375,
+              881.7306518554688
+            ],
+            "score": 0.3016347885131836,
+            "camera": "camera_3",
+            "plate_text": ""
+          },
+          {
+            "label": "table",
+            "bbox": [
+              948.2353515625,
+              697.135986328125,
+              1234.71875,
+              895.1940307617188
+            ],
+            "score": 0.4041924774646759,
+            "camera": "camera_3",
+            "plate_text": ""
+          },
+          {
+            "label": "white chair",
+            "bbox": [
+              1241.2196044921875,
+              683.87353515625,
+              1464.23681640625,
+              949.7225341796875
+            ],
+            "score": 0.49136829376220703,
+            "camera": "camera_4",
+            "plate_text": ""
+          },
+          {
+            "label": "table",
+            "bbox": [
+              233.440185546875,
+              777.1085815429688,
+              473.6722106933594,
+              980.8760375976562
+            ],
+            "score": 0.42295917868614197,
+            "camera": "camera_4",
+            "plate_text": ""
+          },
+          {
+            "label": "white chair",
+            "bbox": [
+              698.1295776367188,
+              697.6194458007812,
+              915.303466796875,
+              900.5026245117188
+            ],
+            "score": 0.41011449694633484,
+            "camera": "camera_4",
+            "plate_text": ""
+          },
+          {
+            "label": "table",
+            "bbox": [
+              1110.7550048828125,
+              674.5543823242188,
+              1247.685302734375,
+              864.0565795898438
+            ],
+            "score": 0.34562090039253235,
+            "camera": "camera_4",
+            "plate_text": ""
+          },
+          {
+            "label": "white chair",
+            "bbox": [
+              1179.0826416015625,
+              639.150146484375,
+              1299.7525634765625,
+              856.7422485351562
+            ],
+            "score": 0.3186022639274597,
+            "camera": "camera_4",
+            "plate_text": ""
+          },
+          {
+            "label": "white chair",
+            "bbox": [
+              1363.65869140625,
+              632.5699462890625,
+              1447.210693359375,
+              696.1961669921875
+            ],
+            "score": 0.3109893202781677,
+            "camera": "camera_4",
+            "plate_text": ""
+          },
+          {
+            "label": "white chair",
+            "bbox": [
+              893.883544921875,
+              676.3001708984375,
+              1193.6702880859375,
+              1091.7025146484375
+            ],
+            "score": 0.5025781393051147,
+            "camera": "camera_4",
+            "plate_text": ""
+          },
+          {
+            "label": "table",
+            "bbox": [
+              841.06201171875,
+              672.789306640625,
+              1109.23046875,
+              856.66748046875
+            ],
+            "score": 0.33525535464286804,
+            "camera": "camera_4",
+            "plate_text": ""
+          }
+        ]
+      },
+      "4": {
+        "room": "前台",
+        "objects": [
+          {
+            "label": "white chair",
+            "bbox": [
+              277.69476318359375,
+              659.6577758789062,
+              414.0854187011719,
+              893.8756713867188
+            ],
+            "score": 0.37441322207450867,
+            "camera": "camera_1",
+            "plate_text": ""
+          },
+          {
+            "label": "table",
+            "bbox": [
+              732.17431640625,
+              772.3661499023438,
+              892.1874389648438,
+              966.6055297851562
+            ],
+            "score": 0.30810970067977905,
+            "camera": "camera_1",
+            "plate_text": ""
+          },
+          {
+            "label": "white chair",
+            "bbox": [
+              1232.8487548828125,
+              628.007568359375,
+              1346.4652099609375,
+              877.8107299804688
+            ],
+            "score": 0.36427170038223267,
+            "camera": "camera_4",
+            "plate_text": ""
+          }
+        ]
+      },
+      "5": {
+        "room": "关爱室",
+        "objects": []
+      }
+    }
+  },
+  "pose_graph": {
+    "n_nodes": 4,
+    "n_edges": 1,
+    "node_ids": [
+      "1",
+      "3",
+      "4",
+      "5"
+    ],
+    "edge_kinds": [
+      [
+        "3",
+        "4",
+        "odom"
+      ]
+    ]
+  },
+  "nodes": {
+    "1": {
+      "position_name": "打印区",
+      "position_name_eng": "Printing Area",
+      "category": "打印区",
+      "organization": "",
+      "nearby_plates": [],
+      "n_cameras": 4,
+      "n_next_positions": 1,
+      "next_position_ids": [
+        "3"
+      ]
+    },
+    "3": {
+      "position_name": "前台",
+      "position_name_eng": "Reception",
+      "category": "前台",
+      "organization": "",
+      "nearby_plates": [],
+      "n_cameras": 4,
+      "n_next_positions": 2,
+      "next_position_ids": [
+        "1",
+        "5"
+      ]
+    },
+    "4": {
+      "position_name": "前台·DEEPROUTE.AI",
+      "position_name_eng": "Reception · DEEPROUTE.AI",
+      "category": "前台",
+      "organization": "DEEPROUTE.AI",
+      "nearby_plates": [],
+      "n_cameras": 4,
+      "n_next_positions": 1,
+      "next_position_ids": [
+        "5"
+      ]
+    },
+    "5": {
+      "position_name": "关爱室·NEUMANN",
+      "position_name_eng": "Care Room · NEUMANN",
+      "category": "关爱室",
+      "organization": "NEUMANN",
+      "nearby_plates": [],
+      "n_cameras": 4,
+      "n_next_positions": 2,
+      "next_position_ids": [
+        "3",
+        "4"
+      ]
+    }
+  },
+  "nodes_soft": {
+    "1": {
+      "next_camera_names": [
+        "camera_2"
+      ],
+      "next_landmark_names": [
+        "椅子"
+      ]
+    },
+    "3": {
+      "next_camera_names": [
+        "camera_2",
+        "camera_3"
+      ],
+      "next_landmark_names": [
+        "凳子",
+        "电脑"
+      ]
+    },
+    "4": {
+      "next_camera_names": [
+        "camera_4"
+      ],
+      "next_landmark_names": [
+        "绿色植物墙"
+      ]
+    },
+    "5": {
+      "next_camera_names": [
+        "camera_2",
+        "camera_4"
+      ],
+      "next_landmark_names": [
+        "绿植墙",
+        "绿植墙"
+      ]
+    }
+  },
+  "plate_voter_keys": [
+    "DEEPROUTE.AI",
+    "NEUMANN",
+    "关爱室",
+    "工程师文化原则",
+    "强电井",
+    "房间号",
+    "房间标识",
+    "文化墙",
+    "文化墙标语",
+    "网络出口"
+  ],
+  "log_summary": {
+    "n_lines": 48,
+    "n_keyframes": 8,
+    "kf_reasons": {
+      "first_frame": 1,
+      "acc_rot": 4,
+      "vpr<0.5": 1,
+      "acc_trans": 2
+    },
+    "rejected": 4,
+    "accepted_by_cat": {
+      "function_area": 4
+    }
+  },
+  "stable_hash": "2205211232992682",
+  "soft_hash": "42550babbad0f94f"
+}

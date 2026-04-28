@@ -1,6 +1,7 @@
 """Unit tests for online_mapper (minimal, no GPU required where possible)"""
 import sys, os
-sys.path.insert(0, '/home/ubuntu/Disk/codes/jianxiong/MemoryNav')
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 
 def test_pose_graph_optimize():

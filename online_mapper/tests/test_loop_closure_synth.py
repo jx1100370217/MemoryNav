@@ -6,7 +6,8 @@ to force a revisit. Verifies that the LoopCloser fires geometric
 verification on real images.
 """
 import os, sys, glob, shutil, logging
-sys.path.insert(0, '/home/ubuntu/Disk/codes/jianxiong/MemoryNav')
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from online_mapper.config import OnlineMapperConfig
 from online_mapper.core.online_mapper_core import OnlineMapperCore
@@ -46,12 +47,15 @@ def build_synth():
 
 build_synth()
 
+# NOTE: 不能 disable qwen + door_plate, 否则 category_clf 100% reject KF →
+# self.node_features 为空 → LoopCloser 永远没匹配候选. 此测需要至少一个
+# 信号源 (plate/scene) 才能产生 KF node.
 cfg = OnlineMapperConfig(
     input_dir=SYNTH,
     output_dir="online_mapper/output/synth_loop_test/merged_labeled_data",
-    enable_qwen_naming=False,         # speed up the test
-    enable_door_plate_detection=False,
-    enable_real_connections=False,
+    enable_qwen_naming=True,
+    enable_door_plate_detection=True,
+    enable_real_connections=False,    # ConnectionBuilder 不影响 LoopCloser, 跳过省时
 )
 core = OnlineMapperCore(cfg)
 core.run()

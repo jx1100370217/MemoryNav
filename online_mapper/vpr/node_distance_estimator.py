@@ -18,7 +18,7 @@ from typing import Dict, List, Optional, Tuple
 import logging
 from pathlib import Path
 
-sys.path.insert(0, '/home/ubuntu/Disk/codes/jianxiong/MemoryNav')
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 try:
     from memory_nav import create_vpr_extractor
@@ -73,18 +73,6 @@ class NodeDistanceEstimator:
         # {node_id: {camera_id: np.ndarray}}
         self.node_camera_features: Dict[str, Dict[str, np.ndarray]] = {}
         self.node_frames: Dict[str, int] = {}
-        self._last_created_frame: int = -999
-        self._last_created_id: Optional[str] = None
-
-    # ---- 兼容旧接口 (node_features) ----
-    @property
-    def node_features(self):
-        """兼容旧代码访问 node_features 的地方，返回 node_camera_features"""
-        return self.node_camera_features
-
-    @node_features.setter
-    def node_features(self, value):
-        self.node_camera_features = value
 
     def extract_camera_features(self, camera_images: Dict[str, str]) -> Dict[str, np.ndarray]:
         """提取每个 camera 的独立特征并 L2 归一化 (与 MemoryBuilder 一致)
@@ -156,98 +144,6 @@ class NodeDistanceEstimator:
                     best_avg_sim = avg_sim
 
         return best_avg_sim if best_avg_sim > -1.0 else 0.0
-
-    # ---- 兼容旧接口 ----
-    def extract_frame_feature(self, camera_images: Dict[str, str]) -> Dict[str, np.ndarray]:
-        """兼容旧接口，返回 camera features dict"""
-        return self.extract_camera_features(camera_images)
-
-    def compute_similarity(self, f1, f2) -> float:
-        """兼容旧接口
-
-        如果传入的是 dict (新格式)，用 compute_node_similarity。
-        """
-        if isinstance(f1, dict) and isinstance(f2, dict):
-            return self.compute_node_similarity(f1, f2)
-        # 不应该走到这里，但保底
-        logging.warning("compute_similarity called with non-dict features, fallback")
-        return 0.0
-
-    def should_create_node(self,
-                           frame_index: int,
-                           camera_images: Dict[str, str]) -> Tuple[bool, Dict]:
-        info = {
-            'frame_index': frame_index,
-            'similarities': {},
-            'max_similarity': 0.0,
-            'last_node_similarity': 0.0,
-            'reason': 'unknown'
-        }
-
-        try:
-            current_features = self.extract_camera_features(camera_images)
-
-            if len(current_features) < 4:
-                info['reason'] = 'insufficient_cameras'
-                return False, info
-
-            # 第一个节点直接创建
-            if not self.node_camera_features:
-                info['reason'] = 'first_node'
-                return True, info
-
-            # 只检查与最近创建节点的帧间隔
-            if frame_index - self._last_created_frame < self.min_frame_interval:
-                info['reason'] = 'frame_interval_too_small'
-                return False, info
-
-            # 计算与所有已有节点的相似度
-            max_sim = -1.0
-            for pid, node_feats in self.node_camera_features.items():
-                sim = self.compute_node_similarity(current_features, node_feats)
-                info['similarities'][pid] = sim
-                max_sim = max(max_sim, sim)
-
-            # 与最近创建节点的相似度
-            if self._last_created_id and self._last_created_id in self.node_camera_features:
-                last_sim = self.compute_node_similarity(
-                    current_features, self.node_camera_features[self._last_created_id]
-                )
-            else:
-                last_sim = max_sim
-
-            info['max_similarity'] = max_sim
-            info['last_node_similarity'] = last_sim
-
-            if last_sim < self.similarity_threshold:
-                info['reason'] = 'low_similarity'
-                return True, info
-            else:
-                info['reason'] = 'high_similarity'
-                return False, info
-
-        except Exception as e:
-            logging.error(f"Failed to evaluate: {e}")
-            info['reason'] = f'error: {e}'
-            return False, info
-
-    def register_node(self, position_id: str, frame_index: int,
-                      camera_images: Dict[str, str]):
-        features = self.extract_camera_features(camera_images)
-        self.node_camera_features[position_id] = features
-        self.node_frames[position_id] = frame_index
-        self._last_created_frame = frame_index
-        self._last_created_id = position_id
-        logging.info(f"Registered node {position_id} at frame {frame_index} "
-                     f"({len(features)} cameras)")
-
-    def get_statistics(self) -> Dict:
-        return {
-            'total_nodes': len(self.node_camera_features),
-            'node_ids': list(self.node_camera_features.keys()),
-            'similarity_threshold': self.similarity_threshold,
-            'min_frame_interval': self.min_frame_interval,
-        }
 
     def cleanup(self):
         if hasattr(self.vpr_extractor, 'cleanup'):

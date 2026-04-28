@@ -20,6 +20,7 @@ from typing import Dict, List, Tuple, Optional, Set
 import numpy as np
 
 from online_mapper.semantics.node_category import NodeCategory
+from online_mapper.semantics.semantic_dedup import cyclic_cosine
 
 logger = logging.getLogger(__name__)
 
@@ -72,22 +73,6 @@ class ColocationMerger:
         self.stats = MergeStats()
 
     @staticmethod
-    def _cyclic_cosine(fa: Dict[str, np.ndarray], fb: Dict[str, np.ndarray]) -> float:
-        cams = ['camera_1', 'camera_2', 'camera_3', 'camera_4']
-        if not all(c in fa and c in fb for c in cams):
-            return 0.0
-        best = -1.0
-        for shift in range(4):
-            sims = []
-            for i, c in enumerate(cams):
-                cb = cams[(i + shift) % 4]
-                a = fa[c]; b = fb[cb]
-                s = float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-8))
-                sims.append(s)
-            best = max(best, sum(sims) / 4.0)
-        return best
-
-    @staticmethod
     def _base_cat_name(node) -> str:
         """Strip brand suffix after '·' to get core category name."""
         n = (getattr(node, "position_name", "") or "").strip()
@@ -116,7 +101,7 @@ class ColocationMerger:
         # 强信号: VPR 相似度极高 → 合并
         sim = 0.0
         if feats_a and feats_b:
-            sim = self._cyclic_cosine(feats_a, feats_b)
+            sim = cyclic_cosine(feats_a, feats_b)
             if sim >= self.VPR_SIM_THRESHOLD:
                 return True, "vpr"
         # 强信号: 帧间隔小 + 空间距离小 (AND, 防止 VO 不准导致误合并)

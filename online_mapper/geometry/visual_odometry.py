@@ -1,99 +1,18 @@
-"""单目视觉里程计
+"""单目视觉里程计 (VGGT-based, ORB MonoVO 已删除).
 
-支持两种 backend:
-- "orb"  : ORB + EssentialMatrix + recoverPose (原 MonoVO, 阶段 2 之前的默认)
-- "vggt" : 复用 VGGTDepthEstimator 已缓存的位姿 (无额外推理), 阶段 2 起的新默认
+backend:
+- "vggt"  : 复用 VGGTDepthEstimator 已缓存的位姿 (无额外推理) — 默认且唯一
+- 其他    : 返回 None, 主流程走默认常速代理 (0.5 m/帧, 0.02 rad/帧)
 
-接口契约 (两者一致):
-    .estimate(bgr_image, depth_map=None) -> (dtrans_m, drot_rad)
+历史 ORB-based MonoVO 因 scale = median(depth)*0.05 是无标定根据的魔法系数,
+已于 refactor 阶段 5.2 移除. 真要 ORB fallback 需要重新引入 + 标定.
+
+接口契约: .estimate(bgr_image, depth_map=None) -> (dtrans_m, drot_rad)
 """
 import logging
 import numpy as np
-import cv2
 
 logger = logging.getLogger(__name__)
-
-
-# ======================================================================
-class MonoVO:
-    """ORB 单目 VO (legacy, 保留可切回)。"""
-
-    def __init__(self, focal: float = 700.0, pp=None):
-        self.focal = focal
-        self.pp = pp
-        self.orb = cv2.ORB_create(nfeatures=1000)
-        self.bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
-        self.prev_gray = None
-        self.last_dtrans = 0.5
-        self.last_drot = 0.0
-
-    def estimate(self, bgr_image, depth_map=None):
-        if bgr_image is None:
-            return self.last_dtrans, self.last_drot
-
-        gray = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2GRAY)
-        h, w = gray.shape
-        pp = self.pp or (w / 2.0, h / 2.0)
-
-        if self.prev_gray is None:
-            self.prev_gray = gray
-            return 0.0, 0.0
-
-        try:
-            kp1, des1 = self.orb.detectAndCompute(self.prev_gray, None)
-            kp2, des2 = self.orb.detectAndCompute(gray, None)
-            if des1 is None or des2 is None or len(kp1) < 30 or len(kp2) < 30:
-                self.prev_gray = gray
-                return self._fallback()
-
-            matches = self.bf.match(des1, des2)
-            if len(matches) < 30:
-                self.prev_gray = gray
-                return self._fallback()
-            matches = sorted(matches, key=lambda m: m.distance)[:300]
-            pts1 = np.float32([kp1[m.queryIdx].pt for m in matches])
-            pts2 = np.float32([kp2[m.trainIdx].pt for m in matches])
-
-            E, mask = cv2.findEssentialMat(
-                pts1, pts2, focal=self.focal, pp=pp,
-                method=cv2.RANSAC, prob=0.999, threshold=1.5)
-            if E is None or E.shape != (3, 3):
-                self.prev_gray = gray
-                return self._fallback()
-
-            _, R, t, _ = cv2.recoverPose(E, pts1, pts2, focal=self.focal, pp=pp, mask=mask)
-
-            tx, ty, tz = float(t[0]), float(t[1]), float(t[2])
-            forward_dir = tz
-            lateral_dir = tx
-            sy = np.sqrt(R[0, 0] ** 2 + R[1, 0] ** 2)
-            yaw = np.arctan2(-R[2, 0], sy) if sy > 1e-6 else 0.0
-
-            if depth_map is not None and depth_map.size > 0:
-                d = np.asarray(depth_map, dtype=np.float32)
-                hh, ww = d.shape
-                roi = d[hh // 5: 4 * hh // 5, ww // 5: 4 * ww // 5]
-                roi = roi[(roi > 0.1) & (roi < 50.0)]
-                scale = float(np.median(roi)) * 0.05 if roi.size > 100 else 0.5
-            else:
-                scale = 0.5
-
-            dtrans = float(np.hypot(forward_dir, lateral_dir) * scale)
-            drot = float(yaw)
-            dtrans = max(0.0, min(dtrans, 3.0))
-            drot = max(-1.0, min(drot, 1.0))
-
-            self.prev_gray = gray
-            self.last_dtrans = dtrans
-            self.last_drot = drot
-            return dtrans, drot
-        except Exception as e:
-            logger.debug(f"MonoVO failed: {e}; fallback")
-            self.prev_gray = gray
-            return self._fallback()
-
-    def _fallback(self):
-        return self.last_dtrans, self.last_drot
 
 
 # ======================================================================
@@ -162,14 +81,18 @@ class VGGTVisualOdometry:
 
 # ======================================================================
 def build_visual_odometry(cfg, depth_estimator=None):
-    """根据 cfg.vo_backend 构建 VO.
+    """根据 cfg.vo_backend 构建 VO. 只接受 'vggt'; 其他 backend 返回 None
+    让 OnlineMapperCore._vo_motion 走默认常速代理 (0.5 m/帧, 0.02 rad/帧).
 
     "vggt" 需要 depth_estimator 是 VGGTDepthEstimator (复用其缓存位姿).
     """
     backend = getattr(cfg, "vo_backend", "vggt")
-    if backend == "vggt":
-        # 仅当 depth backend 也是 vggt 且实例可用时启用
-        if depth_estimator is not None and hasattr(depth_estimator, "last_extri"):
-            return VGGTVisualOdometry(depth_estimator)
-        logger.warning("vo_backend=vggt 但 depth_estimator 不是 VGGT, 回退到 ORB MonoVO")
-    return MonoVO()
+    if backend != "vggt":
+        logger.warning(f"vo_backend={backend!r} not supported (ORB MonoVO removed); "
+                       f"VO disabled, using constant motion proxy")
+        return None
+    if depth_estimator is None or not hasattr(depth_estimator, "last_extri"):
+        logger.warning("vo_backend=vggt but depth_estimator is not VGGT-based; "
+                       "VO disabled, using constant motion proxy")
+        return None
+    return VGGTVisualOdometry(depth_estimator)

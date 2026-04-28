@@ -40,17 +40,12 @@ class JunctionDetector:
     CENTER_W_FRAC = 0.30
     CENTER_H_FRAC = 0.30
 
-    # Camera id -> assumed yaw offset (radians) from robot forward.
-    # camera_1 = front, camera_2 = right, camera_3 = rear, camera_4 = left
-    CAMERA_YAW = {
-        'camera_1': 0.0,
-        'camera_2': -1.5708,  # -90 deg
-        'camera_3':  3.1416,
-        'camera_4':  1.5708,
-    }
 
-    def __init__(self, depth_estimator):
+    def __init__(self, depth_estimator, open_depth_thresh: float = None):
         self.depth = depth_estimator
+        # 实例覆盖类常量, 让 cfg.junction_open_depth_thresh 可控
+        if open_depth_thresh is not None:
+            self.OPEN_DEPTH_THRESH = open_depth_thresh
         self.stats = {"calls": 0, "kinds": {}}
 
     def _central_median(self, depth_map: np.ndarray) -> float:

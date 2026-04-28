@@ -37,17 +37,28 @@ class ThresholdedSubImageExtractor(AutoSubImageExtractor):
     }
 
     def __init__(self, sim_threshold: float = None, depth_estimator=None,
-                 detector=None, **kwargs):
+                 detector=None,
+                 gap_fuse_ms: int = 300_000,
+                 alpha_normal: float = 0.5,
+                 person_penalty: float = 0.30,
+                 fallback_center_tol: float = 0.03,
+                 **kwargs):
         super().__init__(**kwargs)
         if sim_threshold is not None:
             self.SIM_THRESHOLD = sim_threshold
         self._depth_estimator = depth_estimator
         self._detector = detector
+        # 通过实例属性覆盖类常量, 让 cfg 可控
+        self.GAP_FUSE_MS = gap_fuse_ms
+        self.ALPHA_NORMAL = alpha_normal
+        self.PERSON_PENALTY = person_penalty
+        self.FALLBACK_CENTER_TOL = fallback_center_tol
         logger.info(f"[ThresholdedSubImageExtractor] sim_threshold={self.SIM_THRESHOLD} "
                     f"geo_fallback={self.USE_GEOMETRIC_FALLBACK} hfov={self.HFOV_DEG} "
-                    f"center_tol={self.FALLBACK_CENTER_TOL} "
+                    f"center_tol={self.FALLBACK_CENTER_TOL} alpha={self.ALPHA_NORMAL} "
+                    f"gap_fuse_ms={self.GAP_FUSE_MS} person_penalty={self.PERSON_PENALTY} "
                     f"traversability={'ON' if depth_estimator is not None else 'OFF'} "
-                    f"person_penalty={'ON' if detector is not None else 'OFF'}")
+                    f"person_detector={'ON' if detector is not None else 'OFF'}")
 
     def _project_target_to_camera(self, self_pose, target_pose, cam_id,
                                     img_w, img_h):
@@ -239,15 +250,12 @@ class ThresholdedSubImageExtractor(AutoSubImageExtractor):
                 try: return int(v)
                 except (TypeError, ValueError): return 0
             my_ts = _ts_int(node_info.get("timestamp", 0))
-            # 阈值 300s: 只捕获真正数据断档 (memory_test_data Part1→Part2 是 533s).
-            # 同 segment 内相邻 keyframe 间隔 30-120s, 不能误判为断档.
-            GAP_FUSE_MS = 300_000
+            # 阈值 cb_gap_fuse_ms (default 300s): 只捕获真正数据断档.
             # ALPHA 分两档:
-            #   非 FUSED (同 segment, VO 相对可靠): 0.5, 几何先验主导
+            #   非 FUSED (同 segment, VO 相对可靠): cb_alpha_normal, 几何先验主导
             #   FUSED (跨 segment 真断档): 0, geo_bonus 清零让 visual sim 主导
-            ALPHA_NORMAL = 0.5
             geo_bonus = np.zeros_like(sim_matrix)
-            alpha_per = np.full_like(sim_matrix, ALPHA_NORMAL)
+            alpha_per = np.full_like(sim_matrix, self.ALPHA_NORMAL)
             gap_mask = np.zeros_like(sim_matrix, dtype=bool)
             for i, cam_id in enumerate(cam_ids):
                 ca = cam_angles.get(cam_id, 0.0)
@@ -257,7 +265,7 @@ class ThresholdedSubImageExtractor(AutoSubImageExtractor):
                         continue
                     nb_ts = _ts_int(nb_obj.get("timestamp", 0))
                     gap_ms = abs(my_ts - nb_ts) if (my_ts and nb_ts) else 0
-                    if gap_ms > GAP_FUSE_MS:
+                    if gap_ms > self.GAP_FUSE_MS:
                         # 跨真断档: geo_bonus=0 + alpha=0 + 禁反向硬惩罚
                         gap_mask[i][j] = True
                         alpha_per[i][j] = 0.0
@@ -309,9 +317,8 @@ class ThresholdedSubImageExtractor(AutoSubImageExtractor):
                         occluded += (ix2 - ix1) * (iy2 - iy1)
                 ratio = occluded / center_area
                 if ratio > 0.15:
-                    PERSON_PENALTY = 0.30
-                    sim_matrix[i, :] -= PERSON_PENALTY
-                    logger.info(f"  PERSON[{cam_id}] center_occupy={ratio:.2f} -{PERSON_PENALTY}")
+                    sim_matrix[i, :] -= self.PERSON_PENALTY
+                    logger.info(f"  PERSON[{cam_id}] center_occupy={ratio:.2f} -{self.PERSON_PENALTY}")
 
         from scipy.optimize import linear_sum_assignment
         row_ind, col_ind = linear_sum_assignment(-sim_matrix)
@@ -436,13 +443,26 @@ class ConnectionBuilder:
 
     def __init__(self, sim_threshold: float = 0.40, device: str = "cuda:0",
                  qwen_gpu: str = "1", namer=None, depth_estimator=None,
-                 detector=None, **kwargs):
+                 detector=None,
+                 gap_fuse_ms: int = 300_000,
+                 alpha_normal: float = 0.5,
+                 person_penalty: float = 0.30,
+                 fallback_center_tol: float = 0.03,
+                 max_corridor_frames: int = 30,
+                 corridor_sample_count: int = 3,
+                 **kwargs):
         self.sim_threshold = sim_threshold
         self._device = device
         self._qwen_gpu = qwen_gpu
         self._namer = namer
         self._depth_estimator = depth_estimator
         self._detector = detector
+        self._gap_fuse_ms = gap_fuse_ms
+        self._alpha_normal = alpha_normal
+        self._person_penalty = person_penalty
+        self._fallback_center_tol = fallback_center_tol
+        self._max_corridor_frames = max_corridor_frames
+        self._corridor_sample_count = corridor_sample_count
         self._extractor: Optional[ThresholdedSubImageExtractor] = None
 
     def _ensure(self):
@@ -451,7 +471,15 @@ class ConnectionBuilder:
                 sim_threshold=self.sim_threshold,
                 device=self._device, qwen_gpu=self._qwen_gpu,
                 depth_estimator=self._depth_estimator,
-                detector=self._detector)
+                detector=self._detector,
+                gap_fuse_ms=self._gap_fuse_ms,
+                alpha_normal=self._alpha_normal,
+                person_penalty=self._person_penalty,
+                fallback_center_tol=self._fallback_center_tol,
+            )
+            # AutoSubImageExtractor 类常量 (corridor matching) 走实例覆盖
+            self._extractor.MAX_CORRIDOR_FRAMES = self._max_corridor_frames
+            self._extractor.CORRIDOR_SAMPLE_COUNT = self._corridor_sample_count
 
     @staticmethod
     def topo_node_to_dict(node, node_dir: Path, pose_graph=None) -> Dict:

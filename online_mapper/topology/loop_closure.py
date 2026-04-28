@@ -7,6 +7,7 @@
 import logging
 import numpy as np
 import cv2
+from online_mapper.semantics.semantic_dedup import cyclic_cosine
 logger = logging.getLogger(__name__)
 
 
@@ -45,7 +46,7 @@ class LoopCloser:
             f_old = frame_idx_of.get(nid, -1)
             if abs(current_frame_idx - f_old) < self.cfg.loop_closure_min_gap:
                 continue
-            sim = self._cyclic_cosine(current_features, feats)
+            sim = cyclic_cosine(current_features, feats)
             self.update_sim(sim)
             if sim >= thr:
                 candidates.append((nid, float(sim)))
@@ -79,17 +80,3 @@ class LoopCloser:
             logger.debug(f"geom verify failed: {e}")
             return False
 
-    def _cyclic_cosine(self, fa, fb):
-        cams = ['camera_1', 'camera_2', 'camera_3', 'camera_4']
-        if not all(c in fa and c in fb for c in cams):
-            return 0.0
-        best = -1.0
-        for shift in range(4):
-            sims = []
-            for i, c in enumerate(cams):
-                cb = cams[(i + shift) % 4]
-                a = fa[c]; b = fb[cb]
-                s = float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-8))
-                sims.append(s)
-            best = max(best, sum(sims) / 4.0)
-        return best

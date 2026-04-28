@@ -17,7 +17,8 @@ import os, sys, cv2, torch, numpy as np, logging, base64
 from typing import Dict, List, Tuple, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-sys.path.insert(0, '/home/ubuntu/Disk/codes/jianxiong/MemoryNav')
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from memory_nav.qwen35_point_grounder import Qwen35PointGrounder
 
@@ -345,45 +346,6 @@ class AutoSubImageExtractor:
         logger.info(f"  Node {position_id}: generated {len(next_positions)} connections")
         return next_positions
 
-    # ------------------------------------------------------------------
-    # 兼容旧接口
-    # ------------------------------------------------------------------
-    def extract_connection(self, current_node_images, next_node_images,
-                           current_timestamp, next_position_id, output_dir,
-                           intermediate_frames=None, qwen_namer=None):
-        logger.warning("extract_connection called (legacy)")
-        for cam_id in ['camera_1', 'camera_2', 'camera_3', 'camera_4']:
-            cam_path = current_node_images.get(cam_id)
-            if not cam_path:
-                continue
-            cam_img = cv2.imread(cam_path)
-            if cam_img is None:
-                continue
-            result = self._grounder.predict(cam_img, self.POINT_PROMPT)
-            if result['success'] and result['point']:
-                h, w = cam_img.shape[:2]
-                cx = int(result['point'][0] * w)
-                cy = int(result['point'][1] * h)
-                cx, cy = self._fix_point_y(cx, cy, h, w)
-                next_idx = next_position_id.split('_')[0] if '_' in next_position_id else next_position_id
-                crop_paths, norm_boxes, _ = self._save_crops(
-                    cam_img, (cx, cy), output_dir, current_timestamp, cam_id, next_idx)
-                if crop_paths:
-                    return {
-                        "position_id": next_position_id,
-                        "position_name": f"auto_{next_idx}",
-                        "camera_name": cam_id,
-                        "landmark_name": " ",
-                        "big_box": norm_boxes.get('big', ''),
-                        "mid_box": norm_boxes.get('mid', ''),
-                        "small_box": norm_boxes.get('small', ''),
-                        "pixel_box": "",
-                        "crop_image_path": crop_paths.get('big', ''),
-                        "crop_image_paths": crop_paths,
-                        "position_name_eng": f"auto_{next_idx}",
-                        "landmark_name_eng": " ",
-                    }
-        return None
 
     def cleanup(self):
         if self._grounder:

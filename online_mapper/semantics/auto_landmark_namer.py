@@ -16,7 +16,8 @@ v13 改进:
 import os, sys, logging, json, time, base64, re
 from typing import Dict, Tuple, Optional
 import cv2, numpy as np
-sys.path.insert(0, '/home/ubuntu/Disk/codes/jianxiong/MemoryNav')
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 logger = logging.getLogger(__name__)
 
 # vLLM 服务默认地址

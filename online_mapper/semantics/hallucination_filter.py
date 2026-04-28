@@ -30,6 +30,7 @@ from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
+from online_mapper.semantics.semantic_dedup import cyclic_cosine
 
 logger = logging.getLogger(__name__)
 
@@ -462,22 +463,6 @@ class NameDeduplicator:
         self.stats = {"groups_processed": 0, "merges": 0, "suffixed": 0,
                       "aliases": {}}
 
-    @staticmethod
-    def _cyclic_cosine(fa: Dict[str, np.ndarray], fb: Dict[str, np.ndarray]) -> float:
-        cams = ['camera_1', 'camera_2', 'camera_3', 'camera_4']
-        if not all(c in fa and c in fb for c in cams):
-            return 0.0
-        best = -1.0
-        for shift in range(4):
-            sims = []
-            for i, c in enumerate(cams):
-                cb = cams[(i + shift) % 4]
-                a = fa[c]; b = fb[cb]
-                s = float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-8))
-                sims.append(s)
-            best = max(best, sum(sims) / 4.0)
-        return best
-
     def resolve(self,
                 names: Dict[str, Dict[str, str]],
                 topo_nodes: Dict,
@@ -527,7 +512,7 @@ class NameDeduplicator:
                 fb = node_features.get(other)
                 sim = 0.0
                 if fa and fb:
-                    sim = self._cyclic_cosine(fa, fb)
+                    sim = cyclic_cosine(fa, fb)
                 if sim >= self.merge_vpr_threshold:
                     alias_map[other] = anchor
                     merged_here.append(other)

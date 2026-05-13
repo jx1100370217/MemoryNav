@@ -1,0 +1,468 @@
+{
+  "schema_version": "1.0",
+  "name": "baseline_C7_freeze",
+  "commit_sha": "8026582",
+  "frozen_at": "2026-04-29T18:42:33",
+  "output_dir": "/media/ubuntu/Data/codes/jianxiong/MemoryNav/online_mapper/output_C7_baseline",
+  "fingerprints_by_truth_id": {
+    "1": {
+      "match_status": "missing_connection",
+      "self_output_name": "电梯厅",
+      "target_output_name": "前台"
+    },
+    "2": {
+      "match_status": "missing_connection",
+      "self_output_name": "前台",
+      "target_output_name": "前台"
+    },
+    "3": {
+      "match_status": "missing_connection",
+      "self_output_name": "前台",
+      "target_output_name": "电梯厅"
+    },
+    "4": {
+      "match_status": "missing_node",
+      "self_output_name": "前台",
+      "target_output_name": null
+    },
+    "5": {
+      "match_status": "missing_connection",
+      "self_output_name": "前台",
+      "target_output_name": "前台"
+    },
+    "6": {
+      "match_status": "missing_node",
+      "self_output_name": null,
+      "target_output_name": null
+    },
+    "7": {
+      "match_status": "missing_node",
+      "self_output_name": null,
+      "target_output_name": "前台"
+    },
+    "8": {
+      "match_status": "missing_node",
+      "self_output_name": null,
+      "target_output_name": null
+    },
+    "9": {
+      "match_status": "missing_node",
+      "self_output_name": null,
+      "target_output_name": null
+    },
+    "10": {
+      "match_status": "missing_node",
+      "self_output_name": null,
+      "target_output_name": null
+    },
+    "11": {
+      "match_status": "missing_node",
+      "self_output_name": null,
+      "target_output_name": null
+    },
+    "12": {
+      "match_status": "missing_node",
+      "self_output_name": null,
+      "target_output_name": null
+    },
+    "13": {
+      "match_status": "missing_node",
+      "self_output_name": null,
+      "target_output_name": null
+    },
+    "14": {
+      "match_status": "missing_node",
+      "self_output_name": null,
+      "target_output_name": null
+    },
+    "15": {
+      "match_status": "missing_node",
+      "self_output_name": null,
+      "target_output_name": null
+    },
+    "16": {
+      "match_status": "missing_node",
+      "self_output_name": null,
+      "target_output_name": null
+    },
+    "17": {
+      "match_status": "missing_node",
+      "self_output_name": null,
+      "target_output_name": null
+    },
+    "18": {
+      "match_status": "missing_node",
+      "self_output_name": null,
+      "target_output_name": null
+    }
+  },
+  "extras": [
+    {
+      "self_name": "前台_1",
+      "target_name": "DEEPROUTE.AI_1",
+      "actual_cam": "camera_2",
+      "actual_cx": 0.350781
+    },
+    {
+      "self_name": "DEEPROUTE.AI_2",
+      "target_name": "I HAVE CO",
+      "actual_cam": "camera_2",
+      "actual_cx": 0.498177
+    },
+    {
+      "self_name": "DEEPROUTE.AI_3",
+      "target_name": "前台_2",
+      "actual_cam": "camera_1",
+      "actual_cx": 0.498177
+    },
+    {
+      "self_name": "DEEPROUTE.AI_3",
+      "target_name": "DEEPRO",
+      "actual_cam": "camera_4",
+      "actual_cx": 0.498177
+    },
+    {
+      "self_name": "前台_2",
+      "target_name": "DEEPROUTE.AI_3",
+      "actual_cam": "camera_4",
+      "actual_cx": 0.622656
+    },
+    {
+      "self_name": "前台_2",
+      "target_name": "前台_3",
+      "actual_cam": "camera_2",
+      "actual_cx": 0.300781
+    },
+    {
+      "self_name": "前台_3",
+      "target_name": "前台_4",
+      "actual_cam": "camera_2",
+      "actual_cx": 0.61224
+    },
+    {
+      "self_name": "前台_3",
+      "target_name": "前台_2",
+      "actual_cam": "camera_4",
+      "actual_cx": 0.66901
+    },
+    {
+      "self_name": "前台_4",
+      "target_name": "前台_3",
+      "actual_cam": "camera_3",
+      "actual_cx": 0.498177
+    },
+    {
+      "self_name": "前台_4",
+      "target_name": "前台_5",
+      "actual_cam": "camera_1",
+      "actual_cx": 0.651823
+    },
+    {
+      "self_name": "前台_5",
+      "target_name": "会议室",
+      "actual_cam": "camera_2",
+      "actual_cx": 0.3408855
+    },
+    {
+      "self_name": "前台_5",
+      "target_name": "前台_4",
+      "actual_cam": "camera_3",
+      "actual_cx": 0.698177
+    },
+    {
+      "self_name": "会议室",
+      "target_name": "前台_5",
+      "actual_cam": "camera_4",
+      "actual_cx": 0.41015599999999997
+    },
+    {
+      "self_name": "会议室",
+      "target_name": "前台_6",
+      "actual_cam": "camera_2",
+      "actual_cx": 0.360156
+    },
+    {
+      "self_name": "前台_6",
+      "target_name": "3号房",
+      "actual_cam": "camera_1",
+      "actual_cx": 0.60026
+    },
+    {
+      "self_name": "前台_6",
+      "target_name": "会议室",
+      "actual_cam": "camera_4",
+      "actual_cx": 0.55026
+    },
+    {
+      "self_name": "3号房",
+      "target_name": "档案室",
+      "actual_cam": "camera_2",
+      "actual_cx": 0.339844
+    },
+    {
+      "self_name": "3号房",
+      "target_name": "前台_6",
+      "actual_cam": "camera_4",
+      "actual_cx": 0.367969
+    },
+    {
+      "self_name": "卫生间会议室休闲接待区",
+      "target_name": "卫生间 会议室 休闲接待区·PUSH",
+      "actual_cam": "camera_4",
+      "actual_cx": 0.30599
+    },
+    {
+      "self_name": "卫生间",
+      "target_name": "卫生间会议室休闲接待区",
+      "actual_cam": "camera_4",
+      "actual_cx": 0.629948
+    },
+    {
+      "self_name": "卫生间",
+      "target_name": "前台_7",
+      "actual_cam": "camera_2",
+      "actual_cx": 0.260156
+    },
+    {
+      "self_name": "前台_7",
+      "target_name": "前台·DEEPRO",
+      "actual_cam": "camera_2",
+      "actual_cx": 0.300781
+    },
+    {
+      "self_name": "前台·DEEPRO",
+      "target_name": "前台_7",
+      "actual_cam": "camera_4",
+      "actual_cx": 0.267969
+    },
+    {
+      "self_name": "前台·DEEPRO",
+      "target_name": "前台·PROUTE.AI",
+      "actual_cam": "camera_2",
+      "actual_cx": 0.260156
+    },
+    {
+      "self_name": "前台·PROUTE.AI",
+      "target_name": "前台·DEEPRO",
+      "actual_cam": "camera_4",
+      "actual_cx": 0.289844
+    },
+    {
+      "self_name": "前台·PROUTE.AI",
+      "target_name": "前台·iA.3TI",
+      "actual_cam": "camera_2",
+      "actual_cx": 0.282031
+    },
+    {
+      "self_name": "前台·iA.3TI",
+      "target_name": "前台·PROUTE.AI",
+      "actual_cam": "camera_3",
+      "actual_cx": 0.546094
+    },
+    {
+      "self_name": "前台·iA.3TI",
+      "target_name": "电梯厅·FING CR",
+      "actual_cam": "camera_1",
+      "actual_cx": 0.548177
+    },
+    {
+      "self_name": "电梯厅·FING CR",
+      "target_name": "前台·iA.3TI",
+      "actual_cam": "camera_1",
+      "actual_cx": 0.636198
+    },
+    {
+      "self_name": "电梯厅·FING CR",
+      "target_name": "楼梯口",
+      "actual_cam": "camera_2",
+      "actual_cx": 0.270052
+    },
+    {
+      "self_name": "母婴室",
+      "target_name": "电梯厅_1",
+      "actual_cam": "camera_1",
+      "actual_cx": 0.691927
+    },
+    {
+      "self_name": "母婴室",
+      "target_name": "楼梯口",
+      "actual_cam": "camera_4",
+      "actual_cx": 0.349219
+    },
+    {
+      "self_name": "电梯厅_1",
+      "target_name": "母婴室",
+      "actual_cam": "camera_4",
+      "actual_cx": 0.328906
+    },
+    {
+      "self_name": "电梯厅_1",
+      "target_name": "电梯厅_2",
+      "actual_cam": "camera_2",
+      "actual_cx": 0.322135
+    },
+    {
+      "self_name": "电梯厅_2",
+      "target_name": "电梯厅_1",
+      "actual_cam": "camera_4",
+      "actual_cx": 0.3658855
+    },
+    {
+      "self_name": "电梯厅_2",
+      "target_name": "茶水间·DEEPROUTE.AI",
+      "actual_cam": "camera_2",
+      "actual_cx": 0.350781
+    },
+    {
+      "self_name": "茶水间·DEEPROUTE.AI",
+      "target_name": "电梯厅_2",
+      "actual_cam": "camera_3",
+      "actual_cx": 0.6778645000000001
+    },
+    {
+      "self_name": "茶水间·DEEPROUTE.AI",
+      "target_name": "打印区_1",
+      "actual_cam": "camera_2",
+      "actual_cx": 0.3690105
+    },
+    {
+      "self_name": "打印区_1",
+      "target_name": "茶水间·DEEPROUTE.AI",
+      "actual_cam": "camera_4",
+      "actual_cx": 0.3502605
+    },
+    {
+      "self_name": "打印区_1",
+      "target_name": "打印区_2",
+      "actual_cam": "camera_2",
+      "actual_cx": 0.3502605
+    },
+    {
+      "self_name": "打印区_2",
+      "target_name": "前台_8",
+      "actual_cam": "camera_2",
+      "actual_cx": 0.574219
+    },
+    {
+      "self_name": "打印区_2",
+      "target_name": "打印区_1",
+      "actual_cam": "camera_3",
+      "actual_cx": 0.536198
+    },
+    {
+      "self_name": "前台_8",
+      "target_name": "打印区_2",
+      "actual_cam": "camera_4",
+      "actual_cx": 0.348177
+    },
+    {
+      "self_name": "前台_8",
+      "target_name": "会议室 休闲接待区·DEEPROUTE.AI",
+      "actual_cam": "camera_2",
+      "actual_cx": 0.304948
+    },
+    {
+      "self_name": "会议室 休闲接待区·DEEPROUTE.AI",
+      "target_name": "前台_8",
+      "actual_cam": "camera_3",
+      "actual_cx": 0.75026
+    },
+    {
+      "self_name": "卫生间/会议室/休闲接待区",
+      "target_name": "强电室",
+      "actual_cam": "camera_4",
+      "actual_cx": 0.346094
+    },
+    {
+      "self_name": "卫生间/会议室/休闲接待区",
+      "target_name": "卫生间 会议室 休闲接待区·PUSH",
+      "actual_cam": "camera_2",
+      "actual_cx": 0.420052
+    },
+    {
+      "self_name": "档案室",
+      "target_name": "4号房",
+      "actual_cam": "camera_2",
+      "actual_cx": 0.30026
+    },
+    {
+      "self_name": "档案室",
+      "target_name": "3号房",
+      "actual_cam": "camera_4",
+      "actual_cx": 0.33776
+    },
+    {
+      "self_name": "4号房",
+      "target_name": "档案室",
+      "actual_cam": "camera_3",
+      "actual_cx": 0.629948
+    },
+    {
+      "self_name": "强电室",
+      "target_name": "卫生间/会议室/休闲接待区",
+      "actual_cam": "camera_2",
+      "actual_cx": 0.350781
+    },
+    {
+      "self_name": "卫生间 会议室 休闲接待区·PUSH",
+      "target_name": "卫生间会议室休闲接待区",
+      "actual_cam": "camera_2",
+      "actual_cx": 0.45807299999999995
+    },
+    {
+      "self_name": "卫生间 会议室 休闲接待区·PUSH",
+      "target_name": "卫生间/会议室/休闲接待区",
+      "actual_cam": "camera_4",
+      "actual_cx": 0.360156
+    },
+    {
+      "self_name": "楼梯口",
+      "target_name": "电梯厅·FING CR",
+      "actual_cam": "camera_3",
+      "actual_cx": 0.639844
+    },
+    {
+      "self_name": "楼梯口",
+      "target_name": "母婴室",
+      "actual_cam": "camera_2",
+      "actual_cx": 0.30911500000000003
+    },
+    {
+      "self_name": "DEEPROUTE.AI_1",
+      "target_name": "前台_1",
+      "actual_cam": "camera_4",
+      "actual_cx": 0.398177
+    },
+    {
+      "self_name": "DEEPROUTE.AI_1",
+      "target_name": "DEEPROUTE.AI_2",
+      "actual_cam": "camera_2",
+      "actual_cx": 0.260156
+    },
+    {
+      "self_name": "I HAVE CO",
+      "target_name": "DEEPROUTE.AI_2",
+      "actual_cam": "camera_4",
+      "actual_cx": 0.498177
+    },
+    {
+      "self_name": "I HAVE CO",
+      "target_name": "DEEPRO",
+      "actual_cam": "camera_2",
+      "actual_cx": 0.30026
+    },
+    {
+      "self_name": "DEEPRO",
+      "target_name": "I HAVE CO",
+      "actual_cam": "camera_4",
+      "actual_cx": 0.498177
+    },
+    {
+      "self_name": "DEEPRO",
+      "target_name": "DEEPROUTE.AI_3",
+      "actual_cam": "camera_1",
+      "actual_cx": 0.429948
+    }
+  ],
+  "comment": "Gate 1 锚: 后续 run 的 cam 必须等于 actual_cam (matched 项), 且 missing 项不得变 matched 后退化, extras 必须保留 (cam 同; cx 偏差 < 0.01)"
+}

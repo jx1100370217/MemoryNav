@@ -267,15 +267,27 @@ class MultiFrameVoter:
         "哺乳", "哺乳室", "care",
     )
 
+    # plate 字符数最低门槛 (R1 截断 reject):
+    # 中文字符 < N 直接 reject (e.g. "门" 单字 / "C" 这种过短的合法 plate 应靠 building landmark RE 兜底)
+    # 英文/数字字符 < N 直接 reject (e.g. "iA"/"CR" OCR 截断)
+    MIN_CHINESE_CHARS = 2
+    MIN_ENGLISH_CHARS = 4
+
     def __init__(self, min_frames: int = None, min_cameras: int = None,
                  allow_single_frame_whitelist: bool = True,
-                 min_max_area: float = None):
+                 min_max_area: float = None,
+                 min_chinese_chars: int = None,
+                 min_english_chars: int = None):
         if min_frames is not None:
             self.MIN_FRAMES = min_frames
         if min_cameras is not None:
             self.MIN_CAMERAS = min_cameras
         if min_max_area is not None:
             self.MIN_MAX_AREA = min_max_area
+        if min_chinese_chars is not None:
+            self.MIN_CHINESE_CHARS = min_chinese_chars
+        if min_english_chars is not None:
+            self.MIN_ENGLISH_CHARS = min_english_chars
         self._votes: Dict[str, List[NameVote]] = {}
         self.allow_single_frame_whitelist = allow_single_frame_whitelist
 
@@ -319,7 +331,43 @@ class MultiFrameVoter:
     # ≥ 4 votes (min observed: B座 = 4).
     _BUILDING_LANDMARK_MIN_VOTES = 4
 
+    @classmethod
+    def _has_valid_plate_format(cls, name: str) -> bool:
+        """plate 格式合法性: 字符数门槛 + OCR 截断模式 reject.
+
+        building landmark (A 座/D 栋) 由 _BUILDING_LANDMARK_RE 单独判, 不走此门槛.
+
+        Reject 三类:
+          1. 中文字符 < MIN_CHINESE_CHARS (e.g. '门' 单字)
+          2. 英文/数字字符 < MIN_ENGLISH_CHARS (e.g. 'CR')
+          3. OCR 截断典型模式: 混大小写 + (数字 OR 点) + 短串 (< 10 字)
+             (e.g. 'iA.3TI' = 'DEEPROUTE.AI' 的截断错认; 'PROUTE.AI'-class 通过 LCS 合并; 此规则兜 LCS 无法处理的零碎模式)
+        """
+        if cls._is_building_landmark_name(name):
+            return True
+        s = (name or "").strip()
+        if not s:
+            return False
+        cn_chars = sum(1 for c in s if "一" <= c <= "鿿")
+        en_chars = sum(1 for c in s if c.isalnum() and not ("一" <= c <= "鿿"))
+        if cn_chars > 0 and cn_chars < cls.MIN_CHINESE_CHARS:
+            return False
+        if cn_chars == 0 and en_chars > 0 and en_chars < cls.MIN_ENGLISH_CHARS:
+            return False
+        # OCR 截断模式: 纯英文+混大小写+(数字 OR 点)+短串
+        if cn_chars == 0:
+            has_lower = any(c.islower() for c in s)
+            has_upper = any(c.isupper() for c in s)
+            has_digit = any(c.isdigit() for c in s)
+            has_dot = "." in s
+            if has_lower and has_upper and (has_digit or has_dot) and len(s) < 10:
+                return False
+        return True
+
     def is_confirmed(self, name: str) -> bool:
+        # R1: plate 格式校验 (字符数 + OCR 截断模式) 优先 reject
+        if not self._has_valid_plate_format(name):
+            return False
         vs = self._votes.get(name, [])
         if not vs:
             return False
@@ -399,29 +447,76 @@ class MultiFrameVoter:
         # 仅作用于 4-8 字符全大写英文串 (招牌典型形态), 中文/混合不动
         is_caps = lambda s: bool(_re.fullmatch(r"[A-Z]{4,8}", s))
         latin_keys = [k for k in self._votes.keys() if is_caps(k)]
-        if len(latin_keys) < 2:
-            return
-        # 按票数降序作 anchor (票多的吃票少的)
-        latin_keys.sort(key=lambda k: (-len(self._votes[k]), -len(k)))
-        absorbed: Dict[str, str] = {}
-        for i, anchor in enumerate(latin_keys):
-            if anchor in absorbed:
+        if len(latin_keys) >= 2:
+            # 按票数降序作 anchor (票多的吃票少的)
+            latin_keys.sort(key=lambda k: (-len(self._votes[k]), -len(k)))
+            absorbed: Dict[str, str] = {}
+            for i, anchor in enumerate(latin_keys):
+                if anchor in absorbed:
+                    continue
+                for cand in latin_keys[i + 1:]:
+                    if cand in absorbed:
+                        continue
+                    if abs(len(anchor) - len(cand)) > 2:
+                        continue
+                    d = self._edit_distance(anchor, cand)
+                    # 距离阈值: 长度 4 -> 1, 长度 >=5 -> 2
+                    max_d = 1 if min(len(anchor), len(cand)) <= 4 else 2
+                    if d <= max_d:
+                        self._votes[anchor].extend(self._votes[cand])
+                        absorbed[cand] = anchor
+                        logger.info(f"[Voter] OCR-fuzzy merged '{cand}' -> '{anchor}' "
+                                    f"(edit_distance={d})")
+            for k in absorbed:
+                self._votes.pop(k, None)
+
+        # 第 3 阶段: LCS 截断/前后缀变体合并 (R1 修法)
+        # 处理 OCR 截断 prefix/suffix/middle 截断, e.g.
+        #   "DEEPROUTE.AI" / "DEEPRO" / "ROUTE.AI" / "PROUTE.AI" / "iA.3TI" / "TE.AI" 应合并
+        #   "FINGER CROXX" / "FING CR" / "GER CROXX" / "ANGER CROXX" 应合并
+        # 规则: 若两 plate 的 LCS 覆盖率 cov_min ≥ 0.7 (短串大部分被长串覆盖)
+        #       且 cov_max ≥ 0.4 (有显著公共子序列), 视为同源 → 票多者作 anchor 吸收
+        keys = sorted(self._votes.keys(), key=lambda k: (-len(self._votes[k]), -len(k)))
+        absorbed2: Dict[str, str] = {}
+        for i, anchor in enumerate(keys):
+            if anchor in absorbed2:
                 continue
-            for cand in latin_keys[i + 1:]:
-                if cand in absorbed:
+            if len(anchor) < 4:
+                continue
+            for cand in keys[i + 1:]:
+                if cand in absorbed2 or cand == anchor:
                     continue
-                if abs(len(anchor) - len(cand)) > 2:
+                if len(cand) < 4:
                     continue
-                d = self._edit_distance(anchor, cand)
-                # 距离阈值: 长度 4 -> 1, 长度 >=5 -> 2
-                max_d = 1 if min(len(anchor), len(cand)) <= 4 else 2
-                if d <= max_d:
+                lcs = self._lcs_len(anchor, cand)
+                if lcs < 3:
+                    continue
+                cov_max = lcs / max(len(anchor), len(cand))
+                cov_min = lcs / min(len(anchor), len(cand))
+                if cov_min >= 0.7 and cov_max >= 0.4:
                     self._votes[anchor].extend(self._votes[cand])
-                    absorbed[cand] = anchor
-                    logger.info(f"[Voter] OCR-fuzzy merged '{cand}' -> '{anchor}' "
-                                f"(edit_distance={d})")
-        for k in absorbed:
+                    absorbed2[cand] = anchor
+                    logger.info(f"[Voter] LCS-truncation merged '{cand}' -> '{anchor}' "
+                                f"(lcs={lcs}, cov_min={cov_min:.2f}, cov_max={cov_max:.2f})")
+        for k in absorbed2:
             self._votes.pop(k, None)
+
+    @staticmethod
+    def _lcs_len(a: str, b: str) -> int:
+        """最长公共子序列长度 (用于 OCR 截断/中间断的合并判定)."""
+        la, lb = len(a), len(b)
+        if la == 0 or lb == 0:
+            return 0
+        prev = [0] * (lb + 1)
+        for i in range(1, la + 1):
+            cur = [0] * (lb + 1)
+            for j in range(1, lb + 1):
+                if a[i - 1] == b[j - 1]:
+                    cur[j] = prev[j - 1] + 1
+                else:
+                    cur[j] = max(prev[j], cur[j - 1])
+            prev = cur
+        return prev[lb]
 
     def confirmed_names(self) -> List[str]:
         # 先做子串合并 (idempotent), 再判断

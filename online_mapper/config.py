@@ -95,3 +95,18 @@ class OnlineMapperConfig:
 
     # ==== JunctionDetector ====
     junction_open_depth_thresh: float = 1.8
+
+    # ==== Region/Area finalize (refactor) ====
+    # 数据集场景类型, area_bootstrapper 输入. indoor/outdoor 单类型 → 单 area 不分类.
+    # mixed/auto → 按 plate 关键词分组 (A 座/楼 → indoor, 广场/园区路 → outdoor).
+    dataset_kind: str = "indoor"
+    # region 聚类目标数量上限 (eigengap 自动选 k 时的硬上限, 防过细)
+    region_cluster_k_max: int = 12
+    # region 聚类的 DINO 特征 vs 空间距离权重 (0.0 = 纯空间, 1.0 = 纯特征)
+    region_cluster_feature_weight: float = 0.6
+    # region 内最少节点数 (小于则与最近 region 合并)
+    region_min_nodes: int = 1
+    # plate 截断 reject: 中文 plate 长度 < 此阈值 reject
+    plate_min_chinese_chars: int = 2
+    # plate 截断 reject: 英文 plate 长度 < 此阈值 reject
+    plate_min_english_chars: int = 4

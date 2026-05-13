@@ -1,0 +1,501 @@
+{
+  "schema_version": "3.0",
+  "comment": "C7-only truth, 三层 verdict: area + region + region_edge. node 级 truth 仅作辅助, 不强制. 来源: drawer c7_spatial_map_2026_04_29.",
+  "datasets": {
+    "Mappingdata_C7": {
+      "role": "primary",
+      "n_frames": 390,
+      "ts_unit": "seconds",
+      "ts_first": 1777447297,
+      "ts_last": 1777447686,
+      "duration_sec": 389,
+      "n_cameras": 4,
+      "expected_kind": "indoor",
+      "topology_loop_closes_at_origin": true
+    }
+  },
+  "cameras": {
+    "camera_1": {
+      "azimuth_deg": 39.42,
+      "facing": "forward-left"
+    },
+    "camera_2": {
+      "azimuth_deg": -35.84,
+      "facing": "forward-right"
+    },
+    "camera_3": {
+      "azimuth_deg": -142.04,
+      "facing": "rear-right"
+    },
+    "camera_4": {
+      "azimuth_deg": 143.52,
+      "facing": "rear-left"
+    }
+  },
+  "areas": [
+    {
+      "area_id": "default__indoor",
+      "kind": "indoor_floor",
+      "name": "DEEPROUTE.AI 一层",
+      "name_eng": "DEEPROUTE.AI Floor 1",
+      "expected_region_count_min": 8,
+      "expected_region_count_max": 12,
+      "expected_region_ids_canonical": [
+        "default__indoor__reception",
+        "default__indoor__exhibition_hall",
+        "default__indoor__glass_corridor",
+        "default__indoor__lounge_b_logo",
+        "default__indoor__meeting_room_corridor",
+        "default__indoor__bathroom_signpost_corridor",
+        "default__indoor__second_reception",
+        "default__indoor__elevator_hall",
+        "default__indoor__server_room",
+        "default__indoor__open_office_pantry",
+        "default__indoor__copy_room",
+        "default__indoor__office_bar"
+      ]
+    }
+  ],
+  "regions": [
+    {
+      "region_id": "default__indoor__reception",
+      "name": "起点接待台",
+      "name_eng": "Origin Reception",
+      "category": "lobby",
+      "t_sec_range": [
+        0,
+        13
+      ],
+      "expected_landmarks": [
+        "玻璃门 1",
+        "RECEPTION AREA 绿植墙文字",
+        "DEEPROUTE.AI 蓝字 logo",
+        "大白柱",
+        "绿植墙",
+        "DEEPROUTE.AI 蓝字 logo (远处)"
+      ],
+      "expected_min_nodes": 1,
+      "expected_max_nodes": 4,
+      "regression_lock": true,
+      "loop_endpoint": "both",
+      "t_sec_range_extra": [
+        366,
+        388
+      ],
+      "comment": "闭环起终点同一物理位置 (t=0~13 起点 + t=366~388 终点 RECEPTION AREA 入口). 标识牌写 RECEPTION AREA / 接待区 / DEEPROUTE.AI 蓝字 logo / 大白柱.",
+      "expected_description_hints": [
+        "DEEPROUTE",
+        "蓝字",
+        "接待台",
+        "大白柱",
+        "玻璃门"
+      ]
+    },
+    {
+      "region_id": "default__indoor__exhibition_hall",
+      "name": "展厅",
+      "name_eng": "Exhibition Hall",
+      "category": "function_area",
+      "t_sec_range": [
+        14,
+        38
+      ],
+      "expected_landmarks": [
+        "椭圆展示台",
+        "蜂窝合作企业墙 (3 合作企业)",
+        "R logo 文字墙 (DEEPROUTE.AI/I HAVE CONTROL/有没有可能)",
+        "大屏幕 (行业领先 AI)",
+        "1/2/3 号区位",
+        "阶梯座",
+        "穹顶光阵"
+      ],
+      "expected_min_nodes": 1,
+      "expected_max_nodes": 3,
+      "comment": "当前 baseline 错把展厅识为 5 个节点 (DEEPROUTE.AI_1/2/3 + I HAVE CO + DEEPRO), 重构后应聚 1-2 个 region",
+      "expected_description_hints": [
+        "椭圆",
+        "展示台",
+        "蜂窝",
+        "合作企业",
+        "I HAVE CONTROL",
+        "DEEPROUTE.AI",
+        "阶梯",
+        "大屏幕"
+      ]
+    },
+    {
+      "region_id": "default__indoor__glass_corridor",
+      "name": "玻璃幕墙过渡走廊",
+      "name_eng": "Glass Corridor",
+      "category": "corridor",
+      "t_sec_range": [
+        39,
+        64
+      ],
+      "expected_landmarks": [
+        "磨砂玻璃幕墙",
+        "黄色引导线",
+        "白墙"
+      ],
+      "expected_min_nodes": 0,
+      "expected_max_nodes": 2,
+      "comment": "纯过渡段, 可允许 0 节点 (KF 跳过) 或合并到邻 region",
+      "expected_description_hints": [
+        "玻璃幕墙",
+        "走廊",
+        "黄色引导线"
+      ]
+    },
+    {
+      "region_id": "default__indoor__lounge_b_logo",
+      "name": "B logo 休息亭",
+      "name_eng": "B-logo Lounge",
+      "category": "function_area",
+      "t_sec_range": [
+        65,
+        110
+      ],
+      "expected_landmarks": [
+        "B 字绿植 logo",
+        "办公吧台",
+        "橙色伞椅",
+        "蓝椅",
+        "绿色椅子",
+        "饮水机"
+      ],
+      "expected_min_nodes": 1,
+      "expected_max_nodes": 3,
+      "comment": "当前 baseline 错识为 4 个 '前台'(_2/_3/_4/_5) + 后段进会议室. 重构后应 1-2 region",
+      "expected_description_hints": [
+        "B logo",
+        "绿植",
+        "休息亭",
+        "橙色伞椅",
+        "蓝椅",
+        "绿色椅子"
+      ]
+    },
+    {
+      "region_id": "default__indoor__meeting_room_corridor",
+      "name": "会议室走廊",
+      "name_eng": "Meeting Room Corridor",
+      "category": "corridor",
+      "t_sec_range": [
+        111,
+        130
+      ],
+      "expected_landmarks": [
+        "3 号木门",
+        "4 号木门",
+        "2 号木门",
+        "消防栓",
+        "档案室",
+        "强电室"
+      ],
+      "expected_min_nodes": 1,
+      "expected_max_nodes": 6,
+      "comment": "门牌 1/2/3/4/5 号房 + 档案室 + 强电室 各自可独立成 node 或合到一个 region",
+      "expected_description_hints": [
+        "号门",
+        "号房",
+        "档案室",
+        "强电室",
+        "消防栓"
+      ]
+    },
+    {
+      "region_id": "default__indoor__bathroom_signpost_corridor",
+      "name": "卫生间区指引走廊",
+      "name_eng": "Bathroom Signpost Corridor",
+      "category": "corridor",
+      "t_sec_range": [
+        131,
+        170
+      ],
+      "expected_landmarks": [
+        "卫生间·会议室·休闲接待区方向指示牌 (3 种分隔变体: 无分隔/空格/斜杠)",
+        "走廊延伸",
+        "多扇推门 (PUSH)",
+        "卫生间入口",
+        "强电室门"
+      ],
+      "expected_min_nodes": 1,
+      "expected_max_nodes": 2,
+      "comment": "此处是走廊段, plate \"卫生间·会议室·休闲接待区\" 是箭头指示牌指向 3 个 region 方向, 不是该位置本身. 当前 baseline 错把 3 种分隔变体识为 3 独立 node (id 14/40/44), 应正规化合 1 region.",
+      "expected_description_hints": [
+        "卫生间",
+        "会议室",
+        "休闲接待区",
+        "走廊",
+        "PUSH",
+        "推门"
+      ]
+    },
+    {
+      "region_id": "default__indoor__second_reception",
+      "name": "第二接待区",
+      "name_eng": "Second Reception",
+      "category": "lobby",
+      "t_sec_range": [
+        175,
+        205
+      ],
+      "expected_landmarks": [
+        "DEEPROUTE.AI 蓝字 logo",
+        "高大绿植墙",
+        "办公桌椅",
+        "大白柱"
+      ],
+      "expected_min_nodes": 1,
+      "expected_max_nodes": 3,
+      "comment": "起点接待台之外的第二个 DEEPROUTE 接待区 (物理位置不同). 当前 baseline 错识为多个 '前台·DEEPRO/PROUTE.AI/iA.3TI' (plate 截断幻觉). 重构后应 1 region",
+      "expected_description_hints": [
+        "DEEPROUTE",
+        "蓝字",
+        "高大绿植",
+        "办公桌",
+        "柱子"
+      ]
+    },
+    {
+      "region_id": "default__indoor__elevator_hall",
+      "name": "电梯厅",
+      "name_eng": "Elevator Hall",
+      "category": "landmark_facility",
+      "t_sec_range": [
+        209,
+        245
+      ],
+      "expected_landmarks": [
+        "7 号楼层标",
+        "电梯门",
+        "垃圾桶",
+        "绿色出口标"
+      ],
+      "expected_min_nodes": 1,
+      "expected_max_nodes": 2,
+      "comment": "当前 baseline 错识为 3 个 (电梯厅·FING CR + 电梯厅_1 + 电梯厅_2 + 楼梯口). 重构后应 1-2 region",
+      "expected_description_hints": [
+        "电梯",
+        "楼层",
+        "7号",
+        "垃圾桶"
+      ]
+    },
+    {
+      "region_id": "default__indoor__server_room",
+      "name": "服务器机房走廊",
+      "name_eng": "Server Room Corridor",
+      "category": "corridor",
+      "t_sec_range": [
+        246,
+        295
+      ],
+      "expected_landmarks": [
+        "服务器机柜",
+        "绿色/蓝色指示灯",
+        "白色防火双开门 (红标识)",
+        "消防控制箱"
+      ],
+      "expected_min_nodes": 0,
+      "expected_max_nodes": 3,
+      "comment": "当前 baseline 完全 KF-REJECT 没生成. 重构 R1 节点级修加 KF scene 兜底后应识别",
+      "expected_description_hints": [
+        "服务器",
+        "机柜",
+        "指示灯",
+        "防火门",
+        "消防控制",
+        "机房"
+      ]
+    },
+    {
+      "region_id": "default__indoor__open_office_pantry",
+      "name": "大办公区+茶水间",
+      "name_eng": "Open Office + Pantry",
+      "category": "function_area",
+      "t_sec_range": [
+        296,
+        334
+      ],
+      "expected_landmarks": [
+        "自动售货机",
+        "冰柜",
+        "灰沙发休息亭",
+        "哆啦A梦装饰",
+        "绿植墙",
+        "母婴室"
+      ],
+      "expected_min_nodes": 1,
+      "expected_max_nodes": 4,
+      "comment": "当前 baseline 识为 茶水间·DEEPROUTE.AI + 母婴室",
+      "expected_description_hints": [
+        "售货机",
+        "冰柜",
+        "茶水间",
+        "哆啦A梦",
+        "母婴室"
+      ]
+    },
+    {
+      "region_id": "default__indoor__copy_room",
+      "name": "复印间",
+      "name_eng": "Copy Room",
+      "category": "function_area",
+      "t_sec_range": [
+        335,
+        344
+      ],
+      "expected_landmarks": [
+        "复印机",
+        "办公设备",
+        "玻璃幕墙"
+      ],
+      "expected_min_nodes": 1,
+      "expected_max_nodes": 2,
+      "comment": "当前 baseline 识为 打印区_1 + 打印区_2",
+      "expected_description_hints": [
+        "打印",
+        "复印",
+        "办公设备"
+      ]
+    },
+    {
+      "region_id": "default__indoor__office_bar",
+      "name": "办公吧台·咖啡台",
+      "name_eng": "Office Bar / Cafe",
+      "category": "function_area",
+      "t_sec_range": [
+        345,
+        365
+      ],
+      "expected_landmarks": [
+        "高吧台",
+        "饮水机",
+        "绿植墙",
+        "花瓶",
+        "大白柱"
+      ],
+      "expected_min_nodes": 1,
+      "expected_max_nodes": 2,
+      "comment": "当前 baseline 错识为 '前台_8'. 重构后应正确归类",
+      "expected_description_hints": [
+        "吧台",
+        "咖啡",
+        "饮水机"
+      ]
+    }
+  ],
+  "region_edges": [
+    {
+      "u": "default__indoor__reception",
+      "v": "default__indoor__exhibition_hall",
+      "direction": "bidirectional",
+      "expected_tags": []
+    },
+    {
+      "u": "default__indoor__exhibition_hall",
+      "v": "default__indoor__glass_corridor",
+      "direction": "bidirectional",
+      "expected_tags": []
+    },
+    {
+      "u": "default__indoor__glass_corridor",
+      "v": "default__indoor__lounge_b_logo",
+      "direction": "bidirectional",
+      "expected_tags": []
+    },
+    {
+      "u": "default__indoor__lounge_b_logo",
+      "v": "default__indoor__meeting_room_corridor",
+      "direction": "bidirectional",
+      "expected_tags": []
+    },
+    {
+      "u": "default__indoor__meeting_room_corridor",
+      "v": "default__indoor__bathroom_signpost_corridor",
+      "direction": "bidirectional",
+      "expected_tags": []
+    },
+    {
+      "u": "default__indoor__bathroom_signpost_corridor",
+      "v": "default__indoor__second_reception",
+      "direction": "bidirectional",
+      "expected_tags": []
+    },
+    {
+      "u": "default__indoor__second_reception",
+      "v": "default__indoor__elevator_hall",
+      "direction": "bidirectional",
+      "expected_tags": []
+    },
+    {
+      "u": "default__indoor__elevator_hall",
+      "v": "default__indoor__server_room",
+      "direction": "bidirectional",
+      "expected_tags": []
+    },
+    {
+      "u": "default__indoor__server_room",
+      "v": "default__indoor__open_office_pantry",
+      "direction": "bidirectional",
+      "expected_tags": []
+    },
+    {
+      "u": "default__indoor__open_office_pantry",
+      "v": "default__indoor__copy_room",
+      "direction": "bidirectional",
+      "expected_tags": []
+    },
+    {
+      "u": "default__indoor__copy_room",
+      "v": "default__indoor__office_bar",
+      "direction": "bidirectional",
+      "expected_tags": []
+    },
+    {
+      "u": "default__indoor__office_bar",
+      "v": "default__indoor__reception",
+      "direction": "bidirectional",
+      "expected_tags": [
+        "loop_close"
+      ],
+      "comment": "闭环 edge: 办公吧台 -> 起点接待台"
+    }
+  ],
+  "scoring": {
+    "gate0_required_files_v2": [
+      "manifest.json",
+      "area_tree.json",
+      "region_graph.json",
+      "metrics.json",
+      "areas/<area_id>/area_info.json",
+      "areas/<area_id>/regions/<region_id>/region_info.json",
+      "areas/<area_id>/regions/<region_id>/nodes/<node_id>/node_position_info.json"
+    ],
+    "gate1_area_rule": "actual area count == 1 AND kind == 'indoor_floor' (用户明示 dataset_kind=indoor)",
+    "gate2_region_rule": "至少 8 个 expected region 被覆盖 (按 t_sec_range 与 actual region 节点 ts 重叠 > 50%); region category 在期望集合内; region 内节点数在 [expected_min_nodes, expected_max_nodes]",
+    "gate3_region_edge_rule": "至少 9 个 expected edge 在 region_graph.json 出现 (按 (u,v) 对集); 闭环 edge (loop_close tag) 必须存在",
+    "gate4_node_count_rule": "总节点数应大幅下降于 baseline 34 (期望 13-25 个), 节点过度细分被 region 抽象层吸收",
+    "convergence_target": "12/12 region 都被识别 + 12/12 edge 都生成 + 闭环 tag 正确 = 完美收敛"
+  },
+  "anti_amnesia_blocklist": {
+    "do_not_introduce": [
+      "SigLIP / CLIP indoor/outdoor 二分类 — 用户明示只用 DINO. dataset_kind config 字段 + plate 关键词替代.",
+      "FAISS index in online_mapper — memory_nav 自己有 VPR, online_mapper 不做检索.",
+      "T5 文本检索 — vln_mem 用但 online_mapper 不需要."
+    ],
+    "do_not_revert": [
+      "plate_voter 截断 reject (R1 实施) — 一旦加, 不要撤. 若让某些短 plate 漏掉, 加到 whitelist 而不是回滚 reject 规则."
+    ]
+  },
+  "comment_for_audit": "Verify 时不需要逐 connection 视觉判 cam (新 schema 是 region 级). Audit 流程: (1) Gate 0 自动判文件结构 (2) Gate 1-3 自动判 area/region/edge 结构 (3) 抽样视觉 audit ~5 个 region 的 anchor frame + 邻 edge crops 看是否合理. 不再做 18 connection 全量 audit.",
+  "feature_backbone": {
+    "name": "DINOv3 ViT-B/16",
+    "source": "memory_nav.sub_image_matcher.DINOv3Strategy (复用)",
+    "patch_size": 16,
+    "embedding_dim": 768,
+    "register_tokens": 4,
+    "comment": "与 memory_nav 使用同一模型 + 同一权重文件 (dinov3_vitb16.safetensors), 单次加载, online_mapper region_clusterer 复用 extract_grid_features API."
+  }
+}

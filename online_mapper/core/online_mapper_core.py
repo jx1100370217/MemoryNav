@@ -67,6 +67,9 @@ _BLD_BASE_RE = _re_canon.compile(r"^([A-Za-z0-9]+(?:号)?(?:座|楼|栋))")
 
 # Pass A: 同 canonical 但物理位置远的 node 不应合并 (例: 起点电梯厅 vs H 座电梯厅)
 _SPATIAL_MERGE_DIST_M = 3.0
+# 同 canonical name 但 timestamp 间隔大于此阈值 (秒) 时不合并:
+# 当 VO scale 漂移导致 pose 距离不可信, timestamp 间隔是物理远近的保守下界.
+_SAME_NAME_TIME_GAP_S = 60.0
 # Pass D: 保安亭/岗亭 scene_describe 文本集合
 _BOOTH_TOKENS = {"岗亭", "保安亭", "值班亭", "门岗"}
 # Pass C: 柜区分类常量
@@ -1197,6 +1200,66 @@ class OnlineMapperCore:
                     logger.error(f"ConnectionBuilder failed: {e}")
                     import traceback; traceback.print_exc()
 
+        # 4.5 Region clustering + Area bootstrap + V2 schema 写出 (R2/R3/R4 重构)
+        # 接管 v1 平铺布局: 把节点目录搬到 areas/<a>/regions/<r>/nodes/<id>/
+        # 失败不阻塞主流程 (v1 节点目录仍在原位, scene_graph/pose_graph 等仍写到 parent)
+        try:
+            from online_mapper.topology.region_clusterer import (
+                RegionClusterer, extract_dino_fused_feature)
+            from online_mapper.semantics.area_bootstrapper import AreaBootstrapper
+            from online_mapper.io.v2_writer import V2Writer
+
+            with _time_stage("region_clustering"):
+                # 加载 DINOv3 (复用 memory_nav.sub_image_matcher); 加载失败则 features 全零, 退化为纯空间聚类
+                dino_strat = None
+                try:
+                    from memory_nav.sub_image_matcher import DINOv3Strategy
+                    dino_strat = DINOv3Strategy()
+                except Exception as e:
+                    logger.warning(f"[V2] DINOv3 load failed, region clustering 退化空间-only: {e}")
+
+                node_dino_features: Dict[str, np.ndarray] = {}
+                if dino_strat is not None:
+                    for nid, node in self.topo.nodes.items():
+                        try:
+                            f = extract_dino_fused_feature(node, dino_strat)
+                            if f is not None:
+                                node_dino_features[nid] = f
+                        except Exception as e:
+                            logger.debug(f"[V2] node {nid} DINO extract failed: {e}")
+
+                rc = RegionClusterer(
+                    feature_weight=getattr(self.cfg, "region_cluster_feature_weight", 0.5),
+                    spatial_weight=0.3, plate_weight=0.2,
+                    k_max=getattr(self.cfg, "region_cluster_k_max", 12),
+                    min_nodes_per_region=getattr(self.cfg, "region_min_nodes", 1),
+                )
+                regions = rc.cluster(
+                    self.topo.nodes, node_dino_features, self.pose_graph,
+                    area_id_prefix=f"default__{getattr(self.cfg, 'dataset_kind', 'indoor')}",
+                )
+                ab = AreaBootstrapper(
+                    dataset_kind=getattr(self.cfg, "dataset_kind", "indoor"),
+                    site_id="default",
+                )
+                areas = ab.bootstrap(regions, self.topo.nodes)
+                logger.info(f"[V2] regions={len(regions)} areas={len(areas)} "
+                            f"(dino_feats={len(node_dino_features)}/{len(self.topo.nodes)})")
+
+            self.metrics["n_regions"] = len(regions)
+            self.metrics["n_areas"] = len(areas)
+
+            with _time_stage("v2_writer"):
+                v2 = V2Writer(out_root.parent)
+                v2_stats = v2.finalize_v2(
+                    out_root, regions, areas, self.pose_graph, self.topo.nodes
+                )
+                self.metrics["v2_writer"] = v2_stats
+                logger.info(f"[V2] schema written: {v2_stats}")
+        except Exception as e:
+            logger.error(f"[V2] schema write failed: {e}")
+            import traceback; traceback.print_exc()
+
         # 5. scene_graph / pose_graph / log
         # metrics.json 留到最后写, 让 visualize 阶段产出的 metrics["visualizations"]
         # 也能落盘.
@@ -1370,15 +1433,30 @@ class OnlineMapperCore:
         return None
 
     def _canon_spatial_cluster(self, ids_group):
-        """同 canonical name 但物理位置远的 node 不应合并 (例: 起点电梯厅 vs H 座电梯厅)."""
+        """同 canonical name 但物理位置远的 node 不应合并 (例: 起点电梯厅 vs H 座电梯厅).
+
+        合并条件: pose 欧氏距离 ≤ _SPATIAL_MERGE_DIST_M 且 timestamp 间隔
+        ≤ _SAME_NAME_TIME_GAP_S. 后者作为保险: VO scale 漂移时 pose 不可信,
+        但 timestamp 间隔是物理远近的可靠下界.
+        """
         if not self.pose_graph:
             return [ids_group]
+
+        def _ts_ms(nid):
+            n = self.topo.nodes.get(nid)
+            ts = getattr(n, "timestamp", None) if n else None
+            try:
+                return int(ts)
+            except (TypeError, ValueError):
+                return None
+
         clusters = []
         for i in ids_group:
             if i not in self.pose_graph.nodes:
                 clusters.append([i])
                 continue
             pi = self.pose_graph.nodes[i]
+            ti = _ts_ms(i)
             placed = False
             for c in clusters:
                 for j in c:
@@ -1386,10 +1464,15 @@ class OnlineMapperCore:
                         continue
                     pj = self.pose_graph.nodes[j]
                     d = ((pi.x - pj.x) ** 2 + (pi.y - pj.y) ** 2) ** 0.5
-                    if d <= _SPATIAL_MERGE_DIST_M:
-                        c.append(i)
-                        placed = True
-                        break
+                    if d > _SPATIAL_MERGE_DIST_M:
+                        continue
+                    tj = _ts_ms(j)
+                    if ti is not None and tj is not None:
+                        if abs(ti - tj) / 1000.0 > _SAME_NAME_TIME_GAP_S:
+                            continue
+                    c.append(i)
+                    placed = True
+                    break
                 if placed:
                     break
             if not placed:

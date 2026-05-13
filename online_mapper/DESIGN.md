@@ -1,7 +1,7 @@
 # Online Active Mapping Module — DESIGN
 
 ## 目标
-为 MemoryNav 增加一个**在线主动建图**模块 `online_mapper/`,
+为 memory-nav 增加一个**在线主动建图**模块 `online_mapper/`,
 与离线 `offline_mapper/` 解耦, 但产出 schema 完全兼容的 `merged_labeled_data/` 目录,
 使现有导航 runtime 无需改动即可消费。
 

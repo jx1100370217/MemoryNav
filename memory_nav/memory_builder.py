@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MemoryNav v2.0 - 记忆构建器
+memory-nav v2.0 - 记忆构建器
 
 从标注数据构建记忆拓扑图：
 1. 加载 merged_labeled_data 目录结构

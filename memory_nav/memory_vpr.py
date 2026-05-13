@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MemoryNav v2.1 - 视觉位置识别 (VPR) - 循环移位匹配版
+memory-nav v2.1 - 视觉位置识别 (VPR) - 循环移位匹配版
 
 核心改进：
 - 4相机循环移位匹配，支持不同朝向下的定位

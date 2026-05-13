@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MemoryNav v2.0 - 记忆拓扑图
+memory-nav v2.0 - 记忆拓扑图
 
 管理记忆节点和边的拓扑结构，支持：
 - 节点的增删改查

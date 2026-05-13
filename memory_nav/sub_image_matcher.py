@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MemoryNav - 子图匹配模块 (DINOv3 方案)
+memory-nav - 子图匹配模块 (DINOv3 方案)
 
 支持 DINOv3 密集特征匹配，成功匹配阈值: 0.6
 """

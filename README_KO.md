@@ -1,13 +1,13 @@
 <div align="center">
 
-# 🧠 MemoryNav
+# 🧠 memory-nav
 
 **시각적 기억 내비게이션 시스템 | Visual Memory Navigation System**
 
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-2.6.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.6.0)
+[![Version](https://img.shields.io/badge/Version-2.6.0-orange.svg)](https://github.com/jx1100370217/memory-nav/releases/tag/v2.6.0)
 
 VPR(시각적 장소 인식)과 위상 지도 기반 로봇 기억 내비게이션 시스템
 
@@ -19,7 +19,7 @@ VPR(시각적 장소 인식)과 위상 지도 기반 로봇 기억 내비게이�
 
 ## 📖 소개
 
-MemoryNav는 이동 로봇을 위한 시각적 기억 내비게이션 시스템입니다. 4개의 전방위 어안 카메라로 이미지를 수집하고, VPR 기술을 사용하여 사전 구축된 위상 기억 그래프에서 위치를 추정하며, YOLOv8n 시각적 차폐 감지와 Qwen3.5-9B 시각-언어 모델 폴백을 결합하여 "한번 간 곳을 기억하고 다시 걷는" 기억 내비게이션 능력을 실현합니다.
+memory-nav는 이동 로봇을 위한 시각적 기억 내비게이션 시스템입니다. 4개의 전방위 어안 카메라로 이미지를 수집하고, VPR 기술을 사용하여 사전 구축된 위상 기억 그래프에서 위치를 추정하며, YOLOv8n 시각적 차폐 감지와 Qwen3.5-9B 시각-언어 모델 폴백을 결합하여 "한번 간 곳을 기억하고 다시 걷는" 기억 내비게이션 능력을 실현합니다.
 
 ### 주요 기능
 
@@ -50,7 +50,7 @@ MemoryNav는 이동 로봇을 위한 시각적 기억 내비게이션 시스템�
 ## 🏗️ 시스템 아키텍처
 
 ```
-MemoryNav/
+memory-nav/
 ├── memory_nav/                     # 핵심 메모리 내비게이션 모듈
 │   ├── memory_navigator.py         # 내비게이터 메인 인터페이스
 │   ├── memory_models.py            # 데이터 모델 (Node, Edge, Plan, VPRResult)
@@ -314,7 +314,7 @@ ask_location 과 ask_direction 핸들러는 `nav_state.plan` / `current_step_idx
 
 ## 🛰️ 온라인 맵 생성 (online_mapper)
 
-`online_mapper/` 는 MemoryNav 의 스트리밍 온라인 능동 맵 생성 모듈입니다. VGGT-1B 단일 추론으로 depth / pose / dense 포인트 클라우드를 동시에 얻고, `OnlineMapperCore` 가 기하 / 토폴로지 / 시맨틱 세 계층을 조율해 고품질 시맨틱 토폴로지 그래프를 생성합니다.
+`online_mapper/` 는 memory-nav 의 스트리밍 온라인 능동 맵 생성 모듈입니다. VGGT-1B 단일 추론으로 depth / pose / dense 포인트 클라우드를 동시에 얻고, `OnlineMapperCore` 가 기하 / 토폴로지 / 시맨틱 세 계층을 조율해 고품질 시맨틱 토폴로지 그래프를 생성합니다.
 
 - **⚙️ 기하 프런트엔드**: VGGT-1B 슬라이딩 윈도우 4 프레임 bf16 싱글톤; `VisualOdometry` 는 VGGT extrinsics 를 재사용하여 추가 추론 없음; `OccupancyGrid` 는 dense 포인트 클라우드로 직접 채움; `Traversability` 는 포인트 클라우드에서 지면 평면 주행 가능도를 추정하고 `resolve_crop_point` 로 crop 중심을 walkable segment 중앙으로 밀어냄 (`detect_vertical_obstacle_columns` 으로 기둥 열 마스크 적용, 화면 하단 절반만 스캔하여 천장 오판 방지)
 - **🕸️ 토폴로지**: 다중 트리거 키프레임 (VPR + 병진 + 회전 + 정보 이득 + 교차점 + 시맨틱 화이트리스트); 매 프레임 전역 VPR + ORB 기하 검증 루프 클로저; `ConnectionBuilder` 가 `next_positions` 에 기하 방향 사전 (동일 segment ALPHA=0.5 / 300 s 진짜 단절 ALPHA=0, motion-heading 을 `pose.theta` 보다 우선, 역방향 하드 페널티) + traversability 통로 보정 + GroundingDINO 인물 차폐 페널티 + `cx` 가장자리 하드 제약을 결합; finalize 시 spatial / temporal KNN 로 이웃을 재구축하며 cross-gap filter (> 60s 간격이고 bridging keyframe 없으면 시간 엣지 거부) 포함; DINOv3 서브 이미지 매칭은 `memory_nav.sub_image_matcher.DINOv3Strategy` 를 직접 재사용
@@ -345,8 +345,8 @@ ask_location 과 ask_direction 핸들러는 `nav_state.plan` / `current_step_idx
 ## 🚀 빠른 시작
 
 ```bash
-git clone https://github.com/jx1100370217/MemoryNav.git
-cd MemoryNav
+git clone https://github.com/jx1100370217/memory-nav.git
+cd memory-nav
 pip install -r requirements/core_requirements.txt
 pip install -e .
 

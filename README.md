@@ -1,13 +1,13 @@
 <div align="center">
 
-# 🧠 MemoryNav
+# 🧠 memory-nav
 
 **视觉记忆导航系统 | Visual Memory Navigation System**
 
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-2.6.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.6.0)
+[![Version](https://img.shields.io/badge/Version-2.6.0-orange.svg)](https://github.com/jx1100370217/memory-nav/releases/tag/v2.6.0)
 
 基于视觉位置识别（VPR）和拓扑地图的机器人记忆导航系统
 
@@ -19,7 +19,7 @@
 
 ## 📖 简介
 
-MemoryNav 是一个面向移动机器人的视觉记忆导航系统。系统通过 4 个环视鱼眼相机采集图像，利用 VPR 技术在预建的拓扑记忆图中定位，结合 YOLOv8n 视觉遮挡检测和 Qwen3.5-9B 视觉语言模型进行兜底打点导航，并通过 Qwen3.5-0.8B 对用户指令做意图分类，实现"记住去过的地方，再走一次"的记忆导航能力，同时能在走路途中回答"我在哪""怎么去 X"这类问题并在回答完后无缝恢复原导航任务。
+memory-nav 是一个面向移动机器人的视觉记忆导航系统。系统通过 4 个环视鱼眼相机采集图像，利用 VPR 技术在预建的拓扑记忆图中定位，结合 YOLOv8n 视觉遮挡检测和 Qwen3.5-9B 视觉语言模型进行兜底打点导航，并通过 Qwen3.5-0.8B 对用户指令做意图分类，实现"记住去过的地方，再走一次"的记忆导航能力，同时能在走路途中回答"我在哪""怎么去 X"这类问题并在回答完后无缝恢复原导航任务。
 
 ### 核心能力
 
@@ -50,7 +50,7 @@ MemoryNav 是一个面向移动机器人的视觉记忆导航系统。系统通�
 ## 🏗️ 系统架构
 
 ```
-MemoryNav/
+memory-nav/
 ├── memory_nav/                     # 核心记忆导航模块
 │   ├── memory_navigator.py         # 导航器主接口
 │   ├── memory_models.py            # 数据模型 (Node, Edge, Plan, VPRResult)
@@ -317,7 +317,7 @@ edge:
 
 ## ✨ VPR 方案对比
 
-MemoryNav 支持 **4 种** VPR 方案，通过 `deploy/vpr_config.yaml` 统一切换：
+memory-nav 支持 **4 种** VPR 方案，通过 `deploy/vpr_config.yaml` 统一切换：
 
 | 方案 | 参数值 | 发表 | 特征维度 | Backbone | 特点 |
 |------|--------|------|---------|----------|------|
@@ -469,7 +469,7 @@ ask_location / ask_direction 两条分支**不修改** `nav_state.plan` / `curre
 
 ## 🛰️ 在线建图 (online_mapper)
 
-`online_mapper/` 是 MemoryNav 的流式在线主动建图模块, VGGT-1B 单次推理同时给出 depth / pose / dense 点云, 由 `OnlineMapperCore` 编排几何 / 拓扑 / 语义三层产出高质量语义拓扑图。
+`online_mapper/` 是 memory-nav 的流式在线主动建图模块, VGGT-1B 单次推理同时给出 depth / pose / dense 点云, 由 `OnlineMapperCore` 编排几何 / 拓扑 / 语义三层产出高质量语义拓扑图。
 
 - **⚙️ 几何前端**: VGGT-1B 滑窗 4 帧 bf16 单例; `VisualOdometry` 零额外推理直接复用 VGGT 的 extrinsics; `OccupancyGrid` 用 dense 点云直填; `Traversability` 从点云估计地面平面可通行度, 用于 crop 点修正
 - **🕸️ 拓扑**: 多触发关键帧 (VPR + 位移 + 旋转 + 信息增益 + 路口 + 白名单); 每帧全局 VPR + ORB 几何验证闭环; `ConnectionBuilder` 给 next_positions 叠加几何方向先验 (motion-heading 优先 `pose.theta`, ALPHA=0.5, 反向硬惩罚) + traversability 地面校正 + GroundingDINO 行人遮挡惩罚 + `cx` 边缘硬约束; finalize 时按 spatial / temporal KNN 重建邻接, 含 cross-gap filter (> 60s 且无 bridging keyframe → 拒绝时间边)
@@ -517,8 +517,8 @@ bash deploy/build_memory.sh --data_dir deploy/logs/mapping_output/session_*/merg
 ### 安装
 
 ```bash
-git clone https://github.com/jx1100370217/MemoryNav.git
-cd MemoryNav
+git clone https://github.com/jx1100370217/memory-nav.git
+cd memory-nav
 pip install -r requirements/core_requirements.txt
 pip install -e .
 ```

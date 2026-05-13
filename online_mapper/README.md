@@ -5,7 +5,7 @@
 
 ## 快速开始
 ```bash
-cd /home/ubuntu/Disk/codes/jianxiong/MemoryNav
+cd /home/ubuntu/Disk/codes/jianxiong/memory-nav
 /home/ubuntu/miniconda3/envs/internvla/bin/python online_mapper/run_online_map.py \
     --input memory_test_data \
     --output online_mapper/output/merged_labeled_data

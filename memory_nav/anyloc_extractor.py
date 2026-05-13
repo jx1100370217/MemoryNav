@@ -224,13 +224,13 @@ class VLAD:
 
 
 # ============================================================
-# AnyLoc 特征提取器 (集成到 MemoryNav)
+# AnyLoc 特征提取器 (集成到 memory-nav)
 # ============================================================
 class AnyLocExtractor:
     """
     AnyLoc VPR 特征提取器
 
-    将 DINOv2 + VLAD/GeM 封装为与 MemoryNav 兼容的特征提取接口。
+    将 DINOv2 + VLAD/GeM 封装为与 memory-nav 兼容的特征提取接口。
 
     Args:
         dino_model: DINOv2模型名称

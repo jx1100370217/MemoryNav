@@ -21,7 +21,7 @@ test_memory_ws.py - 记忆导航/在线建图 双模式 WebSocket 集成测试
 
 用法:
   1. 启动 ws_proxy_with_memory.py:
-     cd /home/ubuntu/Disk/codes/jianxiong/MemoryNav
+     cd /home/ubuntu/Disk/codes/jianxiong/memory-nav
      python3 deploy/ws_proxy_with_memory.py
 
   2. 运行测试:
@@ -49,7 +49,7 @@ if not all(h in _no_proxy for h in ('127.0.0.1', 'localhost')):
     os.environ['NO_PROXY'] = os.environ['no_proxy']
 
 WS_URL = "ws://127.0.0.1:9528"
-PROJECT_ROOT = "/home/ubuntu/Disk/codes/jianxiong/MemoryNav"
+PROJECT_ROOT = "/home/ubuntu/Disk/codes/jianxiong/memory-nav"
 DATA_DIR = os.path.join(PROJECT_ROOT, "memory_test_data2")
 TASK = "前往C8前台"
 # TASK = "前往母婴室门口"

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MemoryNav v2.0 - 记忆导航器
+memory-nav v2.0 - 记忆导航器
 
 整合 VPR 定位、语义匹配、路径规划的主导航接口：
 1. VPR定位：根据当前环视图定位起点

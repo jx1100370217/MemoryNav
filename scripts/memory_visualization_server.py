@@ -68,7 +68,7 @@ HTML_TEMPLATE = '''
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧭</text></svg>">
-    <title>🧭 MemoryNav - 记忆导航可视化系统 v4.0</title>
+    <title>🧭 memory-nav - 记忆导航可视化系统 v4.0</title>
     <script src="/static/vis-network.min.js"></script>
     <style>
         :root {
@@ -1299,7 +1299,7 @@ HTML_TEMPLATE = '''
     <nav class="navbar">
         <div class="navbar-brand">
             <span>🧭</span>
-            <span>MemoryNav</span>
+            <span>memory-nav</span>
         </div>
         <div class="nav-tabs">
             <button class="nav-tab active" onclick="switchPage('nav')">🗺️ 导航</button>
@@ -3830,13 +3830,13 @@ class MemoryNavServer:
             logger.error("Flask 不可用")
             return
         
-        logger.info(f"启动 MemoryNav 可视化服务器，端口: {self.port}")
+        logger.info(f"启动 memory-nav 可视化服务器，端口: {self.port}")
         logger.info(f"访问: http://localhost:{self.port}")
         self.app.run(host='0.0.0.0', port=self.port, debug=False)
 
 
 def main():
-    parser = argparse.ArgumentParser(description='MemoryNav 可视化服务器')
+    parser = argparse.ArgumentParser(description='memory-nav 可视化服务器')
     parser.add_argument('--port', type=int, default=9530, help='服务器端口')
     parser.add_argument('--data', type=str, default=None, help='数据目录')
     args = parser.parse_args()

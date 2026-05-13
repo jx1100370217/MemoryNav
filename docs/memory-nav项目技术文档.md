@@ -1,8 +1,8 @@
-# MemoryNav 项目技术文档
+# memory-nav 项目技术文档
 
 > **版本**: v2.5.1 — 意图分类扩展为 4 类 (navigate / ask_location / ask_direction / mapping), 指路叙述加三层幻觉防护, 截止 2026-04-17
 >
-> **代码根**: `/home/ubuntu/Disk/codes/jianxiong/MemoryNav/`
+> **代码根**: `/home/ubuntu/Disk/codes/jianxiong/memory-nav/`
 
 ---
 
@@ -45,7 +45,7 @@
 
 ## 1. 项目概述
 
-MemoryNav 是一套**纯视觉记忆导航系统**，让机器人能够：
+memory-nav 是一套**纯视觉记忆导航系统**，让机器人能够：
 
 1. **记住去过的地方**（离线/在线建图 → 语义拓扑图）
 2. **认出当前位置**（VPR 视觉位置识别）
@@ -77,7 +77,7 @@ MemoryNav 是一套**纯视觉记忆导航系统**，让机器人能够：
 ## 2. 项目结构
 
 ```
-MemoryNav/
+memory-nav/
 ├── memory_nav/                       # 核心导航库
 │   ├── __init__.py                   # 版本号 + 统一导出
 │   ├── memory_models.py              # 数据模型

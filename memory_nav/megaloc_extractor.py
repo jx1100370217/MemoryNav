@@ -6,7 +6,7 @@ MegaLoc VPR 特征提取器
 基于 MegaLoc (CVPR 2025 Workshop) 的视觉位置识别特征提取器。
 使用 DINOv2 + Optimal Transport 聚合生成全局描述子。
 
-代码源自 MegaLoc 项目，已内嵌到 MemoryNav 中，
+代码源自 MegaLoc 项目，已内嵌到 memory-nav 中，
 不再依赖外部代码库。
 
 参考:
@@ -47,7 +47,7 @@ except ImportError:
 def _build_megaloc_model():
     """
     构建 MegaLoc 模型并加载预训练权重。
-    逻辑源自原 hubconf.py，已内嵌到 MemoryNav。
+    逻辑源自原 hubconf.py，已内嵌到 memory-nav。
     """
     from .megaloc_model import MegaLoc
     from huggingface_hub import hf_hub_download

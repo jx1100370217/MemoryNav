@@ -1,13 +1,13 @@
 <div align="center">
 
-# 🧠 MemoryNav
+# 🧠 memory-nav
 
 **視覚記憶ナビゲーションシステム | Visual Memory Navigation System**
 
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-2.6.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.6.0)
+[![Version](https://img.shields.io/badge/Version-2.6.0-orange.svg)](https://github.com/jx1100370217/memory-nav/releases/tag/v2.6.0)
 
 VPR（視覚的場所認識）とトポロジカルマップに基づくロボット記憶ナビゲーションシステム
 
@@ -19,7 +19,7 @@ VPR（視覚的場所認識）とトポロジカルマップに基づくロボ�
 
 ## 📖 概要
 
-MemoryNavは移動ロボット向けの視覚記憶ナビゲーションシステムです。4台の全方位魚眼カメラで画像を取得し、VPR技術を用いて事前構築したトポロジカル記憶グラフ上で自己位置推定を行います。YOLOv8nによる視覚遮蔽検出とQwen3.5-9B視覚言語モデルのフォールバックを組み合わせ、「一度行った場所を記憶し、再び歩く」記憶ナビゲーション能力を実現します。
+memory-navは移動ロボット向けの視覚記憶ナビゲーションシステムです。4台の全方位魚眼カメラで画像を取得し、VPR技術を用いて事前構築したトポロジカル記憶グラフ上で自己位置推定を行います。YOLOv8nによる視覚遮蔽検出とQwen3.5-9B視覚言語モデルのフォールバックを組み合わせ、「一度行った場所を記憶し、再び歩く」記憶ナビゲーション能力を実現します。
 
 ### 主な機能
 
@@ -50,7 +50,7 @@ MemoryNavは移動ロボット向けの視覚記憶ナビゲーションシス�
 ## 🏗️ システムアーキテクチャ
 
 ```
-MemoryNav/
+memory-nav/
 ├── memory_nav/                     # コア記憶ナビゲーションモジュール
 │   ├── memory_navigator.py         # ナビゲーターメインインターフェース
 │   ├── memory_models.py            # データモデル (Node, Edge, Plan, VPRResult)
@@ -314,7 +314,7 @@ ask_location / ask_direction ハンドラーは `nav_state.plan` / `current_step
 
 ## 🛰️ オンライン能動建図 (online_mapper)
 
-`online_mapper/` は MemoryNav のストリーミング オンライン能動建図モジュールです。VGGT-1B の単一推論で depth / pose / dense 点群を同時取得し、`OnlineMapperCore` が幾何 / トポロジー / 語義の 3 層を編成して高品質なセマンティック トポグラフを生成します。
+`online_mapper/` は memory-nav のストリーミング オンライン能動建図モジュールです。VGGT-1B の単一推論で depth / pose / dense 点群を同時取得し、`OnlineMapperCore` が幾何 / トポロジー / 語義の 3 層を編成して高品質なセマンティック トポグラフを生成します。
 
 - **⚙️ 幾何フロントエンド**: VGGT-1B スライディング ウィンドウ 4 フレーム bf16 シングルトン; `VisualOdometry` は VGGT の extrinsics を再利用し追加推論ゼロ; `OccupancyGrid` は dense 点群から直接充填; `Traversability` は点群から地面平面の可通行度を推定し、`resolve_crop_point` で crop 中心を walkable segment 中央に押し付ける (`detect_vertical_obstacle_columns` で柱列マスクを重畳、画面下半分のみスキャンして天井誤判定を回避)
 - **🕸️ トポロジー**: 複数トリガー キーフレーム (VPR + 並進 + 回転 + 情報ゲイン + 交差点 + セマンティック ホワイトリスト); 毎フレーム 全域 VPR + ORB 幾何検証ループ閉じ; `ConnectionBuilder` は `next_positions` に幾何方向事前分布 (同 segment ALPHA=0.5 / 300 s 真断絶 ALPHA=0、motion-heading を `pose.theta` より優先, 逆向きはハード ペナルティ) + traversability コリドー補正 + GroundingDINO 人物遮蔽ペナルティ + `cx` エッジ ハード制約を付与; finalize では spatial / temporal KNN で隣接を再構築、cross-gap filter (> 60s かつ bridging keyframe なし → 時間エッジを拒否) 付き; DINOv3 サブ画像マッチングは `memory_nav.sub_image_matcher.DINOv3Strategy` を直接再利用
@@ -345,8 +345,8 @@ ask_location / ask_direction ハンドラーは `nav_state.plan` / `current_step
 ## 🚀 クイックスタート
 
 ```bash
-git clone https://github.com/jx1100370217/MemoryNav.git
-cd MemoryNav
+git clone https://github.com/jx1100370217/memory-nav.git
+cd memory-nav
 pip install -r requirements/core_requirements.txt
 pip install -e .
 

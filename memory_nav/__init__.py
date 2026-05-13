@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MemoryNav v2.0 - 视觉记忆导航模块
+memory-nav v2.0 - 视觉记忆导航模块
 
 使用示例:
     from memory_nav import MemoryNavigator, MemoryBuilder

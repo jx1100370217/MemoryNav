@@ -12,8 +12,8 @@ import os, sys, time, json, logging, cv2, base64, numpy as np, math
 from pathlib import Path
 from typing import Dict, List
 
-# 动态项目根 (online_mapper/core/online_mapper_core.py → 上 2 级 = MemoryNav/).
-# 替换原硬编码 '/home/ubuntu/Disk/codes/jianxiong/MemoryNav' 以支持任意部署路径.
+# 动态项目根 (online_mapper/core/online_mapper_core.py → 上 2 级 = memory-nav/).
+# 替换原硬编码 '/home/ubuntu/Disk/codes/jianxiong/memory-nav' 以支持任意部署路径.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from online_mapper.config import OnlineMapperConfig

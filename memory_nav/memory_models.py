@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MemoryNav v3.0 - 数据模型
+memory-nav v3.0 - 数据模型
 
 定义记忆导航系统的核心数据结构（新方案）：
 - MemoryEdge: 记忆边 → camera_name + crop 子图（取代 angle + pixel_position + stitch）

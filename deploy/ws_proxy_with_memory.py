@@ -3035,7 +3035,7 @@ async def main():
     os.chdir(project_root)
     logger.info("")
     logger.info("╔═══════════════════════════════════════════════════════════╗")
-    logger.info("║         🚀 MemoryNav WebSocket 服务器启动中...           ║")
+    logger.info("║         🚀 memory-nav WebSocket 服务器启动中...           ║")
     logger.info("╚═══════════════════════════════════════════════════════════╝")
     logger.info(f"  📂 工作目录: {os.getcwd()}")
     logger.info("")
@@ -3113,7 +3113,7 @@ async def main():
     memory_ok = "✅ 已启用" if memory_navigator else "❌ 初始化失败"
     logger.info("")
     logger.info("╔═══════════════════════════════════════════════════════════╗")
-    logger.info("║         ✅ MemoryNav 服务器启动完成                      ║")
+    logger.info("║         ✅ memory-nav 服务器启动完成                      ║")
     logger.info("╠═══════════════════════════════════════════════════════════╣")
     logger.info(f"║  🌐 监听端口:     ws://0.0.0.0:{WS_PORT}")
     logger.info(f"║  🧠 记忆导航:     {memory_ok}")

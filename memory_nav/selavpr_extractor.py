@@ -6,7 +6,7 @@ SelaVPR++ 特征提取器
 基于 SelaVPR++ (T-PAMI 2025) 的视觉位置识别特征提取器。
 通过 MultiConv Adapter 适配 DINOv2 基础模型，支持标准 VPR 和哈希重排两种模式。
 
-代码源自 SelaVPR++ 项目，已内嵌到 MemoryNav 中，
+代码源自 SelaVPR++ 项目，已内嵌到 memory-nav 中，
 不再依赖外部代码库。
 
 参考:
@@ -47,7 +47,7 @@ except ImportError:
 def _build_selavpr_model(backbone: str, aggregation: str, hashing: bool, rerank: bool):
     """
     构建 SelaVPR++ 模型并加载预训练权重。
-    逻辑源自原 hubconf.py，已内嵌到 MemoryNav。
+    逻辑源自原 hubconf.py，已内嵌到 memory-nav。
     """
     from .selavpr_model.network import GeoLocalizationNet
 

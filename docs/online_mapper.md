@@ -1,8 +1,8 @@
 # online_mapper 设计文档
 
-> 代码根: `MemoryNav/online_mapper/`
-> 第三方源码: `MemoryNav/third_party/vggt_space/` (VGGT, .gitignore)
-> 模型权重: `MemoryNav/pretrained/` (.gitignore, 各模型本地化路径)
+> 代码根: `memory-nav/online_mapper/`
+> 第三方源码: `memory-nav/third_party/vggt_space/` (VGGT, .gitignore)
+> 模型权重: `memory-nav/pretrained/` (.gitignore, 各模型本地化路径)
 
 ---
 
@@ -750,7 +750,7 @@ huggingface-cli download IDEA-Research/grounding-dino-base \
 
 ```bash
 conda activate internvla
-cd MemoryNav
+cd memory-nav
 CUDA_VISIBLE_DEVICES=0 python online_mapper/run_online_map.py \
   --input memory_test_data \
   --output online_mapper/output/merged_labeled_data

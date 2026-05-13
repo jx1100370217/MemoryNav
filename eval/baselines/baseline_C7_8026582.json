@@ -3,7 +3,7 @@
   "name": "baseline_C7_freeze",
   "commit_sha": "8026582",
   "frozen_at": "2026-04-29T18:42:33",
-  "output_dir": "/media/ubuntu/Data/codes/jianxiong/MemoryNav/online_mapper/output_C7_baseline",
+  "output_dir": "/media/ubuntu/Data/codes/jianxiong/memory-nav/online_mapper/output_C7_baseline",
   "fingerprints_by_truth_id": {
     "1": {
       "match_status": "missing_connection",

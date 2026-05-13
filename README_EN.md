@@ -1,13 +1,13 @@
 <div align="center">
 
-# 🧠 MemoryNav
+# 🧠 memory-nav
 
 **Visual Memory Navigation System**
 
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/Version-2.6.0-orange.svg)](https://github.com/jx1100370217/MemoryNav/releases/tag/v2.6.0)
+[![Version](https://img.shields.io/badge/Version-2.6.0-orange.svg)](https://github.com/jx1100370217/memory-nav/releases/tag/v2.6.0)
 
 A robot memory navigation system based on Visual Place Recognition (VPR) and topological maps
 
@@ -19,7 +19,7 @@ A robot memory navigation system based on Visual Place Recognition (VPR) and top
 
 ## 📖 Introduction
 
-MemoryNav is a visual memory navigation system for mobile robots. It collects images via 4 omnidirectional fisheye cameras, uses VPR to localize within a pre-built topological memory graph, detects visual occlusion with YOLOv8n, falls back to Qwen3.5-9B VLM for grounding, and uses Qwen3.5-0.8B to classify the user's intent — enabling "remember where you've been, walk it again" navigation, while also answering "where am I" / "how do I get to X" mid-trip and seamlessly resuming the unfinished navigation afterwards.
+memory-nav is a visual memory navigation system for mobile robots. It collects images via 4 omnidirectional fisheye cameras, uses VPR to localize within a pre-built topological memory graph, detects visual occlusion with YOLOv8n, falls back to Qwen3.5-9B VLM for grounding, and uses Qwen3.5-0.8B to classify the user's intent — enabling "remember where you've been, walk it again" navigation, while also answering "where am I" / "how do I get to X" mid-trip and seamlessly resuming the unfinished navigation afterwards.
 
 ### Key Capabilities
 
@@ -50,7 +50,7 @@ MemoryNav is a visual memory navigation system for mobile robots. It collects im
 ## 🏗️ Architecture
 
 ```
-MemoryNav/
+memory-nav/
 ├── memory_nav/                     # Core memory navigation module
 │   ├── memory_navigator.py         # Navigator main interface
 │   ├── memory_models.py            # Data models (Node, Edge, Plan, VPRResult)
@@ -268,7 +268,7 @@ Per-frame processing:
 
 ## ✨ VPR Method Comparison
 
-MemoryNav supports **4 VPR methods**, switchable via `deploy/vpr_config.yaml`:
+memory-nav supports **4 VPR methods**, switchable via `deploy/vpr_config.yaml`:
 
 | Method | Key | Venue | Feature Dim | Backbone | Notes |
 |--------|-----|-------|------------|----------|-------|
@@ -319,7 +319,7 @@ anyloc:
 
 ## 🛰️ Online Mapping (online_mapper)
 
-`online_mapper/` is MemoryNav's streaming online active mapping module. A single VGGT-1B pass yields depth / pose / dense point cloud, and `OnlineMapperCore` orchestrates a three-layer (Geometry + Topology + Semantics) pipeline to build a high-quality semantic topo graph.
+`online_mapper/` is memory-nav's streaming online active mapping module. A single VGGT-1B pass yields depth / pose / dense point cloud, and `OnlineMapperCore` orchestrates a three-layer (Geometry + Topology + Semantics) pipeline to build a high-quality semantic topo graph.
 
 - **⚙️ Geometry**: VGGT-1B sliding-window (4 frames, bf16) singleton; `VisualOdometry` reuses VGGT extrinsics with zero extra inference; `OccupancyGrid` fills directly from the dense point cloud; `Traversability` estimates a pixel-wise ground-plane walkability map that corrects crop anchors.
 - **🕸️ Topology**: multi-trigger keyframes (VPR + translation + rotation + info-gain + junction + semantic whitelist); per-frame global VPR + ORB loop closure; `ConnectionBuilder` augments `next_positions` with a geometric heading prior (motion-heading preferred over `pose.theta`, `ALPHA=0.5`, hard penalty for reverse-facing matches) + traversability ground correction + GroundingDINO person-occlusion penalty + a `cx` edge hard-constraint; finalize rebuilds neighbours via spatial / temporal KNN with a cross-gap filter (> 60 s gap and no bridging keyframe → drop the temporal edge).
@@ -437,8 +437,8 @@ The `nav_preserved` block in the response lets the UI confirm the original navig
 ### Installation
 
 ```bash
-git clone https://github.com/jx1100370217/MemoryNav.git
-cd MemoryNav
+git clone https://github.com/jx1100370217/memory-nav.git
+cd memory-nav
 pip install -r requirements/core_requirements.txt
 pip install -e .
 ```
